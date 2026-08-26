@@ -27,6 +27,7 @@ Terms whose meaning matters across T3 Code. Architecture and lifecycle constrain
 | Projection / read model | A view of current state derived from persisted events.                                       |
 | Projector               | The logic that applies events to a read model.                                               |
 | Reactor                 | A worker that performs follow-up work in response to recorded intent or runtime signals.     |
+| Verified workflow       | An opt-in lifecycle requiring an approved plan, checks, and independent agent review.        |
 | Command receipt         | A durable record of a command's result, used to make retries idempotent.                     |
 | Runtime receipt         | A test-only signal that an asynchronous milestone completed.                                 |
 | Quiesced                | The relevant follow-up workers have finished, beyond the provider turn merely ending.        |

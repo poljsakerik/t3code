@@ -48,6 +48,7 @@ import {
   FolderPlusIcon,
   GitPullRequestArrowIcon,
   LinkIcon,
+  ListChecksIcon,
   MessageSquareIcon,
   PaletteIcon,
   SettingsIcon,
@@ -1657,6 +1658,23 @@ function OpenCommandPaletteDialog(props: {
           });
         },
       });
+
+      if (contextualProjectRef) {
+        actionItems.push({
+          kind: "action",
+          value: "action:new-verified-workflow",
+          searchTerms: ["verified workflow", "plan", "review", "checks", "agents"],
+          title: (
+            <>
+              New verified workflow in <span className="font-semibold">{activeProjectTitle}</span>
+            </>
+          ),
+          icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
+          run: async () => {
+            await handleNewThread(contextualProjectRef, { workflowProfileId: "default" });
+          },
+        });
+      }
     }
 
     actionItems.push({

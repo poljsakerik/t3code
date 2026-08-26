@@ -41,6 +41,7 @@ interface NewThreadWorkspaceOptions {
   worktreePath?: string | null;
   envMode?: DraftThreadEnvMode;
   startFromOrigin?: boolean;
+  workflowProfileId?: string;
 }
 
 // The workspace options the caller passed explicitly, shaped for the draft
@@ -52,6 +53,9 @@ function pickExplicitWorkspaceOptions(options: NewThreadWorkspaceOptions | undef
     ...(options?.worktreePath !== undefined ? { worktreePath: options.worktreePath } : {}),
     ...(options?.envMode !== undefined ? { envMode: options.envMode } : {}),
     ...(options?.startFromOrigin !== undefined ? { startFromOrigin: options.startFromOrigin } : {}),
+    ...(options?.workflowProfileId !== undefined
+      ? { workflowProfileId: options.workflowProfileId, interactionMode: "plan" as const }
+      : {}),
   };
 }
 
@@ -72,6 +76,7 @@ export function useNewThreadHandler() {
         worktreePath?: string | null;
         envMode?: DraftThreadEnvMode;
         startFromOrigin?: boolean;
+        workflowProfileId?: string;
         replace?: boolean;
       },
       // Which draft the thread ended up in, so a caller that has something to put in it — a
@@ -89,6 +94,7 @@ export function useNewThreadHandler() {
         applyStickyState,
         setDraftThreadContext,
         setLogicalProjectDraftThreadId,
+        cleanupDraftThreadIfUnused,
         setModelSelection,
       } = useComposerDraftStore.getState();
       const requestingRouteHref = router.state.location.href;
@@ -173,6 +179,7 @@ export function useNewThreadHandler() {
       const hasWorktreePathOption = options?.worktreePath !== undefined;
       const hasEnvModeOption = options?.envMode !== undefined;
       const hasStartFromOriginOption = options?.startFromOrigin !== undefined;
+      const hasWorkflowProfileOption = options?.workflowProfileId !== undefined;
       const storedDraftThread = getDraftSessionByLogicalProjectKey(logicalProjectKey);
       const storedDraftThreadRef = storedDraftThread
         ? scopeThreadRef(storedDraftThread.environmentId, storedDraftThread.threadId)
@@ -195,6 +202,7 @@ export function useNewThreadHandler() {
       // drafts rather than deleting them.
       const emptyStoredDraftThread =
         reusableStoredDraftThread &&
+        reusableStoredDraftThread.workflowProfileId === options?.workflowProfileId &&
         !composerDraftHasUserContent(getComposerDraft(reusableStoredDraftThread.draftId))
           ? reusableStoredDraftThread
           : null;
@@ -212,7 +220,8 @@ export function useNewThreadHandler() {
             hasBranchOption ||
             hasWorktreePathOption ||
             hasEnvModeOption ||
-            hasStartFromOriginOption;
+            hasStartFromOriginOption ||
+            hasWorkflowProfileOption;
           // Resurrecting an empty stored draft must not resurrect its stale
           // context: explicit workspace options win outright; otherwise the
           // env context resets to the configured defaults so drafts seeded
@@ -335,6 +344,7 @@ export function useNewThreadHandler() {
         latestActiveDraftThread &&
         currentRouteTarget?.kind === "draft" &&
         latestActiveDraftThread.logicalProjectKey === logicalProjectKey &&
+        latestActiveDraftThread.workflowProfileId === options?.workflowProfileId &&
         latestActiveDraftThread.promotedTo == null &&
         // Same content rule as above: a new-thread request while viewing an
         // invested draft mints a fresh one instead of repurposing it.
@@ -344,7 +354,8 @@ export function useNewThreadHandler() {
           hasBranchOption ||
           hasWorktreePathOption ||
           hasEnvModeOption ||
-          hasStartFromOriginOption
+          hasStartFromOriginOption ||
+          hasWorkflowProfileOption
         ) {
           setDraftThreadContext(currentRouteTarget.draftId, pickExplicitWorkspaceOptions(options));
         }
@@ -381,6 +392,7 @@ export function useNewThreadHandler() {
           // to reuse is still mapped at this point — reusing it here would
           // silently undo mint-fresh semantics.
           racedDraft.draftId !== storedDraftThread?.draftId &&
+          racedDraft.workflowProfileId === options?.workflowProfileId &&
           readThreadShell(scopeThreadRef(racedDraft.environmentId, racedDraft.threadId)) === null
         ) {
           // Same remap the reuse paths above perform: point the draft at the
@@ -405,6 +417,8 @@ export function useNewThreadHandler() {
           });
           return { draftId: racedDraft.draftId, threadId: racedDraft.threadId };
         }
+        const previousMappedDraftId =
+          getDraftSessionByLogicalProjectKey(logicalProjectKey)?.draftId ?? null;
         setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, draftId, {
           threadId,
           createdAt,
@@ -418,7 +432,15 @@ export function useNewThreadHandler() {
               newWorktreesStartFromOrigin: projectSettings.settings.newWorktreesStartFromOrigin,
             }),
           runtimeMode: defaultRuntimeMode,
-          ...(carryInteractionMode ? { interactionMode: carryInteractionMode } : {}),
+          ...(options?.workflowProfileId === undefined
+            ? carryInteractionMode
+              ? { interactionMode: carryInteractionMode }
+              : {}
+            : { workflowProfileId: options.workflowProfileId, interactionMode: "plan" }),
+          // The currently rendered draft route still reads its session from
+          // this store. Keep that session alive until navigation completes,
+          // otherwise its missing-session fallback races us back to `/`.
+          deferPreviousDraftCleanup: true,
         });
         applyStickyState(draftId);
         const modelSelectionOverride = resolveModelSelectionOverride(draftId);
@@ -432,6 +454,9 @@ export function useNewThreadHandler() {
           params: { draftId },
           replace: options?.replace ?? false,
         });
+        if (previousMappedDraftId && previousMappedDraftId !== draftId) {
+          cleanupDraftThreadIfUnused(previousMappedDraftId);
+        }
         return { draftId, threadId };
       })();
     },

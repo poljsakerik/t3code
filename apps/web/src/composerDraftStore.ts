@@ -321,6 +321,7 @@ const PersistedDraftThreadState = Schema.Struct({
   createdAt: Schema.String,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  workflowProfileId: Schema.optionalKey(Schema.String),
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
   envMode: DraftThreadEnvModeSchema,
@@ -451,6 +452,7 @@ export interface DraftSessionState {
   createdAt: string;
   runtimeMode: RuntimeMode;
   interactionMode: ProviderInteractionMode;
+  workflowProfileId?: string;
   branch: string | null;
   worktreePath: string | null;
   envMode: DraftThreadEnvMode;
@@ -535,6 +537,9 @@ interface ComposerDraftStoreState {
       interactionMode?: ProviderInteractionMode;
       environmentSelection?: "auto" | "manual";
       loadBalancedEnvironmentId?: EnvironmentId | null;
+      workflowProfileId?: string;
+      /** Keep the previously mapped empty draft alive until its route is no longer mounted. */
+      deferPreviousDraftCleanup?: boolean;
     },
   ) => void;
   /** Creates or updates the draft session tracked for a concrete project ref. */
@@ -552,6 +557,7 @@ interface ComposerDraftStoreState {
       interactionMode?: ProviderInteractionMode;
       environmentSelection?: "auto" | "manual";
       loadBalancedEnvironmentId?: EnvironmentId | null;
+      workflowProfileId?: string;
     },
   ) => void;
   /** Updates mutable draft-session metadata without touching composer content. */
@@ -568,6 +574,7 @@ interface ComposerDraftStoreState {
       interactionMode?: ProviderInteractionMode;
       environmentSelection?: "auto" | "manual";
       loadBalancedEnvironmentId?: EnvironmentId | null;
+      workflowProfileId?: string;
     },
   ) => void;
   clearProjectDraftThreadId: (projectRef: ScopedProjectRef) => void;
@@ -579,6 +586,8 @@ interface ComposerDraftStoreState {
   markDraftThreadPromoting: (threadRef: ComposerThreadTarget, promotedTo?: ScopedThreadRef) => void;
   /** Removes draft-session metadata after promotion is complete. */
   finalizePromotedDraftThread: (threadRef: ComposerThreadTarget) => void;
+  /** Removes an empty, unreferenced draft after a route handoff has completed. */
+  cleanupDraftThreadIfUnused: (threadRef: ComposerThreadTarget) => void;
   clearDraftThread: (threadRef: ComposerThreadTarget) => void;
   setStickyModelSelection: (modelSelection: ModelSelection | null | undefined) => void;
   setPrompt: (threadRef: ComposerThreadTarget, prompt: string) => void;
@@ -1563,6 +1572,7 @@ function createDraftThreadState(
     interactionMode?: ProviderInteractionMode;
     environmentSelection?: "auto" | "manual";
     loadBalancedEnvironmentId?: EnvironmentId | null;
+    workflowProfileId?: string;
   },
 ): DraftThreadState {
   // A project change (including switching environments within a logical
@@ -1610,6 +1620,11 @@ function createDraftThreadState(
     runtimeMode: options?.runtimeMode ?? existingThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
     interactionMode:
       options?.interactionMode ?? existingThread?.interactionMode ?? DEFAULT_INTERACTION_MODE,
+    ...(options?.workflowProfileId !== undefined
+      ? { workflowProfileId: options.workflowProfileId }
+      : existingThread?.workflowProfileId !== undefined
+        ? { workflowProfileId: existingThread.workflowProfileId }
+        : {}),
     branch: nextBranch,
     worktreePath: nextWorktreePath,
     envMode:
@@ -2545,6 +2560,9 @@ function toHydratedDraftThreadState(
     createdAt: persistedDraftThread.createdAt,
     runtimeMode: persistedDraftThread.runtimeMode,
     interactionMode: persistedDraftThread.interactionMode,
+    ...(persistedDraftThread.workflowProfileId === undefined
+      ? {}
+      : { workflowProfileId: persistedDraftThread.workflowProfileId }),
     branch: persistedDraftThread.branch,
     worktreePath: persistedDraftThread.worktreePath,
     envMode: persistedDraftThread.envMode,
@@ -2741,6 +2759,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             if (
               previousThreadKeyForLogicalProject &&
               previousThreadKeyForLogicalProject !== draftId &&
+              options?.deferPreviousDraftCleanup !== true &&
               !isComposerThreadKeyInUse(
                 nextLogicalProjectDraftThreadKeyByLogicalProjectKey,
                 previousThreadKeyForLogicalProject,
@@ -2837,6 +2856,11 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                   : options.createdAt || existing.createdAt,
               runtimeMode: options.runtimeMode ?? existing.runtimeMode,
               interactionMode: options.interactionMode ?? existing.interactionMode,
+              ...(options.workflowProfileId !== undefined
+                ? { workflowProfileId: options.workflowProfileId }
+                : existing.workflowProfileId !== undefined
+                  ? { workflowProfileId: existing.workflowProfileId }
+                  : {}),
               branch: nextBranch,
               worktreePath: nextWorktreePath,
               envMode:
@@ -2853,6 +2877,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               nextDraftThread.createdAt === existing.createdAt &&
               nextDraftThread.runtimeMode === existing.runtimeMode &&
               nextDraftThread.interactionMode === existing.interactionMode &&
+              nextDraftThread.workflowProfileId === existing.workflowProfileId &&
               nextDraftThread.branch === existing.branch &&
               nextDraftThread.worktreePath === existing.worktreePath &&
               nextDraftThread.envMode === existing.envMode &&
@@ -2951,6 +2976,27 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               return state;
             }
             return removeDraftThreadReferences(state, threadKey, existing.promotedTo ?? undefined);
+          });
+        },
+        cleanupDraftThreadIfUnused: (threadRef) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
+          if (threadKey.length === 0) {
+            return;
+          }
+          set((state) => {
+            const draftThread = state.draftThreadsByThreadKey[threadKey];
+            if (
+              !draftThread ||
+              isComposerThreadKeyInUse(
+                state.logicalProjectDraftThreadKeyByLogicalProjectKey,
+                threadKey,
+              ) ||
+              isDraftThreadPromoting(draftThread) ||
+              composerDraftHasUserContent(state.draftsByThreadKey[threadKey])
+            ) {
+              return state;
+            }
+            return removeDraftThreadReferences(state, threadKey);
           });
         },
         clearDraftThread: (threadRef) => {

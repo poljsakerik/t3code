@@ -3205,7 +3205,10 @@ export default function ChatView(props: ChatViewProps) {
     pendingUserInputCount: pendingUserInputs.length,
     interactionMode,
     latestTurnSettled: latestRunSettled,
-    hasActionableProposedPlan: hasActionableProposedPlan(activeProposedPlan),
+    hasActionableProposedPlan: hasActionableProposedPlan(
+      activeProposedPlan,
+      serverProjection?.thread.workflow?.status,
+    ),
     hasComposerAttachments: composerHasAttachments,
   });
   const activePendingApproval = pendingApprovals[0] ?? null;
@@ -8440,6 +8443,9 @@ export default function ChatView(props: ChatViewProps) {
                       interactionMode: sendInteractionMode,
                       branch: activeThreadBranch,
                       worktreePath: activeThread.worktreePath,
+                      ...(draftThread?.workflowProfileId === undefined
+                        ? {}
+                        : { workflowProfileId: draftThread.workflowProfileId }),
                       createdAt: activeThread.createdAt,
                     },
                   }

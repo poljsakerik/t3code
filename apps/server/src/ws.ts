@@ -60,6 +60,7 @@ import {
   OrchestrationV2ThreadLaunchError,
   type OrchestrationProjectShell,
   type OrchestrationV2ShellSnapshot,
+  type OrchestrationV2ThreadLaunchInput,
   type ProjectEntriesFailure,
   type ProjectFileFailure,
   type ProjectFileOperation,
@@ -354,6 +355,44 @@ export const withLateEditorConfig = <E, R>(
     ),
   );
 };
+
+export function buildThreadLaunchServiceInput(
+  input: OrchestrationV2ThreadLaunchInput,
+): ThreadLaunchService.ThreadLaunchInput {
+  return {
+    commandId: input.commandId,
+    ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+    ...(input.reuseExistingThread === undefined
+      ? {}
+      : { reuseExistingThread: input.reuseExistingThread }),
+    projectId: input.projectId,
+    title: input.title,
+    ...(input.generateTitle === undefined ? {} : { generateTitle: input.generateTitle }),
+    modelSelection: input.modelSelection,
+    runtimeMode: input.runtimeMode,
+    interactionMode: input.interactionMode,
+    ...(input.workflowProfileId === undefined
+      ? {}
+      : { workflowProfileId: input.workflowProfileId }),
+    workspaceStrategy: input.workspaceStrategy,
+    ...(input.initialMessage === undefined
+      ? {}
+      : {
+          initialMessage: {
+            ...(input.initialMessage.messageId === undefined
+              ? {}
+              : { messageId: input.initialMessage.messageId }),
+            text: input.initialMessage.text,
+            attachments: input.initialMessage.attachments,
+            ...(input.initialMessage.context === undefined
+              ? {}
+              : { context: input.initialMessage.context }),
+          },
+        }),
+    createdBy: "user",
+    creationSource: input.creationSource ?? "web",
+  };
+}
 
 function unexpectedCompatibilityError(error: never): never {
   throw new Error(`Unhandled compatibility error: ${String(error)}`);
@@ -1947,38 +1986,9 @@ const makeWsRpcLayer = (
             ORCHESTRATION_V2_WS_METHODS.launchThread,
             startup
               .enqueueCommand(
-                ThreadMessageIntake.launchThread({
-                  commandId: input.commandId,
-                  ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
-                  ...(input.reuseExistingThread === undefined
-                    ? {}
-                    : { reuseExistingThread: input.reuseExistingThread }),
-                  projectId: input.projectId,
-                  title: input.title,
-                  ...(input.generateTitle === undefined
-                    ? {}
-                    : { generateTitle: input.generateTitle }),
-                  modelSelection: input.modelSelection,
-                  runtimeMode: input.runtimeMode,
-                  interactionMode: input.interactionMode,
-                  workspaceStrategy: input.workspaceStrategy,
-                  ...(input.initialMessage === undefined
-                    ? {}
-                    : {
-                        initialMessage: {
-                          ...(input.initialMessage.messageId === undefined
-                            ? {}
-                            : { messageId: input.initialMessage.messageId }),
-                          text: input.initialMessage.text,
-                          attachments: input.initialMessage.attachments,
-                          ...(input.initialMessage.context === undefined
-                            ? {}
-                            : { context: input.initialMessage.context }),
-                        },
-                      }),
-                  createdBy: "user",
-                  creationSource: input.creationSource ?? "web",
-                }).pipe(Effect.provide(intakeContext)),
+                ThreadMessageIntake.launchThread(buildThreadLaunchServiceInput(input)).pipe(
+                  Effect.provide(intakeContext),
+                ),
               )
               .pipe(
                 Effect.tap(() =>

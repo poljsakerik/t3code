@@ -54,6 +54,7 @@ import {
   ThreadId,
   TurnItemId,
   NodeId,
+  summarizeThreadWorkflow,
 } from "@t3tools/contracts";
 import {
   createOrchestrationV2TurnItemVisibility,
@@ -667,6 +668,7 @@ export function applyToProjection(
     case "thread.interaction-mode-updated":
     case "thread.model-selection-updated":
     case "thread.provider-switched":
+    case "thread.workflow-updated":
       return {
         ...base,
         thread: event.payload,
@@ -1405,6 +1407,7 @@ export function threadShellFromProjection(
     hasActionableProposedPlan: projection.plans.some(
       (plan) => plan.kind === "proposed_plan" && plan.status === "active",
     ),
+    workflow: summarizeThreadWorkflow(projection.thread.workflow),
     pendingBackgroundTasks: [...pendingBackgroundTasks],
     providerInstanceHistory: providerInstanceHistoryForShell({
       threadId: projection.thread.id,
@@ -1634,6 +1637,7 @@ function shellFromState(input: {
     latestUserMessageAt: input.state.latestUserMessageAt,
     latestUserAuthoredMessageAt: input.state.latestUserAuthoredMessageAt,
     hasActionableProposedPlan: input.state.hasActionableProposedPlan,
+    workflow: summarizeThreadWorkflow(input.state.thread.workflow),
     pendingBackgroundTasks: input.state.pendingBackgroundTasks,
     providerInstanceHistory: input.state.providerInstanceHistory,
     itemCount: input.state.itemCount,
@@ -1699,7 +1703,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           case "thread.runtime-mode-updated":
           case "thread.interaction-mode-updated":
           case "thread.model-selection-updated":
-          case "thread.provider-switched": {
+          case "thread.provider-switched":
+          case "thread.workflow-updated": {
             const payloadJson = yield* encodeThreadPayload(event.payload);
             const payload = parseEncodedPayload(payloadJson);
             yield* sql`

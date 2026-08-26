@@ -77,6 +77,7 @@ export interface ThreadLaunchInput {
   readonly modelSelection: ModelSelection;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
+  readonly workflowProfileId?: string;
   readonly workspaceStrategy: ThreadLaunchWorkspaceStrategy;
   readonly initialMessage?: ThreadLaunchInitialMessage;
   readonly importedNativeThread?: {
@@ -764,6 +765,9 @@ const make = Effect.gen(function* () {
                 modelSelection: input.modelSelection,
                 runtimeMode: input.runtimeMode,
                 interactionMode: input.interactionMode,
+                ...(input.workflowProfileId === undefined
+                  ? {}
+                  : { workflowProfileId: input.workflowProfileId }),
                 branch: initialBranch,
                 worktreePath: initialWorktreePath,
                 ...(input.importedNativeThread === undefined

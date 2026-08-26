@@ -36,10 +36,14 @@ describe("buildT3ProjectFileJsonSchema", () => {
       "defaultThreadEnvMode",
       "iconPath",
       "scripts",
+      "workflowsDirectory",
     ]);
     expect(schema.required).toBeUndefined();
     expect(schema.properties.iconPath?.description).toContain("Workspace-relative path");
     expect(schema.properties.defaultThreadEnvMode?.description).toContain("new threads start");
+    expect(schema.properties.workflowsDirectory?.description).toContain(
+      'Defaults to ".t3/workflows"',
+    );
 
     const script = schema.properties.scripts?.items;
     expect(script?.required).toEqual(["name", "command"]);

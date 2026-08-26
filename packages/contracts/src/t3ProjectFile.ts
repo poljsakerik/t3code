@@ -80,6 +80,15 @@ export const T3ProjectFile = Schema.Struct({
         'Where new threads start for this repository: "worktree" for a fresh git worktree, "local" for the current checkout. A per-project setting in T3 Code overrides this; when neither is set, the global default applies.',
     }),
   ),
+  workflowsDirectory: Schema.optionalKey(
+    trimmedNonEmpty(
+      {
+        description:
+          'Workspace-relative directory containing workflow "agents" and "profiles" directories. Defaults to ".t3/workflows".',
+      },
+      T3_PROJECT_FILE_PATH_MAX_LENGTH,
+    ),
+  ),
   scripts: Schema.optionalKey(
     Schema.Array(T3ProjectFileScript)
       .annotate({

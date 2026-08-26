@@ -14,6 +14,7 @@ import {
   type OrchestrationV2DelegatedCompletionDelivery,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ExecutionNode,
+  type OrchestrationV2PlanArtifact,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2Run,
@@ -25,9 +26,11 @@ import {
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
   ProviderInstanceId,
+  workflowAgentModelSelection,
   type ProviderSessionId,
   RunId,
   ThreadId,
+  type WorkflowStatus,
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import * as Context from "effect/Context";
@@ -66,6 +69,7 @@ import {
   subagentThreadTitle,
 } from "./SubagentProjection.ts";
 import { ThreadForkServiceV2 } from "./ThreadForkService.ts";
+import { WorkflowConfigService } from "../workflows/WorkflowConfigService.ts";
 
 export class OrchestratorDispatchError extends Schema.TaggedErrorClass<OrchestratorDispatchError>()(
   "OrchestratorDispatchError",
@@ -154,6 +158,14 @@ export function canReplayCommandReceipt(
   commandThreadId: ThreadId,
 ): boolean {
   return receiptThreadId === commandThreadId;
+}
+
+export function isProposedPlanImplementable(input: {
+  readonly planStatus: OrchestrationV2PlanArtifact["status"];
+  readonly workflowStatus: WorkflowStatus | null | undefined;
+}): boolean {
+  if (input.planStatus === "active") return true;
+  return input.workflowStatus === "planned" && input.planStatus === "completed";
 }
 
 export const OrchestratorV2Error = Schema.Union([
@@ -245,6 +257,7 @@ function commandThreadId(command: OrchestrationV2Command): ThreadId {
     case "thread.interaction-mode.set":
     case "thread.model-selection.set":
     case "provider-session.detach":
+    case "workflow.update":
     case "message.dispatch":
     case "prepared-run.release":
     case "prepared-run.progress":
@@ -533,6 +546,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const providerSwitchService = yield* ProviderSwitchServiceV2;
   const runtimePolicy = yield* RuntimePolicyV2;
   const threadForkService = yield* ThreadForkServiceV2;
+  const workflowConfigs = yield* Effect.serviceOption(WorkflowConfigService);
   const threadDispatch = yield* makeKeyedSerialExecutor<ThreadId>();
 
   const mapDispatchError =
@@ -1332,6 +1346,36 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
 
     const now = yield* DateTime.now;
+    const workflowConfig =
+      command.workflowProfileId === undefined
+        ? undefined
+        : yield* Option.match(workflowConfigs, {
+            onNone: () =>
+              Effect.fail(
+                new OrchestratorDispatchError({
+                  commandId: command.commandId,
+                  commandType: command.type,
+                  cause: "Workflow configuration is unavailable.",
+                }),
+              ),
+            onSome: (service) =>
+              service
+                .resolveProfile({
+                  projectId: command.projectId,
+                  profileId: command.workflowProfileId!,
+                })
+                .pipe(mapDispatchError(command)),
+          });
+    const workflowProfile = workflowConfig?.profile;
+    const plannerSelection = workflowProfile?.planner
+      ? workflowProfile.planner.providerInstanceId !== undefined &&
+        workflowProfile.planner.model !== undefined
+        ? {
+            instanceId: workflowProfile.planner.providerInstanceId,
+            model: workflowProfile.planner.model,
+          }
+        : command.modelSelection
+      : command.modelSelection;
     const emitEvent = emit(events, command);
     const thread: OrchestrationV2AppThread = {
       createdBy: command.createdBy,
@@ -1339,13 +1383,33 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       id: command.threadId,
       projectId: command.projectId,
       title: command.title,
-      providerInstanceId: command.modelSelection.instanceId,
-      modelSelection: command.modelSelection,
+      providerInstanceId: plannerSelection.instanceId,
+      modelSelection: plannerSelection,
       runtimeMode: command.runtimeMode,
       interactionMode: command.interactionMode,
       branch: command.branch,
       worktreePath: command.worktreePath,
       activeProviderThreadId: null,
+      workflow:
+        workflowConfig === undefined
+          ? null
+          : {
+              profileId: workflowConfig.profile.id,
+              workspaceRoot: workflowConfig.workspaceRoot,
+              profile: workflowConfig.profile,
+              status: "draft",
+              revision: 0,
+              revisionCycles: 0,
+              consecutiveFailureCount: 0,
+              lastFailureFingerprint: null,
+              approvedPlanId: null,
+              candidateRunId: null,
+              workspaceDigest: null,
+              checks: [],
+              reviews: [],
+              terminalReason: null,
+              updatedAt: DateTime.formatIso(now),
+            },
       lineage: {
         parentThreadId: null,
         relationshipToParent: null,
@@ -1366,7 +1430,69 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     yield* emitEvent({
       type: "thread.created",
       threadId: command.threadId,
-      providerInstanceId: command.modelSelection.instanceId,
+      providerInstanceId: plannerSelection.instanceId,
+      occurredAt: now,
+      payload: thread,
+    });
+  });
+
+  const dispatchWorkflowUpdate = Effect.fn("orchestrationV2.dispatch.workflowUpdate")(function* (
+    command: Extract<OrchestrationV2Command, { readonly type: "workflow.update" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    if (command.createdBy !== "system" || command.creationSource !== "server") {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "Workflow state can only be advanced by the server coordinator.",
+      });
+    }
+    const projection = yield* projectionStore
+      .getThreadProjection(command.threadId)
+      .pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+        ),
+      );
+    const current = projection.thread.workflow ?? null;
+    if (current === null) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Thread ${command.threadId} is not a workflow thread.`,
+      });
+    }
+    if (
+      command.expectedStatus !== undefined &&
+      command.expectedStatus !== null &&
+      current.status !== command.expectedStatus
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Workflow ${command.threadId} is ${current.status}, expected ${command.expectedStatus}.`,
+      });
+    }
+    if (command.workflow.profileId !== current.profileId) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "Workflow profile cannot change after thread creation.",
+      });
+    }
+    const now = yield* DateTime.now;
+    const thread: OrchestrationV2AppThread = {
+      ...projection.thread,
+      workflow: command.workflow,
+      updatedAt: now,
+    };
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "thread.workflow-updated",
+      threadId: command.threadId,
+      providerInstanceId: thread.providerInstanceId,
       occurredAt: now,
       payload: thread,
     });
@@ -1683,6 +1809,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ...(command.title === undefined ? {} : { title: command.title }),
             ...(command.branch === undefined ? {} : { branch: command.branch }),
             ...(command.worktreePath === undefined ? {} : { worktreePath: command.worktreePath }),
+            ...(command.worktreePath && thread.workflow
+              ? {
+                  workflow: {
+                    ...thread.workflow,
+                    workspaceRoot: command.worktreePath,
+                    updatedAt: DateTime.formatIso(now),
+                  },
+                }
+              : {}),
             // regenerateTitle: true arms the in-flight marker; a landing title
             // or an explicit false (generation failed/abandoned) clears it.
             ...(command.regenerateTitle === true
@@ -2939,7 +3074,124 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ]);
         projection = yield* getProjectionWithPendingEvents(command.threadId, events);
       }
-      const modelSelection = command.modelSelection ?? projection.thread.modelSelection;
+      let workflowPromptPrefix = "";
+      let workflowModelSelection: ModelSelection | undefined;
+      const workflow = projection.thread.workflow ?? null;
+      if (workflow !== null && workflow.profile !== undefined) {
+        if (workflow.status === "draft") {
+          const now = yield* DateTime.now;
+          const nextWorkflow = {
+            ...workflow,
+            status: "planning" as const,
+            updatedAt: DateTime.formatIso(now),
+          };
+          const thread: OrchestrationV2AppThread = {
+            ...projection.thread,
+            workflow: nextWorkflow,
+            interactionMode: "plan",
+            updatedAt: now,
+          };
+          yield* emit(
+            events,
+            command,
+          )({
+            type: "thread.workflow-updated",
+            threadId: command.threadId,
+            providerInstanceId: thread.providerInstanceId,
+            occurredAt: now,
+            payload: thread,
+          });
+          projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+          workflowModelSelection = workflowAgentModelSelection(workflow.profile.planner);
+          workflowPromptPrefix = `${workflow.profile.planner.instructions}\n\nThis is the planning phase of a verified workflow. Clarify material choices with A/B/C options and finish with one proposed plan. Do not modify the workspace.\n\nUser request:\n`;
+        } else if (
+          (workflow.status === "planning" || workflow.status === "planned") &&
+          command.sourcePlanRef !== undefined
+        ) {
+          const now = yield* DateTime.now;
+          const nextWorkflow = {
+            ...workflow,
+            status: "implementing" as const,
+            revision: workflow.revision + 1,
+            approvedPlanId: command.sourcePlanRef.planId,
+            checks: [],
+            reviews: [],
+            terminalReason: null,
+            updatedAt: DateTime.formatIso(now),
+          };
+          const implementerSelection = workflowAgentModelSelection(workflow.profile.implementer);
+          const selected =
+            implementerSelection ?? command.modelSelection ?? projection.thread.modelSelection;
+          const thread: OrchestrationV2AppThread = {
+            ...projection.thread,
+            workflow: nextWorkflow,
+            providerInstanceId: selected.instanceId,
+            modelSelection: selected,
+            interactionMode: "default",
+            updatedAt: now,
+          };
+          yield* emit(
+            events,
+            command,
+          )({
+            type: "thread.workflow-updated",
+            threadId: command.threadId,
+            providerInstanceId: selected.instanceId,
+            occurredAt: now,
+            payload: thread,
+          });
+          projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+          workflowModelSelection = implementerSelection;
+          workflowPromptPrefix = `${workflow.profile.implementer.instructions}\n\nImplement the approved plan completely. T3 Code will run the configured deterministic checks and independent reviewers after this turn.\n\n`;
+        } else if (
+          workflow.status === "needs_human" &&
+          command.createdBy === "user" &&
+          command.creationSource !== "server"
+        ) {
+          const now = yield* DateTime.now;
+          const resumesPlanning = workflow.approvedPlanId === null;
+          const nextWorkflow = {
+            ...workflow,
+            status: resumesPlanning ? ("planning" as const) : ("revising" as const),
+            revision: resumesPlanning ? workflow.revision : workflow.revision + 1,
+            consecutiveFailureCount: 0,
+            lastFailureFingerprint: null,
+            terminalReason: null,
+            updatedAt: DateTime.formatIso(now),
+          };
+          const workflowAgent = resumesPlanning
+            ? workflow.profile.planner
+            : workflow.profile.implementer;
+          const resumedSelection = workflowAgentModelSelection(workflowAgent);
+          const selected =
+            resumedSelection ?? command.modelSelection ?? projection.thread.modelSelection;
+          const thread: OrchestrationV2AppThread = {
+            ...projection.thread,
+            workflow: nextWorkflow,
+            providerInstanceId: selected.instanceId,
+            modelSelection: selected,
+            interactionMode: resumesPlanning ? "plan" : "default",
+            updatedAt: now,
+          };
+          yield* emit(
+            events,
+            command,
+          )({
+            type: "thread.workflow-updated",
+            threadId: command.threadId,
+            providerInstanceId: selected.instanceId,
+            occurredAt: now,
+            payload: thread,
+          });
+          projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+          workflowModelSelection = resumedSelection;
+          workflowPromptPrefix = resumesPlanning
+            ? `${workflow.profile.planner.instructions}\n\nThe planning phase required human guidance. Use the user's guidance, clarify any remaining material choices with A/B/C options, and finish with one proposed plan. Do not modify the workspace.\n\nUser guidance:\n`
+            : `${workflow.profile.implementer.instructions}\n\nThe workflow required human guidance. Apply the user's guidance and finish the implementation; all deterministic checks and reviewers will run again.\n\nUser guidance:\n`;
+        }
+      }
+      const modelSelection =
+        workflowModelSelection ?? command.modelSelection ?? projection.thread.modelSelection;
       const dispatchMode = command.dispatchMode;
       let delegatedCompletion:
         | OrchestrationV2ConversationMessage["delegatedCompletion"]
@@ -2982,9 +3234,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         };
       }
       const dispatchText =
-        delegatedCompletion === undefined
+        workflowPromptPrefix +
+        (delegatedCompletion === undefined
           ? command.text
-          : delegatedCompletionWakeDetail(delegatedCompletion.taskIds);
+          : delegatedCompletionWakeDetail(delegatedCompletion.taskIds));
       const sourcePlanProjection =
         command.sourcePlanRef === undefined
           ? null
@@ -3012,11 +3265,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Proposed plan ${command.sourcePlanRef?.planId} belongs to a different project.`,
         });
       }
-      if (sourcePlan !== null && sourcePlan.status !== "active") {
+      const sourceWorkflowStatus =
+        command.sourcePlanRef?.threadId === command.threadId
+          ? workflow?.status
+          : sourcePlanProjection?.thread.workflow?.status;
+      if (
+        sourcePlan !== null &&
+        !isProposedPlanImplementable({
+          planStatus: sourcePlan.status,
+          workflowStatus: sourceWorkflowStatus,
+        })
+      ) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
-          cause: `Proposed plan ${sourcePlan.id} is not active.`,
+          cause: `Proposed plan ${sourcePlan.id} cannot be implemented from status ${sourcePlan.status}.`,
         });
       }
       const completeSourcePlan = (occurredAt: DateTime.Utc) =>
@@ -6805,6 +7068,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         );
         break;
       }
+      case "workflow.update":
+        yield* dispatchWorkflowUpdate(command, events);
+        break;
       case "thread.archive":
       case "thread.unarchive":
       case "thread.delete":

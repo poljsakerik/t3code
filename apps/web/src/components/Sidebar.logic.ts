@@ -239,6 +239,7 @@ type ThreadStatusInput = Pick<
 > & {
   lastVisitedAt?: string | null | undefined;
   pendingBackgroundTasks?: SidebarThreadSummary["pendingBackgroundTasks"] | undefined;
+  workflow?: SidebarThreadSummary["workflow"] | undefined;
 };
 
 export interface ThreadJumpHintVisibilityController {
@@ -869,7 +870,7 @@ export function resolveThreadStatusPill(input: {
     !thread.hasPendingUserInput &&
     thread.interactionMode === "plan" &&
     isLatestRunSettled(thread.latestRun, thread.runtime) &&
-    thread.hasActionableProposedPlan;
+    (thread.hasActionableProposedPlan || thread.workflow?.status === "planned");
   if (hasPlanReadyPrompt) {
     return {
       label: "Plan Ready",

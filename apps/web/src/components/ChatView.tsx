@@ -2618,7 +2618,10 @@ function ChatViewContent(props: ChatViewProps) {
     pendingUserInputCount: pendingUserInputs.length,
     interactionMode,
     latestTurnSettled: latestRunSettled,
-    hasActionableProposedPlan: hasActionableProposedPlan(activeProposedPlan),
+    hasActionableProposedPlan: hasActionableProposedPlan(
+      activeProposedPlan,
+      serverProjection?.thread.workflow?.status,
+    ),
     hasComposerAttachments: composerHasAttachments,
   });
   const activePendingApproval = pendingApprovals[0] ?? null;
@@ -6420,6 +6423,9 @@ function ChatViewContent(props: ChatViewProps) {
                       interactionMode,
                       branch: activeThreadBranch,
                       worktreePath: activeThread.worktreePath,
+                      ...(draftThread?.workflowProfileId === undefined
+                        ? {}
+                        : { workflowProfileId: draftThread.workflowProfileId }),
                       createdAt: activeThread.createdAt,
                     },
                   }

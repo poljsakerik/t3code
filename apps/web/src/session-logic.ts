@@ -9,6 +9,7 @@ import {
   type PlanId,
   type RunId,
   type ThreadId,
+  type WorkflowStatus,
 } from "@t3tools/contracts";
 import type { ThreadCheckpointSummary } from "@t3tools/client-runtime/state/thread-checkpoints";
 import type {
@@ -416,8 +417,12 @@ export function findSidebarProposedPlan(input: {
   return findLatestProposedPlan(activeProjection ?? null, input.latestRun?.runId);
 }
 
-export function hasActionableProposedPlan(plan: LatestProposedPlanState | null): boolean {
-  return plan?.status === "active";
+export function hasActionableProposedPlan(
+  plan: LatestProposedPlanState | null,
+  workflowStatus?: WorkflowStatus | null,
+): boolean {
+  if (plan?.status === "active") return true;
+  return workflowStatus === "planned" && plan?.status === "completed";
 }
 
 const STANDALONE_V2_ITEM_TYPES = new Set<OrchestrationV2ProjectedTurnItem["item"]["type"]>([

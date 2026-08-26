@@ -65,6 +65,7 @@ export interface ThreadLaunchInput {
   readonly modelSelection: ModelSelection;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
+  readonly workflowProfileId?: string;
   readonly workspaceStrategy: ThreadLaunchWorkspaceStrategy;
   readonly initialMessage?: ThreadLaunchInitialMessage;
   readonly createdBy: OrchestrationV2Actor;
@@ -485,6 +486,9 @@ export const make = Effect.gen(function* () {
                 modelSelection: input.modelSelection,
                 runtimeMode: input.runtimeMode,
                 interactionMode: input.interactionMode,
+                ...(input.workflowProfileId === undefined
+                  ? {}
+                  : { workflowProfileId: input.workflowProfileId }),
                 branch: initialBranch,
                 worktreePath: initialWorktreePath,
                 createdBy: input.createdBy,

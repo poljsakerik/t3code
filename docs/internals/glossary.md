@@ -81,6 +81,10 @@ The current materialized view of orchestration state. In [the contracts][1], it 
 
 A side-effecting service that handles follow-up work after events or runtime signals. Examples include [CheckpointReactor.ts][6], [ProviderCommandReactor.ts][12], and [ProviderRuntimeIngestion.ts][5].
 
+#### Verified workflow
+
+An opt-in thread lifecycle that requires an approved plan, configured deterministic checks, and unanimous configured agent review before reaching `done`. Its state is durable and separate from ordinary thread runtime status. See [verified-workflows.md](verified-workflows.md).
+
 #### Receipt
 
 A typed signal emitted when an async milestone completes, such as `checkpoint.baseline.captured`, `checkpoint.diff.finalized`, or `turn.processing.quiesced`. Receipts are a test-only mechanism: the production `RuntimeReceiptBusLive` publish is a no-op and only the test layer is PubSub-backed. Do not build production behavior on them. See [RuntimeReceiptBus.ts][13] and [CheckpointReactor.ts][6].

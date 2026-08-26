@@ -1209,6 +1209,31 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Plan Ready", pulse: false });
   });
 
+  it("shows plan ready for a settled workflow in the planned state", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          hasActionableProposedPlan: false,
+          workflow: {
+            profileId: "default",
+            status: "planned",
+            revision: 0,
+            blockingFindingCount: 0,
+            terminalReason: null,
+            updatedAt: "2026-06-20T00:01:00.000Z",
+          },
+          latestRun: makeLatestRun(),
+          runtime: {
+            ...baseThread.runtime,
+            status: "completed",
+            activeRunId: null,
+          },
+        },
+      }),
+    ).toMatchObject({ label: "Plan Ready", pulse: false });
+  });
+
   it("does not manufacture completed state without a client visit marker", () => {
     expect(
       resolveThreadStatusPill({

@@ -7,6 +7,7 @@ import { ProjectionProjectRepositoryLive } from "../persistence/Layers/Projectio
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { layer as projectServiceLayer } from "../project/ProjectService.ts";
 import { layer as projectSetupScriptRunnerLayer } from "../project/ProjectSetupScriptRunner.ts";
+import { layer as t3ProjectFileLoaderLayer } from "../project/T3ProjectFileLoader.ts";
 import { layer as checkpointCaptureServiceLayer } from "./CheckpointCaptureService.ts";
 import { layer as checkpointServiceLayer } from "./CheckpointService.ts";
 import { layer as checkpointRollbackServiceLayer } from "./CheckpointRollbackService.ts";
@@ -45,12 +46,21 @@ import { layer as threadLifecycleServiceLayer } from "./ThreadLifecycleService.t
 import { layer as threadForkServiceLayer } from "./ThreadForkService.ts";
 import { layer as turnItemPositionStoreLayer } from "./TurnItemPositionStore.ts";
 import { layer as scheduledTaskServiceLayer } from "../scheduledTasks/ScheduledTaskService.ts";
+import { layer as workflowConfigServiceLayer } from "../workflows/WorkflowConfigService.ts";
+import { live as workflowCoordinatorLive } from "../workflows/WorkflowCoordinator.ts";
+import { layer as workspacePathsLayer } from "../workspace/WorkspacePaths.ts";
+import * as ProcessRunner from "../processRunner.ts";
 
 export const ProjectServiceLayerLive = projectServiceLayer.pipe(
   Layer.provide(Layer.merge(ProjectionProjectRepositoryLive, OrchestrationLayerLive)),
 );
 const runtimePolicyProvided = runtimePolicyLayerFromProjectRepository.pipe(
   Layer.provide(ProjectionProjectRepositoryLive),
+);
+const workflowConfigServiceProvided = workflowConfigServiceLayer.pipe(
+  Layer.provide(
+    Layer.mergeAll(ProjectionProjectRepositoryLive, t3ProjectFileLoaderLayer, workspacePathsLayer),
+  ),
 );
 
 const eventStoreProvided = eventStoreLayer.pipe(
@@ -178,6 +188,7 @@ const orchestratorProvided = orchestratorLayer.pipe(
       providerSwitchServiceProvided,
       runExecutionServiceProvided,
       threadForkServiceLayer,
+      workflowConfigServiceProvided,
     ),
   ),
 );
@@ -242,6 +253,9 @@ const providerRuntimeRecoveryProvided = providerRuntimeRecoveryLayer.pipe(
     ),
   ),
 );
+const workflowCoordinatorProvided = workflowCoordinatorLive.pipe(
+  Layer.provide(Layer.merge(threadManagementProvided, ProcessRunner.layer)),
+);
 
 export const OrchestrationV2LayerLive = Layer.mergeAll(
   orchestratorProvided,
@@ -261,4 +275,5 @@ export const OrchestrationV2ProductionLayerLive = Layer.mergeAll(
   threadLifecycleProvided,
   scheduledTaskProvided,
   providerContinuationWorkerProvided,
+  workflowCoordinatorProvided,
 );

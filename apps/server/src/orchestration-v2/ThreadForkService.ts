@@ -69,6 +69,10 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
           id: input.targetThreadId,
           title: input.title ?? `${input.sourceProjection.thread.title} fork`,
           activeProviderThreadId: null,
+          // A fork is an ordinary exploratory thread unless a workflow is
+          // explicitly created for it. Reviewer forks must never recursively
+          // run the source workflow.
+          workflow: null,
           lineage: {
             parentThreadId: input.sourceProjection.thread.id,
             relationshipToParent: "fork",

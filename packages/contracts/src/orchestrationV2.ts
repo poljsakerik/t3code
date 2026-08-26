@@ -46,6 +46,7 @@ import {
 } from "./providerPolicy.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { OrchestrationProjectShell } from "./orchestrationProject.ts";
+import { ThreadWorkflowState, ThreadWorkflowSummary, WorkflowStatus } from "./workflow.ts";
 
 export const OrchestrationV2Actor = Schema.Literals(["user", "agent", "system"]);
 export type OrchestrationV2Actor = typeof OrchestrationV2Actor.Type;
@@ -305,6 +306,8 @@ export const OrchestrationV2AppThread = Schema.Struct({
       pre-linking servers still decode. */
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
+  /** Absent/null for ordinary threads. Workflow configuration is snapshotted at creation. */
+  workflow: Schema.optional(Schema.NullOr(ThreadWorkflowState)),
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   lineage: OrchestrationV2AppThreadLineage,
   forkedFrom: Schema.NullOr(
@@ -1137,6 +1140,7 @@ export const OrchestrationV2DomainEvent = Schema.Union([
       "thread.interaction-mode-updated",
       "thread.model-selection-updated",
       "thread.provider-switched",
+      "thread.workflow-updated",
     ]),
     payload: OrchestrationV2AppThread,
   }),
@@ -1319,6 +1323,8 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   latestVisibleMessage: Schema.NullOr(OrchestrationV2LatestVisibleMessageSummary),
   latestUserMessageAt: Schema.NullOr(Schema.DateTimeUtc),
   hasActionableProposedPlan: Schema.Boolean,
+  /** Lightweight workflow state for status presentation; null for ordinary threads. */
+  workflow: Schema.optional(Schema.NullOr(ThreadWorkflowSummary)),
   // Normalized post-settlement background work for sidebar Waiting pills.
   // Empty when the latest root run is still active or no pending work remains.
   pendingBackgroundTasks: Schema.optional(Schema.Array(OrchestrationV2PendingBackgroundTask)).pipe(
@@ -1876,6 +1882,7 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
       "thread.interaction-mode-updated",
       "thread.model-selection-updated",
       "thread.provider-switched",
+      "thread.workflow-updated",
     ]),
     payload: OrchestrationV2AppThreadJson,
   }),
@@ -2002,6 +2009,7 @@ export const OrchestrationV2Command = Schema.Union([
     interactionMode: ProviderInteractionMode,
     branch: Schema.NullOr(TrimmedNonEmptyString),
     worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+    workflowProfileId: Schema.optional(TrimmedNonEmptyString),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.archive"),
@@ -2130,6 +2138,14 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     modelSelection: ModelSelection,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("workflow.update"),
+    ...OrchestrationV2CreationFields,
+    commandId: CommandId,
+    threadId: ThreadId,
+    expectedStatus: Schema.optional(Schema.NullOr(WorkflowStatus)),
+    workflow: ThreadWorkflowState,
   }),
   Schema.Struct({
     type: Schema.Literal("provider-session.detach"),
@@ -2383,6 +2399,7 @@ export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  workflowProfileId: Schema.optional(TrimmedNonEmptyString),
   workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
   initialMessage: Schema.optional(
     Schema.Struct({

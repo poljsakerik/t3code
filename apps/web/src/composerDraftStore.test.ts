@@ -1288,6 +1288,40 @@ describe("composerDraftStore project draft thread mapping", () => {
     expect(draftByKey(draftId)).toBeUndefined();
   });
 
+  it("defers cleanup of a previous empty draft until a route handoff completes", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectRef, draftId, { threadId });
+
+    store.setLogicalProjectDraftThreadId(scopedProjectKey(projectRef), projectRef, otherDraftId, {
+      threadId: otherThreadId,
+      deferPreviousDraftCleanup: true,
+    });
+
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectRef(projectRef)?.threadId).toBe(
+      otherThreadId,
+    );
+    expect(useComposerDraftStore.getState().getDraftThread(draftId)?.threadId).toBe(threadId);
+
+    store.cleanupDraftThreadIfUnused(draftId);
+
+    expect(useComposerDraftStore.getState().getDraftThread(draftId)).toBeNull();
+  });
+
+  it("keeps a deferred draft when the user adds content during the route handoff", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectRef, draftId, { threadId });
+    store.setLogicalProjectDraftThreadId(scopedProjectKey(projectRef), projectRef, otherDraftId, {
+      threadId: otherThreadId,
+      deferPreviousDraftCleanup: true,
+    });
+
+    store.setPrompt(draftId, "keep this work");
+    store.cleanupDraftThreadIfUnused(draftId);
+
+    expect(useComposerDraftStore.getState().getDraftThread(draftId)?.threadId).toBe(threadId);
+    expect(draftByKey(draftId)?.prompt).toBe("keep this work");
+  });
+
   it("keeps invested composer drafts alive unmapped when remapping a project to a new draft thread", () => {
     const store = useComposerDraftStore.getState();
     store.setProjectDraftThreadId(projectRef, draftId, { threadId });

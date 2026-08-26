@@ -21,6 +21,7 @@ import {
   deriveTimelineEntriesFromVisibleTurnItems,
   deriveRevertTurnCountByUserMessageId,
   findLatestProposedPlan,
+  hasActionableProposedPlan,
   isLatestRunSettled,
   providerErrorPresentation,
   type TimelineEntry,
@@ -158,6 +159,21 @@ describe("V2 session presentation", () => {
       runId,
     );
     expect(plan?.planMarkdown).toBe("Plan");
+  });
+
+  it("treats a completed proposed plan as actionable only for a planned workflow", () => {
+    const completedPlan = {
+      id: PlanId.make("plan-completed"),
+      createdAt: "2026-06-20T00:00:00.000Z",
+      updatedAt: "2026-06-20T00:01:00.000Z",
+      runId: RunId.make("run-completed"),
+      planMarkdown: "Plan",
+      status: "completed" as const,
+    };
+
+    expect(hasActionableProposedPlan(completedPlan)).toBe(false);
+    expect(hasActionableProposedPlan(completedPlan, "planning")).toBe(false);
+    expect(hasActionableProposedPlan(completedPlan, "planned")).toBe(true);
   });
 
   it("assigns run rollback to the turn-start message instead of a later steer", () => {

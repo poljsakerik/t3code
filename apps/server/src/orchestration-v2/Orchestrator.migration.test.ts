@@ -5,6 +5,7 @@ import { ContextHandoffId, OrchestrationV2Command, ThreadId } from "@t3tools/con
 import {
   appendContextHandoffId,
   canReplayCommandReceipt,
+  isProposedPlanImplementable,
   shouldPrepareLegacyImportHandoff,
 } from "./Orchestrator.ts";
 
@@ -96,5 +97,19 @@ it("links and unlinks a pull request through thread.metadata.update (#8160)", ()
   assert.strictEqual(
     (unlinked as Extract<typeof unlinked, { type: "thread.metadata.update" }>).linkedPullRequest,
     null,
+  );
+});
+
+it("allows completed plans only through the planned workflow lifecycle", () => {
+  assert.isTrue(isProposedPlanImplementable({ planStatus: "active", workflowStatus: null }));
+  assert.isTrue(
+    isProposedPlanImplementable({ planStatus: "completed", workflowStatus: "planned" }),
+  );
+  assert.isFalse(isProposedPlanImplementable({ planStatus: "completed", workflowStatus: null }));
+  assert.isFalse(
+    isProposedPlanImplementable({ planStatus: "completed", workflowStatus: "planning" }),
+  );
+  assert.isFalse(
+    isProposedPlanImplementable({ planStatus: "superseded", workflowStatus: "planned" }),
   );
 });

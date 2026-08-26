@@ -343,6 +343,7 @@ describe("V2 environment commands", () => {
             interactionMode: "default",
             branch: "feature",
             worktreePath: "/workspace/project-worktrees/feature",
+            workflowProfileId: "default",
             createdAt: "2026-06-20T00:00:00.000Z",
           },
         },
@@ -352,6 +353,7 @@ describe("V2 environment commands", () => {
         threadId: v2ThreadId,
         title: "Continue here",
         generateTitle: true,
+        workflowProfileId: "default",
         workspaceStrategy: {
           type: "existing_worktree",
           worktreePath: "/workspace/project-worktrees/feature",

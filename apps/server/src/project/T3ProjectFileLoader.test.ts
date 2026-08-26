@@ -37,6 +37,7 @@ it.layer(TestLayer)("T3ProjectFileLoader", (it) => {
           `{
             // JSONC is tolerated
             "iconPath": "assets/logo.svg",
+            "workflowsDirectory": "config/workflows",
             "scripts": [{ "name": "Dev", "command": "pnpm dev" }],
           }`,
         );
@@ -46,6 +47,7 @@ it.layer(TestLayer)("T3ProjectFileLoader", (it) => {
         expect(Option.isSome(loaded)).toBe(true);
         if (Option.isSome(loaded)) {
           expect(loaded.value.iconPath).toBe("assets/logo.svg");
+          expect(loaded.value.workflowsDirectory).toBe("config/workflows");
           expect(loaded.value.scripts).toEqual([{ name: "Dev", command: "pnpm dev" }]);
         }
       }),

@@ -1,5 +1,10 @@
-import { assert, it } from "@effect/vitest";
-import { ORCHESTRATION_PROTOCOL_VERSION } from "@t3tools/contracts";
+import { assert, describe, expect, it } from "@effect/vitest";
+import {
+  CommandId,
+  ORCHESTRATION_PROTOCOL_VERSION,
+  ProjectId,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -7,6 +12,7 @@ import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 
 import {
+  buildThreadLaunchServiceInput,
   hasCompatibleOrchestrationProtocol,
   resolveAvailableEditorsForConfig,
   shouldUseBoundedThreadSnapshot,
@@ -24,6 +30,28 @@ it("accepts only the current orchestration protocol before websocket RPC setup",
       new URL(`https://host.test/ws?orchestrationProtocol=${ORCHESTRATION_PROTOCOL_VERSION - 1}`),
     ),
   );
+});
+
+describe("buildThreadLaunchServiceInput", () => {
+  it("preserves verified workflow launch metadata", () => {
+    const input = buildThreadLaunchServiceInput({
+      commandId: CommandId.make("launch-workflow"),
+      projectId: ProjectId.make("project-1"),
+      title: "Fix downloads",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+      runtimeMode: "full-access",
+      interactionMode: "plan",
+      workflowProfileId: "default",
+      workspaceStrategy: { type: "root" },
+    });
+
+    expect(input).toMatchObject({
+      workflowProfileId: "default",
+      interactionMode: "plan",
+      createdBy: "user",
+      creationSource: "web",
+    });
+  });
 });
 
 it("keeps full thread snapshot fallback unless the client opts into bounded history", () => {

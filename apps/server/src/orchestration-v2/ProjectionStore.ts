@@ -1093,6 +1093,8 @@ function messageIdForTurnItem(item: OrchestrationV2TurnItem): string | null {
   switch (item.type) {
     case "user_message":
     case "assistant_message":
+    case "workflow_instruction":
+    case "workflow_candidate_message":
       return item.messageId;
     default:
       return null;
@@ -4909,6 +4911,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 FROM orchestration_v2_projection_messages message
                 WHERE message.thread_id = t.thread_id
                   AND message.role = 'user'
+                  AND json_extract(message.payload_json, '$.createdBy') = 'user'
+                  AND json_extract(message.payload_json, '$.creationSource') <> 'server'
                 ORDER BY message.updated_at DESC, message.message_id DESC
                 LIMIT 1
               ) AS latest_user_message_at,

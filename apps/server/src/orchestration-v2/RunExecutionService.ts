@@ -776,6 +776,11 @@ export const layer: Layer.Layer<
     return RunExecutionServiceV2.of({
       startRootRun: (input) =>
         Effect.gen(function* () {
+          const workflowCandidateRunId =
+            input.appThread.workflow?.status === "implementing" ||
+            input.appThread.workflow?.status === "revising"
+              ? input.run.id
+              : undefined;
           // Startup failure and stream shutdown can report the same attempt.
           const refreshAfterTurn = yield* Effect.cached(
             finalizationObserver.refreshAfterTurn(input.appThread.projectId).pipe(
@@ -1183,6 +1188,7 @@ export const layer: Layer.Layer<
                     runId: input.run.id,
                     nodeId: input.rootNode.id,
                     event: deliveredEvent,
+                    ...(workflowCandidateRunId === undefined ? {} : { workflowCandidateRunId }),
                     ...(isRootProviderThreadUpdate
                       ? rootTerminalAlreadySeen
                         ? {

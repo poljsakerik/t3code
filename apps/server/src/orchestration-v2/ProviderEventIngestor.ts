@@ -6,6 +6,7 @@ import {
   type OrchestrationV2PlanArtifact,
   type OrchestrationV2Run,
   type OrchestrationV2ProviderTurn,
+  type OrchestrationV2TurnItem,
   type ModelSelection,
   type RuntimeMode,
   type ProviderInteractionMode,
@@ -202,6 +203,8 @@ export interface ProviderEventIngestInput {
   readonly runId?: RunId;
   readonly nodeId?: NodeId;
   readonly rawEventId?: RawEventId;
+  /** Root workflow implementation output remains internal until the gates approve it. */
+  readonly workflowCandidateRunId?: RunId;
   readonly event: ProviderAdapterV2Event;
   readonly analyticsContext?: ProviderTurnAnalyticsContext;
 }
@@ -412,16 +415,28 @@ export const layer: Layer.Layer<
                 nodeId: input.event.message.nodeId,
               }),
             ];
-          case "turn_item.updated":
+          case "turn_item.updated": {
+            const providerItem = input.event.turnItem;
+            const turnItem =
+              providerItem.type === "assistant_message" &&
+              providerItem.threadId === input.threadId &&
+              providerItem.runId === input.workflowCandidateRunId &&
+              providerItem.nodeId === input.nodeId
+                ? ({
+                    ...providerItem,
+                    type: "workflow_candidate_message",
+                  } satisfies OrchestrationV2TurnItem)
+                : providerItem;
             return [
               yield* makeDomainEvent(input, {
                 type: "turn-item.updated",
-                threadId: input.event.turnItem.threadId,
-                payload: input.event.turnItem,
-                runId: input.event.turnItem.runId,
-                nodeId: input.event.turnItem.nodeId,
+                threadId: turnItem.threadId,
+                payload: turnItem,
+                runId: turnItem.runId,
+                nodeId: turnItem.nodeId,
               }),
             ];
+          }
           case "runtime_request.updated":
             return [
               yield* makeDomainEvent(input, {

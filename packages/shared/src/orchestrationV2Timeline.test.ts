@@ -17,6 +17,19 @@ describe.each([
       createOrchestrationV2TurnItemVisibility(input)(input.item),
   ],
 ] as const)("%s timeline visibility", (_, isVisible) => {
+  it("keeps coordinator instructions and unapproved candidate output out of the transcript", () => {
+    for (const type of ["workflow_instruction", "workflow_candidate_message"] as const) {
+      expect(
+        isVisible({
+          item: { type, runId, nodeId },
+          runs: [{ id: runId, status: "completed" }],
+          attempts: [],
+          items: [{ type, runId, nodeId }],
+        }),
+      ).toBe(false);
+    }
+  });
+
   it("hides unpaired interruption results from superseded attempts", () => {
     expect(
       isVisible({

@@ -359,12 +359,18 @@ function itemIsToolLike(item: OrchestrationV2TurnItem): boolean {
     item.type === "approval_request" ||
     item.type === "user_input_request" ||
     item.type === "dynamic_tool" ||
-    item.type === "subagent"
+    item.type === "subagent" ||
+    item.type === "workflow_verification"
   );
 }
 
 function itemIsProminent(item: OrchestrationV2TurnItem): boolean {
-  return item.type === "fork" || item.type === "thread_created" || item.type === "system_notice";
+  return (
+    item.type === "fork" ||
+    item.type === "thread_created" ||
+    item.type === "system_notice" ||
+    item.type === "workflow_verification"
+  );
 }
 
 function itemStatus(item: OrchestrationV2TurnItem): ThreadFeedActivity["status"] {
@@ -373,6 +379,10 @@ function itemStatus(item: OrchestrationV2TurnItem): ThreadFeedActivity["status"]
     if (item.status === "failed")
       return item.failure.class === "usage_limit" ? "neutral" : "failure";
     return item.status === "completed" ? "success" : "neutral";
+  }
+  if (item.type === "workflow_verification") {
+    if (item.phase === "changes_requested" || item.phase === "needs_human") return "failure";
+    return item.phase === "approved" ? "success" : "neutral";
   }
   if (!itemIsToolLike(item)) return null;
   if (item.status === "failed") return "failure";
@@ -431,6 +441,8 @@ function itemIcon(item: OrchestrationV2TurnItem): ThreadFeedActivity["icon"] {
     case "user_input_request":
     case "user_message":
     case "assistant_message":
+    case "workflow_instruction":
+    case "workflow_candidate_message":
       return "message";
     case "dynamic_tool":
       return "wrench";
@@ -449,6 +461,7 @@ function itemIcon(item: OrchestrationV2TurnItem): ThreadFeedActivity["icon"] {
     case "checkpoint":
     case "proposed_plan":
     case "todo_list":
+    case "workflow_verification":
       return "check";
     case "compaction":
     case "handoff":
@@ -472,6 +485,19 @@ function itemSummary(
   if (item.type === "notification") return item.summary;
   if (item.type === "system_notice") return item.message;
   if (item.type === "compaction") return contextCompactionLabel(item);
+  if (item.type === "workflow_verification") {
+    const action =
+      item.phase === "approved"
+        ? "Verified"
+        : item.phase === "changes_requested"
+          ? "Changes requested for"
+          : item.phase === "needs_human"
+            ? "Needs help on"
+            : item.phase === "reviewing"
+              ? "Reviewing"
+              : "Checking";
+    return `${action} revision ${item.revision}`;
+  }
   const title =
     (item.type === "dynamic_tool" ? computerUseToolTitle(item.toolName, item.input) : undefined) ??
     item.title?.trim();
@@ -518,6 +544,10 @@ function itemSummary(
       return "User message";
     case "assistant_message":
       return "Assistant message";
+    case "workflow_instruction":
+      return "Workflow instruction";
+    case "workflow_candidate_message":
+      return "Workflow candidate response";
   }
 }
 
@@ -565,7 +595,17 @@ function itemPreview(item: OrchestrationV2TurnItem): string | null {
       return `${item.steps.filter((step) => step.status === "completed").length}/${item.steps.length} completed`;
     case "user_message":
     case "assistant_message":
+    case "workflow_instruction":
+    case "workflow_candidate_message":
       return item.text || null;
+    case "workflow_verification": {
+      const passedChecks = item.checks.filter((check) => check.passed).length;
+      const approvals = item.reviews.filter(
+        (review) => review.review?.verdict === "approve",
+      ).length;
+      const counts = `${passedChecks}/${item.configuredChecks.length} checks · ${approvals}/${item.reviewerLabels.length} approvals`;
+      return item.terminalReason ? `${counts} · ${item.terminalReason}` : counts;
+    }
   }
 }
 

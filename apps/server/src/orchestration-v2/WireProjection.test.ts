@@ -88,6 +88,44 @@ describe("orchestration V2 wire projection", () => {
     expect(JSON.stringify(shell).length).toBeLessThan(2_000);
   });
 
+  it("does not treat server-authored workflow instructions as human activity", () => {
+    const humanAt = DateTime.makeUnsafe("2026-08-13T00:00:00.000Z");
+    const instructionAt = DateTime.makeUnsafe("2026-08-13T00:01:00.000Z");
+    const threadId = ThreadId.make("thread-workflow-activity");
+    const projection = {
+      thread: {
+        id: threadId,
+        workflow: null,
+      },
+      messages: [
+        {
+          id: MessageId.make("message-human"),
+          role: "user",
+          createdBy: "user",
+          creationSource: "web",
+          updatedAt: humanAt,
+        },
+        {
+          id: MessageId.make("message-workflow-instruction"),
+          role: "user",
+          createdBy: "system",
+          creationSource: "server",
+          updatedAt: instructionAt,
+        },
+      ],
+      runs: [],
+      runtimeRequests: [],
+      providerSessions: [],
+      providerThreads: [],
+      turnItems: [],
+      visibleTurnItems: [],
+      plans: [],
+      updatedAt: instructionAt,
+    } as unknown as OrchestrationV2ThreadProjection;
+
+    expect(threadShellFromProjection(projection).latestUserMessageAt).toEqual(humanAt);
+  });
+
   it("summarizes oversized dynamic tool results without mutating persistence data", () => {
     const output = { content: [{ type: "text", text: "first line\n" + "x".repeat(100_000) }] };
     const item = { ...base, output } satisfies OrchestrationV2TurnItem;

@@ -753,6 +753,85 @@ describe("buildThreadFeed", () => {
       },
     ]);
   });
+
+  it("keeps workflow verification rounds visible with check and approval progress", () => {
+    const verification: OrchestrationV2TurnItem = {
+      ...base("item-verification", "2026-06-20T00:00:04.000Z", 3),
+      type: "workflow_verification",
+      status: "running",
+      completedAt: null,
+      title: "Default workflow",
+      profileId: "default",
+      profileName: "Default workflow",
+      revision: 2,
+      phase: "reviewing",
+      configuredChecks: [{ id: "tests", name: "Tests", run: "vp test", timeoutMs: 60_000 }],
+      reviewerLabels: [{ id: "quality", name: "Quality reviewer" }],
+      checks: [
+        {
+          checkId: "tests",
+          name: "Tests",
+          command: "vp test",
+          revision: 2,
+          passed: true,
+          exitCode: 0,
+          timedOut: false,
+          stdout: "passed",
+          stderr: "",
+          startedAt: "2026-06-20T00:00:01.000Z",
+          completedAt: "2026-06-20T00:00:02.000Z",
+        },
+      ],
+      reviews: [],
+      terminalReason: null,
+    };
+
+    const feed = buildThreadFeed([projected(verification, 0)]);
+    const activity = feed[0]?.type === "activity-group" ? feed[0].activities[0] : null;
+
+    expect(feed).toHaveLength(1);
+    expect(activity).toMatchObject({
+      summary: "Reviewing revision 2",
+      detail: "1/1 checks · 0/1 approvals",
+      icon: "check",
+      prominent: true,
+      status: "neutral",
+    });
+
+    const rejectedFeed = buildThreadFeed([
+      projected(
+        {
+          ...verification,
+          phase: "changes_requested",
+          status: "completed",
+          completedAt: verification.updatedAt,
+        },
+        0,
+      ),
+    ]);
+    expect(rejectedFeed.map((entry) => entry.type)).toEqual(["activity-group"]);
+    expect(
+      rejectedFeed[0]?.type === "activity-group" ? rejectedFeed[0].activities[0]?.status : null,
+    ).toBe("failure");
+
+    const completion = {
+      ...assistantMessage(),
+      text: "Implementation complete.",
+    } satisfies OrchestrationV2TurnItem;
+    const approvedFeed = buildThreadFeed([
+      projected(
+        {
+          ...verification,
+          phase: "approved",
+          status: "completed",
+          completedAt: verification.updatedAt,
+        },
+        0,
+      ),
+      projected(completion, 1),
+    ]);
+    expect(approvedFeed.map((entry) => entry.type)).toEqual(["activity-group", "message"]);
+  });
 });
 
 const singleSelectQuestion = {

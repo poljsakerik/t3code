@@ -66,6 +66,77 @@ function makeRow(
   };
 }
 
+function workflowVerificationRow(
+  index: number,
+  phase: "reviewing" | "approved",
+): OrchestrationV2ProjectedTurnItem {
+  const id = TurnItemId.make("workflow-verification-1");
+  const item = {
+    id,
+    type: "workflow_verification",
+    threadId: THREAD,
+    runId: RUN,
+    nodeId: NODE,
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: index + 1,
+    status: phase === "approved" ? ("completed" as const) : ("running" as const),
+    title: "Default verified workflow",
+    profileId: "default",
+    profileName: "Default verified workflow",
+    revision: 1,
+    phase,
+    configuredChecks: [],
+    reviewerLabels: [],
+    checks: [],
+    reviews: [],
+    terminalReason: null,
+    startedAt: NOW,
+    completedAt: phase === "approved" ? NOW : null,
+    updatedAt: NOW,
+  } satisfies OrchestrationV2TurnItem;
+  return {
+    position: index,
+    visibility: "local",
+    sourceThreadId: THREAD,
+    sourceItemId: id,
+    item,
+  };
+}
+
+function workflowCompletionRow(index: number): OrchestrationV2ProjectedTurnItem {
+  const id = TurnItemId.make("workflow-completion-1");
+  const item = {
+    id,
+    type: "assistant_message",
+    threadId: THREAD,
+    runId: RUN,
+    nodeId: NODE,
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: TurnItemId.make("workflow-verification-1"),
+    ordinal: index + 1,
+    status: "completed",
+    title: null,
+    messageId: MessageId.make("workflow-completion-message-1"),
+    text: "Implementation complete.",
+    streaming: false,
+    startedAt: NOW,
+    completedAt: NOW,
+    updatedAt: NOW,
+  } satisfies OrchestrationV2TurnItem;
+  return {
+    position: index,
+    visibility: "local",
+    sourceThreadId: THREAD,
+    sourceItemId: id,
+    item,
+  };
+}
+
 function interruptItem(
   id: string,
   type: "run_interrupt_request" | "run_interrupt_result",
@@ -248,27 +319,34 @@ describe("threadHistoryPaging", () => {
     expect(page.nextCursor).not.toBeNull();
   });
 
-  it("keeps cursor resolution stable when newer items append", () => {
-    const initial = Array.from({ length: 20 }, (_, index) => makeRow(index));
+  it("keeps an existing cursor stable when workflow approval appends the completion message", () => {
+    const initial = [
+      ...Array.from({ length: 20 }, (_, index) => makeRow(index)),
+      workflowVerificationRow(20, "reviewing"),
+    ];
     const recent = selectRecentTimelineWindow({
       items: initial,
       snapshotSequence: 2,
       policy: { maxItems: 5, maxEncodedBytes: 10_000_000 },
     });
     const cursor = recent.nextCursor!;
-    const grown = [...initial, makeRow(20), makeRow(21)];
+    const approved = [
+      ...initial.slice(0, -1),
+      workflowVerificationRow(20, "approved"),
+      workflowCompletionRow(21),
+    ];
     const older = selectHistoryPageFromCursor({
-      items: grown,
+      items: approved,
       cursor,
       snapshotSequence: 5,
       policy: { maxItems: 5, maxEncodedBytes: 10_000_000 },
     });
     expect(older.items.map((row) => row.sourceItemId)).toEqual([
-      "item-10",
       "item-11",
       "item-12",
       "item-13",
       "item-14",
+      "item-15",
     ]);
     expect(older.hasMoreHistory).toBe(true);
   });

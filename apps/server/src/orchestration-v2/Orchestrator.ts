@@ -70,6 +70,11 @@ import {
 } from "./SubagentProjection.ts";
 import { ThreadForkServiceV2 } from "./ThreadForkService.ts";
 import { WorkflowConfigService } from "../workflows/WorkflowConfigService.ts";
+import {
+  verificationStateOfWorkflow,
+  workflowCandidateMessageOfRun,
+  workflowReviewerExecution,
+} from "../workflows/WorkflowVerification.ts";
 
 export class OrchestratorDispatchError extends Schema.TaggedErrorClass<OrchestratorDispatchError>()(
   "OrchestratorDispatchError",
@@ -300,6 +305,45 @@ function pendingThreadTitleGenerationEffect(
 
 function nextTurnItemOrdinal(projection: OrchestrationV2ThreadProjection): number {
   return Math.max(0, ...projection.turnItems.map((item) => item.ordinal)) + 1;
+}
+
+type MessageInputTurnItemBase = Omit<
+  Extract<OrchestrationV2TurnItem, { readonly type: "workflow_instruction" }>,
+  "type" | "messageId" | "text" | "attachments"
+>;
+
+function makeMessageInputTurnItem(input: {
+  readonly base: MessageInputTurnItemBase;
+  readonly messageKind: "conversation" | "workflow_instruction";
+  readonly messageId: MessageId;
+  readonly text: string;
+  readonly attachments: ReadonlyArray<ChatAttachment>;
+  readonly inputIntent: Extract<
+    OrchestrationV2TurnItem,
+    { readonly type: "user_message" }
+  >["inputIntent"];
+  readonly createdBy: OrchestrationV2ConversationMessage["createdBy"];
+  readonly creationSource: OrchestrationV2ConversationMessage["creationSource"];
+}): OrchestrationV2TurnItem {
+  if (input.messageKind === "workflow_instruction") {
+    return {
+      ...input.base,
+      type: "workflow_instruction",
+      messageId: input.messageId,
+      text: input.text,
+      attachments: [...input.attachments],
+    };
+  }
+  return {
+    ...input.base,
+    createdBy: input.createdBy,
+    creationSource: input.creationSource,
+    type: "user_message",
+    messageId: input.messageId,
+    inputIntent: input.inputIntent,
+    text: input.text,
+    attachments: [...input.attachments],
+  };
 }
 
 const WORKSPACE_PREPARATION_INPUT = "Preparing workspace";
@@ -1486,16 +1530,208 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       workflow: command.workflow,
       updatedAt: now,
     };
-    yield* emit(
-      events,
-      command,
-    )({
+    const emitEvent = emit(events, command);
+    yield* emitEvent({
       type: "thread.workflow-updated",
       threadId: command.threadId,
       providerInstanceId: thread.providerInstanceId,
       occurredAt: now,
       payload: thread,
     });
+
+    const workflow = command.workflow;
+    const verificationState = verificationStateOfWorkflow(workflow);
+    const candidateRun =
+      workflow.candidateRunId === null
+        ? undefined
+        : projection.runs.find((run) => run.id === workflow.candidateRunId);
+    const rootNode =
+      candidateRun?.rootNodeId === null || candidateRun?.rootNodeId === undefined
+        ? undefined
+        : projection.nodes.find((node) => node.id === candidateRun.rootNodeId);
+    if (verificationState === null || candidateRun === undefined || rootNode === undefined) {
+      return;
+    }
+
+    const verificationItemId = idAllocator.derive.workflowVerificationTurnItem({
+      threadId: command.threadId,
+      revision: verificationState.revision,
+    });
+    const existingVerification = projection.turnItems.find(
+      (item) => item.id === verificationItemId && item.type === "workflow_verification",
+    );
+    const parentProviderTurn = providerTurnForRun(projection, candidateRun);
+    const verificationItem: OrchestrationV2TurnItem = {
+      id: verificationItemId,
+      threadId: command.threadId,
+      runId: candidateRun.id,
+      nodeId: rootNode.id,
+      providerThreadId: candidateRun.providerThreadId,
+      providerTurnId: parentProviderTurn?.id ?? null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: existingVerification?.ordinal ?? nextTurnItemOrdinal(projection),
+      status: verificationState.itemStatus,
+      title: workflow.profile?.name ?? workflow.profileId,
+      startedAt: existingVerification?.startedAt ?? now,
+      completedAt: verificationState.terminal ? (existingVerification?.completedAt ?? now) : null,
+      updatedAt: now,
+      type: "workflow_verification",
+      profileId: workflow.profileId,
+      profileName: workflow.profile?.name ?? workflow.profileId,
+      revision: verificationState.revision,
+      phase: verificationState.phase,
+      configuredChecks: [...(workflow.profile?.checks ?? [])],
+      reviewerLabels:
+        workflow.profile?.reviewers.map((reviewer) => ({
+          id: reviewer.id,
+          name: reviewer.name,
+        })) ?? [],
+      checks: [...workflow.checks],
+      reviews: [...workflow.reviews],
+      terminalReason: workflow.terminalReason,
+    };
+    yield* emitEvent({
+      type: "turn-item.updated",
+      threadId: command.threadId,
+      runId: candidateRun.id,
+      nodeId: rootNode.id,
+      providerInstanceId: candidateRun.providerInstanceId,
+      occurredAt: now,
+      payload: verificationItem,
+    });
+
+    if (verificationState.phase === "approved") {
+      const candidateMessage = workflowCandidateMessageOfRun(projection.turnItems, candidateRun.id);
+      if (candidateMessage !== undefined) {
+        const completionItemId = idAllocator.derive.workflowCompletionTurnItem({
+          threadId: command.threadId,
+          revision: verificationState.revision,
+        });
+        const existingCompletion = projection.turnItems.find(
+          (item) => item.id === completionItemId && item.type === "assistant_message",
+        );
+        const completionItem: OrchestrationV2TurnItem = {
+          id: completionItemId,
+          threadId: command.threadId,
+          runId: candidateRun.id,
+          nodeId: candidateMessage.nodeId ?? rootNode.id,
+          providerThreadId: candidateMessage.providerThreadId,
+          providerTurnId: candidateMessage.providerTurnId,
+          nativeItemRef: null,
+          parentItemId: verificationItem.id,
+          ordinal:
+            existingCompletion?.ordinal ??
+            Math.max(nextTurnItemOrdinal(projection), verificationItem.ordinal + 1),
+          status: "completed",
+          title: null,
+          startedAt: existingCompletion?.startedAt ?? now,
+          completedAt: existingCompletion?.completedAt ?? now,
+          updatedAt: now,
+          type: "assistant_message",
+          messageId: candidateMessage.messageId,
+          text: candidateMessage.text,
+          streaming: false,
+        };
+        yield* emitEvent({
+          type: "turn-item.updated",
+          threadId: command.threadId,
+          runId: candidateRun.id,
+          nodeId: candidateMessage.nodeId ?? rootNode.id,
+          providerInstanceId: candidateRun.providerInstanceId,
+          occurredAt: now,
+          payload: completionItem,
+        });
+      }
+    }
+
+    for (const review of workflow.reviews) {
+      const reviewer = workflow.profile?.reviewers.find(
+        (candidate) => candidate.id === review.reviewerId,
+      );
+      const modelSelection =
+        (reviewer === undefined ? undefined : workflowAgentModelSelection(reviewer)) ??
+        projection.thread.modelSelection;
+      const adapter = yield* providerAdapters.get(modelSelection.instanceId).pipe(
+        Effect.mapError(
+          (cause) =>
+            new OrchestratorProviderAdapterError({
+              commandId: command.commandId,
+              providerInstanceId: modelSelection.instanceId,
+              cause,
+            }),
+        ),
+      );
+      const reviewerNodeId = idAllocator.derive.workflowReviewerNode({
+        threadId: command.threadId,
+        revision: review.revision,
+        reviewerId: review.reviewerId,
+      });
+      const existingTask = projection.subagents.find((task) => task.id === reviewerNodeId);
+      const existingNode = projection.nodes.find((node) => node.id === reviewerNodeId);
+      const execution = workflowReviewerExecution(review);
+      const status = execution.status;
+      const completedAt = status === "running" ? null : (existingTask?.completedAt ?? now);
+      const reviewerNode: OrchestrationV2ExecutionNode = {
+        id: reviewerNodeId,
+        threadId: command.threadId,
+        runId: candidateRun.id,
+        parentNodeId: rootNode.id,
+        rootNodeId: rootNode.id,
+        kind: "subagent",
+        status,
+        countsForRun: false,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        runtimeRequestId: null,
+        checkpointScopeId: null,
+        startedAt: existingNode?.startedAt ?? now,
+        completedAt,
+      };
+      const task: OrchestrationV2Subagent = {
+        id: reviewerNodeId,
+        threadId: command.threadId,
+        runId: candidateRun.id,
+        parentNodeId: rootNode.id,
+        origin: "app_owned",
+        createdBy: "system",
+        driver: adapter.driver,
+        providerInstanceId: modelSelection.instanceId,
+        providerThreadId: null,
+        childThreadId: review.reviewerThreadId,
+        nativeTaskRef: null,
+        prompt: `Review revision ${review.revision} of verified workflow ${workflow.profileId}.`,
+        title: reviewer?.name ?? review.reviewerId,
+        role: "Reviewer",
+        model: modelSelection.model,
+        status,
+        result: execution.result,
+        startedAt: existingTask?.startedAt ?? now,
+        completedAt,
+        updatedAt: now,
+      };
+      yield* emitEvent({
+        type: "node.updated",
+        threadId: command.threadId,
+        runId: candidateRun.id,
+        nodeId: reviewerNodeId,
+        driver: adapter.driver,
+        providerInstanceId: modelSelection.instanceId,
+        occurredAt: now,
+        payload: reviewerNode,
+      });
+      yield* emitEvent({
+        type: "subagent.updated",
+        threadId: command.threadId,
+        runId: candidateRun.id,
+        nodeId: reviewerNodeId,
+        driver: adapter.driver,
+        providerInstanceId: modelSelection.instanceId,
+        occurredAt: now,
+        payload: task,
+      });
+    }
   });
 
   const dispatchThreadMutation = Effect.fn("orchestrationV2.dispatch.threadMutation")(function* (
@@ -2532,32 +2768,39 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             createdAt: now,
             updatedAt: now,
           };
-          const turnItem: OrchestrationV2TurnItem = {
-            createdBy: input.createdBy,
-            creationSource: input.creationSource,
-            id: idAllocator.derive.userTurnItem({ messageId: input.messageId }),
-            threadId: input.command.threadId,
-            runId: messageInput.runId,
-            nodeId: messageInput.nodeId,
-            providerThreadId: messageInput.providerThreadId,
-            providerTurnId: messageInput.providerTurnId,
-            nativeItemRef: null,
-            parentItemId: null,
-            ordinal: nextTurnItemOrdinal(input.projection),
-            status: "completed",
-            title: null,
-            startedAt: now,
-            completedAt: now,
-            updatedAt: now,
-            type: "user_message",
+          const turnItem = makeMessageInputTurnItem({
+            base: {
+              id: idAllocator.derive.userTurnItem({ messageId: input.messageId }),
+              threadId: input.command.threadId,
+              runId: messageInput.runId,
+              nodeId: messageInput.nodeId,
+              providerThreadId: messageInput.providerThreadId,
+              providerTurnId: messageInput.providerTurnId,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: nextTurnItemOrdinal(input.projection),
+              status: "completed",
+              title: null,
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+            },
+            messageKind:
+              input.command.type === "message.dispatch"
+                ? (input.command.messageKind ?? "conversation")
+                : "conversation",
             messageId: input.messageId,
             inputIntent:
-              input.command.type === "queued-message.promote-to-steer"
-                ? "promoted_queued_to_steer"
-                : "steer",
+              input.command.type === "message.dispatch" && input.command.inputIntent !== undefined
+                ? input.command.inputIntent
+                : input.command.type === "queued-message.promote-to-steer"
+                  ? "promoted_queued_to_steer"
+                  : "steer",
             text: input.text,
             attachments: input.attachments,
-          };
+            createdBy: input.createdBy,
+            creationSource: input.creationSource,
+          });
           yield* emitEvent({
             type: "message.updated",
             threadId: input.command.threadId,
@@ -3002,6 +3245,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) =>
     Effect.gen(function* () {
+      if (
+        command.messageKind === "workflow_instruction" &&
+        (command.createdBy !== "system" || command.creationSource !== "server")
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Workflow instructions can only be dispatched by the server coordinator.",
+        });
+      }
       let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
       if (projection.thread.settledOverride !== null) {
         const now = yield* DateTime.now;
@@ -3724,29 +3977,31 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           updatedAt: now,
           ...(delegatedCompletion === undefined ? {} : { delegatedCompletion }),
         };
-        const turnItem: OrchestrationV2TurnItem = {
-          createdBy: command.createdBy,
-          creationSource: command.creationSource,
-          id: idAllocator.derive.userTurnItem({ messageId: command.messageId }),
-          threadId: command.threadId,
-          runId,
-          nodeId: rootNodeId,
-          providerThreadId,
-          providerTurnId: null,
-          nativeItemRef: null,
-          parentItemId: null,
-          ordinal: nextTurnItemOrdinal(projection),
-          status: "completed",
-          title: null,
-          startedAt: now,
-          completedAt: now,
-          updatedAt: now,
-          type: "user_message",
+        const turnItem = makeMessageInputTurnItem({
+          base: {
+            id: idAllocator.derive.userTurnItem({ messageId: command.messageId }),
+            threadId: command.threadId,
+            runId,
+            nodeId: rootNodeId,
+            providerThreadId,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: nextTurnItemOrdinal(projection),
+            status: "completed",
+            title: null,
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+          },
+          messageKind: command.messageKind ?? "conversation",
           messageId: command.messageId,
-          inputIntent: "turn_start",
+          inputIntent: command.inputIntent ?? "turn_start",
           text: dispatchText,
           attachments: command.attachments,
-        };
+          createdBy: command.createdBy,
+          creationSource: command.creationSource,
+        });
         const preparationTurnItem: OrchestrationV2TurnItem | null =
           dispatchMode.type === "defer_start"
             ? {
@@ -4383,29 +4638,31 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         updatedAt: now,
         ...(delegatedCompletion === undefined ? {} : { delegatedCompletion }),
       };
-      const turnItem: OrchestrationV2TurnItem = {
-        createdBy: command.createdBy,
-        creationSource: command.creationSource,
-        id: idAllocator.derive.userTurnItem({ messageId: command.messageId }),
-        threadId: command.threadId,
-        runId,
-        nodeId: rootNodeId,
-        providerThreadId: providerThread.id,
-        providerTurnId: null,
-        nativeItemRef: null,
-        parentItemId: null,
-        ordinal: ordinal * 100,
-        status: "completed",
-        title: null,
-        startedAt: now,
-        completedAt: now,
-        updatedAt: now,
-        type: "user_message",
+      const turnItem = makeMessageInputTurnItem({
+        base: {
+          id: idAllocator.derive.userTurnItem({ messageId: command.messageId }),
+          threadId: command.threadId,
+          runId,
+          nodeId: rootNodeId,
+          providerThreadId: providerThread.id,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: ordinal * 100,
+          status: "completed",
+          title: null,
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+        },
+        messageKind: command.messageKind ?? "conversation",
         messageId: command.messageId,
-        inputIntent: "turn_start",
+        inputIntent: command.inputIntent ?? "turn_start",
         text: dispatchText,
         attachments: command.attachments,
-      };
+        createdBy: command.createdBy,
+        creationSource: command.creationSource,
+      });
       const activeHandoff = portableForkHandoff ?? mergeBackHandoff ?? providerSwitchHandoff;
       const handoffSourceRuns =
         portableForkHandoff !== null
@@ -4420,7 +4677,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const handoffFromModelSelections = Array.from(
         new Map(
           handoffSourceRuns.map((run) => [
-            `${run.modelSelection.instanceId} ${run.modelSelection.model}`,
+            JSON.stringify([run.modelSelection.instanceId, run.modelSelection.model]),
             run.modelSelection,
           ]),
         ).values(),

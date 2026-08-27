@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { classifyTaskAgentKind, type OrchestrationThreadActivity } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import {
   deriveAgentPanelModel,
   foldSubagentActivities,
@@ -8,6 +9,7 @@ import {
   isAgentAttributedToolActivity,
   isSubagentActivityKind,
   isTimelineBypassActivity,
+  projectedSubagentsToRuntime,
   workflowCardMembers,
 } from "./subagentRuntime.ts";
 
@@ -912,5 +914,31 @@ describe("nested agents vs subagent shells", () => {
       }),
     ]);
     expect(agents.map((agent) => agent.id)).toEqual(["nested-1"]);
+  });
+});
+
+describe("projected orchestration subagents", () => {
+  it("preserves app-owned roles for the shared Agents panel", () => {
+    const now = DateTime.makeUnsafe("2026-08-26T12:00:00.000Z");
+    const [reviewer] = projectedSubagentsToRuntime([
+      {
+        id: "reviewer-1",
+        title: "Correctness review",
+        role: "Reviewer",
+        prompt: "Review revision 1.",
+        model: "gpt-5.6",
+        status: "running",
+        result: null,
+        startedAt: now,
+        completedAt: null,
+        updatedAt: now,
+      },
+    ]);
+
+    expect(reviewer).toMatchObject({
+      id: "reviewer-1",
+      role: "Reviewer",
+      status: "running",
+    });
   });
 });

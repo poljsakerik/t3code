@@ -7,6 +7,19 @@ const runId = RunId.make("run:timeline-visibility");
 const nodeId = NodeId.make("node:timeline-visibility");
 
 describe("isOrchestrationV2TurnItemVisible", () => {
+  it("keeps coordinator instructions and unapproved candidate output out of the transcript", () => {
+    for (const type of ["workflow_instruction", "workflow_candidate_message"] as const) {
+      expect(
+        isOrchestrationV2TurnItemVisible({
+          item: { type, runId, nodeId },
+          runs: [{ id: runId, status: "completed" }],
+          attempts: [],
+          items: [{ type, runId, nodeId }],
+        }),
+      ).toBe(false);
+    }
+  });
+
   it("hides unpaired interruption results from superseded attempts", () => {
     expect(
       isOrchestrationV2TurnItemVisible({

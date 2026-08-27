@@ -46,7 +46,14 @@ import {
 } from "./providerPolicy.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { OrchestrationProjectShell } from "./orchestrationProject.ts";
-import { ThreadWorkflowState, ThreadWorkflowSummary, WorkflowStatus } from "./workflow.ts";
+import {
+  ThreadWorkflowState,
+  ThreadWorkflowSummary,
+  WorkflowCheckDefinition,
+  WorkflowCheckResult,
+  WorkflowReviewResult,
+  WorkflowStatus,
+} from "./workflow.ts";
 
 export const OrchestrationV2Actor = Schema.Literals(["user", "agent", "system"]);
 export type OrchestrationV2Actor = typeof OrchestrationV2Actor.Type;
@@ -507,6 +514,7 @@ export const OrchestrationV2Subagent = Schema.Struct({
   nativeTaskRef: Schema.NullOr(OrchestrationV2ProviderRef),
   prompt: Schema.String,
   title: Schema.NullOr(Schema.String),
+  role: Schema.optional(TrimmedNonEmptyString),
   model: Schema.NullOr(Schema.String),
   // Parent-wake policy for app-owned tasks: "always" offers a continuation on
   // every terminal (async delegations; queue_after_active sequences it behind
@@ -866,6 +874,12 @@ export const OrchestrationV2UserMessageInputIntent = Schema.Literals([
 export type OrchestrationV2UserMessageInputIntent =
   typeof OrchestrationV2UserMessageInputIntent.Type;
 
+export const OrchestrationV2MessageDispatchKind = Schema.Literals([
+  "conversation",
+  "workflow_instruction",
+]);
+export type OrchestrationV2MessageDispatchKind = typeof OrchestrationV2MessageDispatchKind.Type;
+
 const OrchestrationV2TurnItemBaseFields = {
   id: TurnItemId,
   threadId: ThreadId,
@@ -911,6 +925,20 @@ export const OrchestrationV2TurnItem = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
     type: Schema.Literal("assistant_message"),
+    messageId: MessageId,
+    text: Schema.String,
+    streaming: Schema.Boolean,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2TurnItemBaseFields,
+    type: Schema.Literal("workflow_instruction"),
+    messageId: MessageId,
+    text: Schema.String,
+    attachments: Schema.Array(ChatAttachment),
+  }),
+  Schema.Struct({
+    ...OrchestrationV2TurnItemBaseFields,
+    type: Schema.Literal("workflow_candidate_message"),
     messageId: MessageId,
     text: Schema.String,
     streaming: Schema.Boolean,
@@ -1068,6 +1096,30 @@ export const OrchestrationV2TurnItem = Schema.Union([
     prompt: Schema.String,
     progress: Schema.optional(Schema.String),
     result: Schema.NullOr(Schema.String),
+  }),
+  Schema.Struct({
+    ...OrchestrationV2TurnItemBaseFields,
+    type: Schema.Literal("workflow_verification"),
+    profileId: TrimmedNonEmptyString,
+    profileName: TrimmedNonEmptyString,
+    revision: NonNegativeInt,
+    phase: Schema.Literals([
+      "checking",
+      "reviewing",
+      "changes_requested",
+      "approved",
+      "needs_human",
+    ]),
+    configuredChecks: Schema.Array(WorkflowCheckDefinition),
+    reviewerLabels: Schema.Array(
+      Schema.Struct({
+        id: TrimmedNonEmptyString,
+        name: TrimmedNonEmptyString,
+      }),
+    ),
+    checks: Schema.Array(WorkflowCheckResult),
+    reviews: Schema.Array(WorkflowReviewResult),
+    terminalReason: Schema.NullOr(Schema.String),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -1598,6 +1650,20 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
+    type: Schema.Literal("workflow_instruction"),
+    messageId: MessageId,
+    text: Schema.String,
+    attachments: Schema.Array(ChatAttachment),
+  }),
+  Schema.Struct({
+    ...OrchestrationV2TurnItemJsonBaseFields,
+    type: Schema.Literal("workflow_candidate_message"),
+    messageId: MessageId,
+    text: Schema.String,
+    streaming: Schema.Boolean,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2TurnItemJsonBaseFields,
     type: Schema.Literal("reasoning"),
     text: Schema.String,
     streaming: Schema.Boolean,
@@ -1746,6 +1812,30 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     prompt: Schema.String,
     progress: Schema.optional(Schema.String),
     result: Schema.NullOr(Schema.String),
+  }),
+  Schema.Struct({
+    ...OrchestrationV2TurnItemJsonBaseFields,
+    type: Schema.Literal("workflow_verification"),
+    profileId: TrimmedNonEmptyString,
+    profileName: TrimmedNonEmptyString,
+    revision: NonNegativeInt,
+    phase: Schema.Literals([
+      "checking",
+      "reviewing",
+      "changes_requested",
+      "approved",
+      "needs_human",
+    ]),
+    configuredChecks: Schema.Array(WorkflowCheckDefinition),
+    reviewerLabels: Schema.Array(
+      Schema.Struct({
+        id: TrimmedNonEmptyString,
+        name: TrimmedNonEmptyString,
+      }),
+    ),
+    checks: Schema.Array(WorkflowCheckResult),
+    reviews: Schema.Array(WorkflowReviewResult),
+    terminalReason: Schema.NullOr(Schema.String),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
@@ -2173,6 +2263,8 @@ export const OrchestrationV2Command = Schema.Union([
         taskIds: Schema.Array(NodeId),
       }),
     ),
+    messageKind: Schema.optional(OrchestrationV2MessageDispatchKind),
+    inputIntent: Schema.optional(OrchestrationV2UserMessageInputIntent),
     dispatchMode: Schema.Union([
       Schema.Struct({ type: Schema.Literal("defer_start") }),
       Schema.Struct({ type: Schema.Literal("steer_active"), targetRunId: RunId }),

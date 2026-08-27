@@ -292,7 +292,11 @@ export const live = Layer.effectDiscard(
       if (failure.terminalReason !== null) {
         yield* markNeedsHuman({
           threadId: input.projection.thread.id,
-          workflow: input.workflow,
+          workflow: {
+            ...input.workflow,
+            checks: [...input.checks],
+            reviews: [...input.reviews],
+          },
           reason: failure.terminalReason,
           key: `${input.workflow.revision}:${failure.fingerprint}`,
         });
@@ -332,7 +336,8 @@ export const live = Layer.effectDiscard(
         attachments: [],
         modelSelection: selection,
         dispatchMode: { type: "start_immediately" },
-        createdBy: "agent",
+        messageKind: "workflow_instruction",
+        createdBy: "system",
         creationSource: "server",
       });
     });
@@ -501,13 +506,32 @@ export const live = Layer.effectDiscard(
         }),
         { concurrency: "unbounded" },
       );
-      if (results.some((result) => result.status === "running")) return;
+      if (results.some((result) => result.status === "running")) {
+        const progressKey = results
+          .map((result) => `${result.reviewerId}:${result.status}`)
+          .join(",");
+        const changed = results.some((result, index) => result !== input.workflow.reviews[index]);
+        if (changed) {
+          const now = yield* DateTime.now;
+          yield* updateWorkflow({
+            threadId: input.projection.thread.id,
+            currentStatus: "reviewing",
+            workflow: {
+              ...input.workflow,
+              reviews: results,
+              updatedAt: DateTime.formatIso(now),
+            },
+            key: `review-progress:${progressKey}`,
+          });
+        }
+        return;
+      }
 
       const digest = yield* workspaceDigest(input.workflow.workspaceRoot);
       if (digest !== input.workflow.workspaceDigest) {
         yield* markNeedsHuman({
           threadId: input.projection.thread.id,
-          workflow: input.workflow,
+          workflow: { ...input.workflow, reviews: results },
           reason: "The implementation workspace changed while reviewers were running.",
           key: `workspace-mutated:${digest}`,
         });

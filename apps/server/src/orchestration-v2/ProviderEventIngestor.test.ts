@@ -244,6 +244,123 @@ layer("ProviderEventIngestorV2", (it) => {
       }),
   );
 
+  it.effect("classifies root implementation output as a workflow candidate item", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const ingestor = yield* ProviderEventIngestorV2;
+      const idAllocator = yield* IdAllocatorV2;
+      const projectId = yield* idAllocator.allocate.project({
+        fixtureName: "provider-event-workflow-candidate",
+      });
+      const threadId = yield* idAllocator.allocate.thread({
+        fixtureName: "provider-event-workflow-candidate",
+        projectId,
+      });
+      const runId = RunId.make("run:provider-event-workflow-candidate");
+      const rootNodeId = NodeId.make("node:provider-event-workflow-candidate");
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      const turnItem: OrchestrationV2TurnItem = {
+        id: TurnItemId.make("item:provider-event-workflow-candidate"),
+        threadId,
+        runId,
+        nodeId: rootNodeId,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 2,
+        status: "completed",
+        title: null,
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+        type: "assistant_message",
+        messageId: MessageId.make("message:provider-event-workflow-candidate"),
+        text: "Implementation complete.",
+        streaming: false,
+      };
+
+      const normalized = yield* ingestor.normalize({
+        providerSessionId,
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+        runId,
+        nodeId: rootNodeId,
+        workflowCandidateRunId: runId,
+        event: { type: "turn_item.updated", driver: CODEX_DRIVER, turnItem },
+      });
+
+      const event = normalized[0];
+      assert.equal(event?.type, "turn-item.updated");
+      if (event?.type !== "turn-item.updated") return assert.fail("Expected turn item event.");
+      assert.equal(event.payload.type, "workflow_candidate_message");
+      if (event.payload.type !== "workflow_candidate_message") {
+        return assert.fail("Expected workflow candidate message.");
+      }
+      assert.equal(event.payload.messageId, turnItem.messageId);
+      assert.equal(event.payload.text, "Implementation complete.");
+    }),
+  );
+
+  it.effect("does not classify nested agent output as the workflow candidate", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const ingestor = yield* ProviderEventIngestorV2;
+      const idAllocator = yield* IdAllocatorV2;
+      const projectId = yield* idAllocator.allocate.project({
+        fixtureName: "provider-event-workflow-nested-agent",
+      });
+      const threadId = yield* idAllocator.allocate.thread({
+        fixtureName: "provider-event-workflow-nested-agent",
+        projectId,
+      });
+      const runId = RunId.make("run:provider-event-workflow-nested-agent");
+      const rootNodeId = NodeId.make("node:provider-event-workflow-root");
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      const turnItem: OrchestrationV2TurnItem = {
+        id: TurnItemId.make("item:provider-event-workflow-nested-agent"),
+        threadId,
+        runId,
+        nodeId: NodeId.make("node:provider-event-workflow-nested-agent"),
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 2,
+        status: "completed",
+        title: null,
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+        type: "assistant_message",
+        messageId: MessageId.make("message:provider-event-workflow-nested-agent"),
+        text: "Nested agent response.",
+        streaming: false,
+      };
+
+      const normalized = yield* ingestor.normalize({
+        providerSessionId,
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+        runId,
+        nodeId: rootNodeId,
+        workflowCandidateRunId: runId,
+        event: { type: "turn_item.updated", driver: CODEX_DRIVER, turnItem },
+      });
+
+      const event = normalized[0];
+      assert.equal(event?.type, "turn-item.updated");
+      if (event?.type !== "turn-item.updated") return assert.fail("Expected turn item event.");
+      assert.equal(event.payload.type, "assistant_message");
+    }),
+  );
+
   it.effect("persists an interrupted run's inherited terminal through the live run router", () =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;

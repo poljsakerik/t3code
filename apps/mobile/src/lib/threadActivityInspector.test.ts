@@ -254,4 +254,89 @@ describe("buildThreadActivityInspector", () => {
       monospaced: false,
     });
   });
+
+  it("exposes workflow verification evidence and finding file links", () => {
+    const item: OrchestrationV2TurnItem = {
+      ...itemBase("workflow-verification"),
+      type: "workflow_verification",
+      profileId: "default",
+      profileName: "Default workflow",
+      revision: 1,
+      phase: "changes_requested",
+      configuredChecks: [{ id: "tests", name: "Tests", run: "vp test", timeoutMs: 60_000 }],
+      reviewerLabels: [{ id: "quality", name: "Quality reviewer" }],
+      checks: [
+        {
+          checkId: "tests",
+          name: "Tests",
+          command: "vp test",
+          revision: 1,
+          passed: true,
+          exitCode: 0,
+          timedOut: false,
+          stdout: "passed",
+          stderr: "",
+          startedAt: "2026-06-20T00:00:00.000Z",
+          completedAt: "2026-06-20T00:00:01.000Z",
+        },
+      ],
+      reviews: [
+        {
+          reviewerId: "quality",
+          reviewerThreadId: ThreadId.make("reviewer-thread"),
+          revision: 1,
+          status: "completed",
+          review: {
+            verdict: "request_changes",
+            summary: "One blocking issue remains.",
+            findings: [
+              {
+                id: "finding-1",
+                severity: "blocking",
+                title: "Missing guard",
+                description: "Validate the input before dispatch.",
+                file: "src/workflow.ts",
+                line: 42,
+                evidence: "The unchecked value reaches the coordinator.",
+              },
+            ],
+          },
+          error: null,
+        },
+      ],
+      terminalReason: null,
+    };
+
+    const model = buildThreadActivityInspector(
+      activityFor(item),
+      EMPTY_V2_ITEM_SUPPORT,
+      sourceThreadId,
+    );
+
+    expect(model.fields).toEqual(
+      expect.arrayContaining([
+        { label: "Profile", value: "Default workflow" },
+        { label: "Revision", value: "1" },
+        { label: "Phase", value: "changes requested" },
+      ]),
+    );
+    expect(model.blocks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: "Deterministic checks",
+          value: expect.stringContaining("✓ Tests"),
+        }),
+        expect.objectContaining({
+          label: "quality · summary",
+          value: "One blocking issue remains.",
+        }),
+        expect.objectContaining({ label: "blocking · Missing guard" }),
+      ]),
+    );
+    expect(model.fileLinks).toContainEqual({
+      label: "src/workflow.ts:42",
+      path: "src/workflow.ts",
+      line: 42,
+    });
+  });
 });

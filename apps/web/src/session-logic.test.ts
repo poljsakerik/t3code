@@ -440,6 +440,76 @@ describe("V2 session presentation", () => {
     }
   });
 
+  it("preserves the server-authored verification then completion order", () => {
+    const now = DateTime.makeUnsafe("2026-06-20T00:00:00.000Z");
+    const threadId = ThreadId.make("thread-workflow");
+    const runId = RunId.make("run-workflow");
+    const completion = {
+      id: TurnItemId.make("item-workflow-completion"),
+      threadId,
+      runId,
+      nodeId: NodeId.make("node-workflow"),
+      providerThreadId: ProviderThreadId.make("provider-thread-workflow"),
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 3,
+      status: "completed" as const,
+      title: null,
+      startedAt: now,
+      completedAt: now,
+      updatedAt: now,
+      type: "assistant_message" as const,
+      messageId: MessageId.make("message-workflow-completion"),
+      text: "Implementation complete.",
+      streaming: false,
+    } satisfies OrchestrationV2TurnItem;
+    const verification = {
+      id: TurnItemId.make("item-workflow-verification"),
+      threadId,
+      runId,
+      nodeId: NodeId.make("node-workflow"),
+      providerThreadId: ProviderThreadId.make("provider-thread-workflow"),
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 2,
+      status: "completed" as const,
+      title: "Default verified workflow",
+      startedAt: now,
+      completedAt: now,
+      updatedAt: now,
+      type: "workflow_verification" as const,
+      profileId: "default",
+      profileName: "Default verified workflow",
+      revision: 1,
+      phase: "approved" as const,
+      configuredChecks: [{ id: "test", name: "Tests", run: "vp test", timeoutMs: 60_000 }],
+      reviewerLabels: [{ id: "correctness", name: "Correctness reviewer" }],
+      checks: [],
+      reviews: [],
+      terminalReason: null,
+    } satisfies OrchestrationV2TurnItem;
+    const visibleTurnItems = [verification, completion].map((item, position) => ({
+      position,
+      visibility: "local" as const,
+      sourceThreadId: threadId,
+      sourceItemId: item.id,
+      item,
+    })) satisfies ReadonlyArray<OrchestrationV2ProjectedTurnItem>;
+
+    const entries = deriveTimelineEntriesFromVisibleTurnItems({
+      visibleTurnItems,
+      optimisticMessages: [],
+    });
+
+    expect(entries).toHaveLength(2);
+    expect(entries[0]?.kind).toBe("event");
+    expect(entries[0]?.id).toBe(verification.id);
+    expect(entries[1]?.kind).toBe("message");
+    expect(entries[1]?.id).toBe(completion.messageId);
+  });
+
   it("waits for a dispatched turn item before adding queued input to the timeline", () => {
     const projection = makeThreadProjectionFixture();
     const now = DateTime.makeUnsafe("2026-06-20T00:00:00.000Z");

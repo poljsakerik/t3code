@@ -1613,6 +1613,101 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("Work Log");
   });
 
+  it("renders structured workflow verification evidence and reviewer links", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "workflow-verification",
+            kind: "event",
+            createdAt: MESSAGE_CREATED_AT,
+            projectedItem: {
+              position: 0,
+              visibility: "local",
+              sourceThreadId: "thread-1",
+              sourceItemId: "workflow-verification",
+              item: {
+                id: "workflow-verification",
+                threadId: "thread-1",
+                runId: "run-1",
+                nodeId: "node-1",
+                providerThreadId: null,
+                providerTurnId: null,
+                nativeItemRef: null,
+                parentItemId: null,
+                ordinal: 2,
+                status: "completed",
+                title: "Default workflow",
+                startedAt: null,
+                completedAt: null,
+                updatedAt: {},
+                type: "workflow_verification",
+                profileId: "default",
+                profileName: "Default workflow",
+                revision: 1,
+                phase: "changes_requested",
+                configuredChecks: [
+                  { id: "tests", name: "Tests", run: "vp test", timeoutMs: 60_000 },
+                ],
+                reviewerLabels: [{ id: "quality", name: "Quality reviewer" }],
+                checks: [
+                  {
+                    checkId: "tests",
+                    name: "Tests",
+                    command: "vp test",
+                    revision: 1,
+                    passed: true,
+                    exitCode: 0,
+                    timedOut: false,
+                    stdout: "passed",
+                    stderr: "",
+                    startedAt: MESSAGE_CREATED_AT,
+                    completedAt: MESSAGE_CREATED_AT,
+                  },
+                ],
+                reviews: [
+                  {
+                    reviewerId: "quality",
+                    reviewerThreadId: "reviewer-thread-1",
+                    revision: 1,
+                    status: "completed",
+                    review: {
+                      verdict: "request_changes",
+                      summary: "One blocking issue remains.",
+                      findings: [
+                        {
+                          id: "finding-1",
+                          severity: "blocking",
+                          title: "Missing guard",
+                          description: "Validate the workflow instruction.",
+                          file: "src/workflow.ts",
+                          line: 42,
+                          evidence: "The unchecked value reaches dispatch.",
+                        },
+                      ],
+                    },
+                    error: null,
+                  },
+                ],
+                terminalReason: null,
+              },
+            } as never,
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-v2-item-type="workflow_verification"');
+    expect(markup).toContain('data-workflow-verification-phase="changes_requested"');
+    expect(markup).toContain("Verification · revision 1");
+    expect(markup).toContain("1/1 checks · 0/1 approvals");
+    expect(markup).toContain("Quality reviewer");
+    expect(markup).toContain("Open reviewer");
+    expect(markup).toContain("Missing guard");
+    expect(markup).toContain("src/workflow.ts:42");
+  });
+
   it("discloses the full Codex subagent result without projecting child events", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(

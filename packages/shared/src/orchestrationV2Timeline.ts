@@ -46,6 +46,9 @@ export function isOrchestrationV2TurnItemVisible(input: {
   readonly items: ReadonlyArray<TimelineTurnItem>;
 }): boolean {
   const { item } = input;
+  if (item.type === "workflow_instruction" || item.type === "workflow_candidate_message") {
+    return false;
+  }
   if (
     item.runId !== null &&
     input.runs.some((run) => run.id === item.runId && run.status === "rolled_back")

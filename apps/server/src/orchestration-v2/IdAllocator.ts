@@ -134,6 +134,19 @@ export interface IdAllocatorV2DeriveShape {
   readonly delegatedTaskThread: (input: { readonly commandId: CommandId }) => ThreadId;
   readonly delegatedTaskMessage: (input: { readonly commandId: CommandId }) => MessageId;
   readonly delegatedTaskTurnItem: (input: { readonly commandId: CommandId }) => TurnItemId;
+  readonly workflowReviewerNode: (input: {
+    readonly threadId: ThreadId;
+    readonly revision: number;
+    readonly reviewerId: string;
+  }) => NodeId;
+  readonly workflowVerificationTurnItem: (input: {
+    readonly threadId: ThreadId;
+    readonly revision: number;
+  }) => TurnItemId;
+  readonly workflowCompletionTurnItem: (input: {
+    readonly threadId: ThreadId;
+    readonly revision: number;
+  }) => TurnItemId;
   readonly createdThreadTurnItem: (input: { readonly commandId: CommandId }) => TurnItemId;
   readonly threadFromProviderThread: (input: {
     readonly driver: ProviderDriverKind;
@@ -358,6 +371,25 @@ export const layer: Layer.Layer<IdAllocatorV2> = Layer.succeed(
         MessageId.make(joinId("message", "delegated-task", input.commandId)),
       delegatedTaskTurnItem: (input) =>
         TurnItemId.make(joinId("turn-item", "delegated-task", input.commandId)),
+      workflowReviewerNode: (input) =>
+        NodeId.make(
+          joinId(
+            "node",
+            "workflow-reviewer",
+            input.threadId,
+            "revision",
+            input.revision,
+            input.reviewerId,
+          ),
+        ),
+      workflowVerificationTurnItem: (input) =>
+        TurnItemId.make(
+          joinId("turn-item", "workflow-verification", input.threadId, "revision", input.revision),
+        ),
+      workflowCompletionTurnItem: (input) =>
+        TurnItemId.make(
+          joinId("turn-item", "workflow-completion", input.threadId, "revision", input.revision),
+        ),
       createdThreadTurnItem: (input) =>
         TurnItemId.make(joinId("turn-item", "created-thread", input.commandId)),
       threadFromProviderThread: (input) =>

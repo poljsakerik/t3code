@@ -260,6 +260,64 @@ export function buildThreadActivityInspector(
       );
       addBlock(blocks, "Explanation", item.explanation, false);
       break;
+    case "workflow_verification": {
+      fields.push(
+        { label: "Profile", value: item.profileName },
+        { label: "Revision", value: String(item.revision) },
+        { label: "Phase", value: item.phase.replaceAll("_", " ") },
+      );
+      addBlock(
+        blocks,
+        "Deterministic checks",
+        item.configuredChecks
+          .map((check) => {
+            const result = item.checks.find((candidate) => candidate.checkId === check.id);
+            const status = result === undefined ? "○" : result.passed ? "✓" : "✕";
+            return `${status} ${check.name}\n${check.run}`;
+          })
+          .join("\n\n"),
+      );
+      for (const check of item.checks) {
+        addBlock(
+          blocks,
+          `${check.passed ? "Passed" : "Failed"} · ${check.name}`,
+          [check.command, check.stdout, check.stderr].filter(Boolean).join("\n\n"),
+        );
+      }
+      addBlock(
+        blocks,
+        "Reviewers",
+        item.reviewerLabels
+          .map((reviewer) => {
+            const result = item.reviews.find((candidate) => candidate.reviewerId === reviewer.id);
+            const verdict = result?.review?.verdict.replaceAll("_", " ");
+            return `${reviewer.name} · ${verdict ?? result?.status ?? "pending"}`;
+          })
+          .join("\n"),
+        false,
+      );
+      for (const review of item.reviews) {
+        addBlock(blocks, `${review.reviewerId} · summary`, review.review?.summary, false);
+        addBlock(blocks, `${review.reviewerId} · error`, review.error, false);
+        for (const finding of review.review?.findings ?? []) {
+          addBlock(
+            blocks,
+            `${finding.severity} · ${finding.title}`,
+            [finding.description, finding.evidence].filter(Boolean).join("\n\n"),
+            false,
+          );
+          if (finding.file) {
+            fileLinks.push({
+              label: finding.line ? `${finding.file}:${finding.line}` : finding.file,
+              path: finding.file,
+              ...(finding.line === undefined ? {} : { line: finding.line }),
+            });
+          }
+        }
+      }
+      addBlock(blocks, "Terminal reason", item.terminalReason, false);
+      break;
+    }
     case "compaction":
       addBlock(blocks, "Summary", item.summary, false);
       if (item.beforeTokenCount !== undefined || item.afterTokenCount !== undefined) {
@@ -277,6 +335,12 @@ export function buildThreadActivityInspector(
     case "thread_created":
     case "user_message":
     case "assistant_message":
+      break;
+    case "workflow_instruction":
+      addBlock(blocks, "Workflow instruction", item.text, false);
+      break;
+    case "workflow_candidate_message":
+      addBlock(blocks, "Workflow candidate response", item.text, false);
       break;
   }
 

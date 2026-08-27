@@ -645,6 +645,8 @@ function turnItemText(item: OrchestrationV2TurnItem): string | null {
       return [item.summary, item.detail].filter((part) => part !== undefined).join("\n");
     case "user_message":
     case "assistant_message":
+    case "workflow_instruction":
+    case "workflow_candidate_message":
     case "reasoning":
       return item.text;
     case "proposed_plan":
@@ -693,6 +695,14 @@ function turnItemText(item: OrchestrationV2TurnItem): string | null {
       return `Created thread ${item.targetThreadId} with ${item.targetProviderInstanceId} (${item.targetModel}).`;
     case "subagent":
       return item.result ?? item.progress ?? item.prompt;
+    case "workflow_verification":
+      return jsonText({
+        revision: item.revision,
+        phase: item.phase,
+        checks: item.checks,
+        reviews: item.reviews,
+        terminalReason: item.terminalReason,
+      });
     case "dynamic_tool":
       return jsonText({ toolName: item.toolName, input: item.input, output: item.output });
   }

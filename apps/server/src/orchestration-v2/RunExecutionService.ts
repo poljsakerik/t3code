@@ -782,6 +782,11 @@ export const layer: Layer.Layer<
                 }),
             ),
           );
+          const workflowCandidateRunId =
+            input.appThread.workflow?.status === "implementing" ||
+            input.appThread.workflow?.status === "revising"
+              ? input.run.id
+              : undefined;
           yield* checkpointService
             .captureBaseline({
               scope: input.checkpointScope,
@@ -1132,6 +1137,7 @@ export const layer: Layer.Layer<
                     runId: input.run.id,
                     nodeId: input.rootNode.id,
                     event: deliveredEvent,
+                    ...(workflowCandidateRunId === undefined ? {} : { workflowCandidateRunId }),
                     ...(isRootProviderThreadUpdate
                       ? rootTerminalAlreadySeen
                         ? {

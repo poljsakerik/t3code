@@ -51,6 +51,7 @@ import {
   codexBackgroundCommandDetail,
   codexProviderTurnTokenUsage,
   codexThreadRuntimeParams,
+  codexWorkflowSkillConfig,
   type CodexAgentMessageDeltaUpdate,
   type CodexAppServerClientFactoryShape,
   makeCodexAdapterV2,
@@ -496,6 +497,30 @@ describe("CodexAdapterV2 runtime policy", () => {
 });
 
 describe("CodexAdapterV2 process spawning", () => {
+  it("builds an exclusive per-thread Codex reviewer skill configuration", () => {
+    assert.deepEqual(
+      codexWorkflowSkillConfig(
+        ["review"],
+        [
+          { name: "review", path: "/skills/review/SKILL.md" },
+          { name: "deploy", path: "/skills/deploy/SKILL.md" },
+        ],
+      ),
+      {
+        skills: {
+          config: [
+            { path: "/skills/review", enabled: true },
+            { path: "/skills/deploy", enabled: false },
+          ],
+        },
+      },
+    );
+    assert.throws(
+      () => codexWorkflowSkillConfig(["missing"], []),
+      /Assigned Codex reviewer skills are unavailable/,
+    );
+  });
+
   it("injects cwd, model, and MCP authorization into thread-scoped params", () => {
     const threadId = ThreadId.make("thread-codex-mcp");
     McpProviderSession.setMcpProviderSession({

@@ -109,6 +109,14 @@ function permissionAction(rules: ReturnType<typeof openCodePermissionRules>, per
     ?.action;
 }
 
+function skillAction(rules: ReturnType<typeof openCodePermissionRules>, skill: string) {
+  return rules.findLast(
+    (rule) =>
+      (rule.permission === "*" || rule.permission === "skill") &&
+      (rule.pattern === "*" || rule.pattern === skill),
+  )?.action;
+}
+
 function providerTurn(input: {
   readonly id: string;
   readonly ordinal: number;
@@ -1099,6 +1107,19 @@ describe("OpenCodeAdapterV2", () => {
       }),
     );
     assert.equal(permissionAction(approvalRequiredWorkspaceWrite, "edit"), "ask");
+  });
+
+  it("hides and rejects every OpenCode skill outside the reviewer allowlist", () => {
+    const rules = openCodePermissionRules(
+      runtimePolicy("full-access", { workflowSkillAllowlist: ["code-review"] }),
+    );
+    assert.equal(skillAction(rules, "code-review"), "allow");
+    assert.equal(skillAction(rules, "deploy"), "deny");
+
+    const noSkills = openCodePermissionRules(
+      runtimePolicy("full-access", { workflowSkillAllowlist: [] }),
+    );
+    assert.equal(skillAction(noSkills, "code-review"), "deny");
   });
 
   it("enforces non-interactive sandbox policy through OpenCode permissions", () => {

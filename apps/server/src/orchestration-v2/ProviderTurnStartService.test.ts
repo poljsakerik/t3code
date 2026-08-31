@@ -23,9 +23,32 @@ import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import { ProviderAdapterV2RuntimePolicy } from "./ProviderAdapter.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+
+it("copies a reviewer's exclusive skill allowlist into the provider runtime policy", () => {
+  const base = ProviderAdapterV2RuntimePolicy.make({
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    cwd: "/workspace",
+  });
+
+  expect(
+    ProviderTurnStart.providerRuntimePolicyForRun(base, {
+      workflowSkillAllowlist: ["code-review"],
+    }).workflowSkillAllowlist,
+  ).toEqual(["code-review"]);
+  expect(
+    ProviderTurnStart.providerRuntimePolicyForRun(base, {
+      workflowSkillAllowlist: [],
+    }).workflowSkillAllowlist,
+  ).toEqual([]);
+  expect(ProviderTurnStart.providerRuntimePolicyForRun(base, {}).workflowSkillAllowlist).toBe(
+    undefined,
+  );
+});
 
 it("does not commit running state when inherited background routing cannot be read", async () => {
   const threadId = ThreadId.make("thread_provider_turn_start_projection_failure");

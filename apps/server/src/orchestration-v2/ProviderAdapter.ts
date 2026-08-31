@@ -50,6 +50,8 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   approvalPolicy: Schema.optional(Schema.Unknown),
   sandboxPolicy: Schema.optional(Schema.Unknown),
   reasoningEffort: Schema.optional(Schema.String),
+  /** Undefined keeps provider defaults; an array is a reviewer's exclusive native allowlist. */
+  workflowSkillAllowlist: Schema.optional(Schema.Array(Schema.String)),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 
@@ -537,6 +539,8 @@ export interface ProviderAdapterV2SessionRuntime {
 export interface ProviderAdapterV2Shape {
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
+  /** Present only when the adapter can hide and reject every unlisted native skill. */
+  readonly workflowSkillIsolation?: "native";
   readonly getCapabilities: () => Effect.Effect<
     OrchestrationV2ProviderCapabilities,
     ProviderAdapterV2Error

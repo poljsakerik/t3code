@@ -72,6 +72,7 @@ import {
   claudeTodoSteps,
   claudeProposedPlan,
   awaitClaudeApprovalDecision,
+  claudeWorkflowSkillFilterError,
   loggedClaudeQueryOptions,
   makeClaudeAdapterV2,
   makeClaudeAgentSdkProtocolLogger,
@@ -95,6 +96,46 @@ const CLAUDE_TEST_RUNTIME_POLICY = ProviderAdapterV2RuntimePolicy.make({
   runtimeMode: "full-access",
   interactionMode: "default",
   cwd: "/workspace",
+});
+
+describe("Claude reviewer skill isolation", () => {
+  it("accepts exact and unqualified matches from Claude's canonical skill inventory", () => {
+    const init = {
+      claude_code_version: "2.1.251",
+      skills: ["code-review", "impeccable:impeccable"],
+    };
+
+    assert.isUndefined(
+      claudeWorkflowSkillFilterError({
+        allowlist: ["code-review", "impeccable"],
+        init,
+      }),
+    );
+  });
+
+  it("rejects unavailable assigned skills before the reviewer prompt is sent", () => {
+    const error = claudeWorkflowSkillFilterError({
+      allowlist: ["impeccable:critique"],
+      init: {
+        claude_code_version: "2.1.251",
+        skills: ["impeccable:impeccable"],
+      },
+    });
+
+    assert.equal(
+      error?.detail,
+      "Assigned Claude reviewer skills are unavailable: impeccable:critique",
+    );
+  });
+
+  it("rejects Claude versions that predate the native context filter", () => {
+    const error = claudeWorkflowSkillFilterError({
+      allowlist: [],
+      init: { claude_code_version: "2.1.119", skills: [] },
+    });
+
+    assert.include(error?.detail ?? "", "cannot enforce reviewer skill isolation");
+  });
 });
 
 function makeClaudeTestAppThread(input: {
@@ -629,8 +670,10 @@ describe("ClaudeAdapterV2 native protocol logging", () => {
         nativeThreadId: "native-thread-claude-mcp",
         resume: false,
         cwd: "/workspace",
+        skills: ["code-review"],
         ...overrides,
       });
+      assert.deepEqual(options.skills, ["code-review"]);
       assert.isObject(options.systemPrompt);
       const systemPrompt = options.systemPrompt as {
         readonly type: string;

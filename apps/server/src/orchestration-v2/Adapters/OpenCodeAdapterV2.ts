@@ -588,6 +588,24 @@ const OPENCODE_RESTRICTED_PERMISSIONS = [
   "doom_loop",
 ] as const;
 
+function withWorkflowSkillIsolation(
+  runtimePolicy: ProviderAdapterV2RuntimePolicy,
+  rules: PermissionRuleset,
+): PermissionRuleset {
+  const allowlist = runtimePolicy.workflowSkillAllowlist;
+  return allowlist === undefined
+    ? rules
+    : [
+        ...rules,
+        { permission: "skill", pattern: "*", action: "deny" },
+        ...allowlist.map((skill) => ({
+          permission: "skill",
+          pattern: skill,
+          action: "allow" as const,
+        })),
+      ];
+}
+
 /**
  * OpenCode does not provide an OS sandbox, so permission rules are also the
  * enforcement boundary for non-interactive policies. Read/planning tools are
@@ -613,7 +631,9 @@ export function openCodePermissionRules(
     sandboxType === undefined && runtimePolicy.runtimeMode === "full-access";
 
   if (!requiresApproval && (externallySandboxed || dangerFullAccess || implicitFullAccess)) {
-    return [{ permission: "*", pattern: "*", action: "allow" }];
+    return withWorkflowSkillIsolation(runtimePolicy, [
+      { permission: "*", pattern: "*", action: "allow" },
+    ]);
   }
 
   // Task sessions initially inherit only parent deny rules. Seed explicit
@@ -678,7 +698,7 @@ export function openCodePermissionRules(
     }
   }
 
-  return rules;
+  return withWorkflowSkillIsolation(runtimePolicy, rules);
 }
 
 function permissionRuleEquals(
@@ -877,6 +897,7 @@ export function makeOpenCodeAdapterV2(options: OpenCodeAdapterV2Options): Provid
   return ProviderAdapterV2.of({
     instanceId: options.instanceId,
     driver: OPENCODE_PROVIDER,
+    workflowSkillIsolation: "native",
     getCapabilities: () => Effect.succeed(OpenCodeProviderCapabilitiesV2),
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
     openSession: Effect.fn("OpenCodeAdapterV2.openSession")(

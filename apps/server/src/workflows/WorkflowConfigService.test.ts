@@ -65,7 +65,7 @@ it.layer(testLayer)("WorkflowConfigService", (it) => {
         [
           writeYaml(
             path.join(globalRoot, "agents", "planner.yaml"),
-            "version: 1\nid: planner\nname: Planner\nrole: planner\ninstructions: Clarify the request.\n",
+            "version: 1\nid: planner\nname: Planner\nrole: planner\nproviderInstanceId: claude-work\nmodel: claude-opus-4-1\ninstructions: Clarify the request.\n",
           ),
           writeYaml(
             path.join(globalRoot, "agents", "implementer.yaml"),
@@ -77,7 +77,7 @@ it.layer(testLayer)("WorkflowConfigService", (it) => {
           ),
           writeYaml(
             path.join(repositoryWorkflowsRoot, "agents", "reviewer.yaml"),
-            "version: 1\nid: reviewer\nname: Repository reviewer\nrole: reviewer\ninstructions: Review repository conventions.\n",
+            "version: 1\nid: reviewer\nname: Repository reviewer\nrole: reviewer\nproviderInstanceId: codex-review\nmodel: gpt-5.6-sol\nskills: [code-review]\ninstructions: Review repository conventions.\n",
           ),
           fs.writeFileString(
             path.join(workspaceRoot, "t3.json"),
@@ -98,8 +98,103 @@ it.layer(testLayer)("WorkflowConfigService", (it) => {
 
       assert.equal(resolved.workspaceRoot, workspaceRoot);
       assert.equal(resolved.profile.reviewers[0]?.name, "Repository reviewer");
+      assert.equal(resolved.profile.planner.providerInstanceId, "claude-work");
+      assert.equal(resolved.profile.planner.model, "claude-opus-4-1");
+      assert.equal(resolved.profile.implementer.providerInstanceId, undefined);
+      assert.equal(resolved.profile.implementer.model, undefined);
+      assert.equal(resolved.profile.reviewers[0]?.providerInstanceId, "codex-review");
+      assert.equal(resolved.profile.reviewers[0]?.model, "gpt-5.6-sol");
+      assert.deepEqual(resolved.profile.reviewers[0]?.skills, ["code-review"]);
       assert.equal(resolved.profile.checks[0]?.timeoutMs, 600_000);
       assert.equal(resolved.profile.limits.maxRevisionCycles, 3);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("requires an agent to select a provider instance and model together", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const config = yield* ServerConfig;
+      const workflows = yield* WorkflowConfigService;
+      const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-workspace-" });
+      const root = path.join(config.stateDir, "workflows");
+
+      yield* Effect.all(
+        [
+          writeYaml(
+            path.join(root, "agents", "planner.yaml"),
+            "version: 1\nid: planner\nname: Planner\nrole: planner\nproviderInstanceId: codex\ninstructions: Plan.\n",
+          ),
+          writeYaml(
+            path.join(root, "agents", "implementer.yaml"),
+            "version: 1\nid: implementer\nname: Implementer\nrole: implementer\ninstructions: Implement.\n",
+          ),
+          writeYaml(
+            path.join(root, "agents", "reviewer.yaml"),
+            "version: 1\nid: reviewer\nname: Reviewer\nrole: reviewer\ninstructions: Review.\n",
+          ),
+          writeYaml(
+            path.join(root, "profiles", "invalid-selection.yaml"),
+            "version: 1\nid: invalid-selection\nname: Invalid selection\nplanner: planner\nimplementer: implementer\nreviewers: [reviewer]\nchecks:\n  - id: test\n    name: Tests\n    run: test-command\nlimits:\n  maxRevisionCycles: 3\n  identicalFailureLimit: 2\n",
+          ),
+        ],
+        { discard: true },
+      );
+
+      const result = yield* Effect.result(
+        workflows.resolveProfile({
+          projectId: ProjectId.make(workspaceRoot),
+          profileId: "invalid-selection",
+        }),
+      );
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.match(result.failure.detail, /must set both providerInstanceId and model/);
+      }
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("rejects skill assignments on non-reviewer agents", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const config = yield* ServerConfig;
+      const workflows = yield* WorkflowConfigService;
+      const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-workspace-" });
+      const root = path.join(config.stateDir, "workflows");
+
+      yield* Effect.all(
+        [
+          writeYaml(
+            path.join(root, "agents", "planner.yaml"),
+            "version: 1\nid: planner\nname: Planner\nrole: planner\nskills: [product-planning]\ninstructions: Plan.\n",
+          ),
+          writeYaml(
+            path.join(root, "agents", "implementer.yaml"),
+            "version: 1\nid: implementer\nname: Implementer\nrole: implementer\ninstructions: Implement.\n",
+          ),
+          writeYaml(
+            path.join(root, "agents", "reviewer.yaml"),
+            "version: 1\nid: reviewer\nname: Reviewer\nrole: reviewer\nskills: [code-review]\ninstructions: Review.\n",
+          ),
+          writeYaml(
+            path.join(root, "profiles", "invalid-skills.yaml"),
+            "version: 1\nid: invalid-skills\nname: Invalid skills\nplanner: planner\nimplementer: implementer\nreviewers: [reviewer]\nchecks:\n  - id: test\n    name: Tests\n    run: test-command\nlimits:\n  maxRevisionCycles: 3\n  identicalFailureLimit: 2\n",
+          ),
+        ],
+        { discard: true },
+      );
+
+      const result = yield* Effect.result(
+        workflows.resolveProfile({
+          projectId: ProjectId.make(workspaceRoot),
+          profileId: "invalid-skills",
+        }),
+      );
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.match(result.failure.detail, /only reviewers support skill allowlists/);
+      }
     }).pipe(Effect.scoped),
   );
 

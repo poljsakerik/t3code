@@ -385,6 +385,7 @@ export const live = Layer.effectDiscard(
         }),
         attachments: [],
         modelSelection: selection,
+        workflowSkillAllowlist: input.reviewer.skills,
         dispatchMode: { type: "start_immediately" },
         createdBy: "agent",
         creationSource: "server",

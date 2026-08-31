@@ -70,6 +70,7 @@ import {
   WorkflowCheckDefinition,
   WorkflowCheckResult,
   WorkflowReviewResult,
+  WorkflowSkillName,
   WorkflowStatus,
 } from "./workflow.ts";
 
@@ -457,6 +458,7 @@ export const OrchestrationV2Run = Schema.Struct({
   ordinal: PositiveInt,
   providerInstanceId: ProviderInstanceId,
   modelSelection: ModelSelection,
+  workflowSkillAllowlist: Schema.optional(Schema.Array(WorkflowSkillName)),
   providerThreadId: Schema.NullOr(ProviderThreadId),
   userMessageId: MessageId,
   rootNodeId: Schema.NullOr(NodeId),
@@ -2479,6 +2481,8 @@ export const OrchestrationV2Command = Schema.Union([
     /** Seed the temporary title and generate a durable replacement for the first message. */
     titleSeed: Schema.optional(TrimmedNonEmptyString),
     modelSelection: Schema.optional(ModelSelection),
+    /** Server-owned native skill allowlist for verified-workflow reviewers. */
+    workflowSkillAllowlist: Schema.optional(Schema.Array(WorkflowSkillName)),
     sourcePlanRef: Schema.optional(Schema.Struct({ threadId: ThreadId, planId: PlanId })),
     restartContinuationOfRunId: Schema.optional(RunId),
     /** Resolve untargeted delivery against the server's serialized thread state. */

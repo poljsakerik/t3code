@@ -29,6 +29,7 @@ import {
 } from "./ContextHandoffService.ts";
 import { IdAllocatorV2 } from "./IdAllocator.ts";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
+import { ProviderAdapterV2RuntimePolicy } from "./ProviderAdapter.ts";
 import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
 import { makeProviderFailure } from "./ProviderFailure.ts";
 import {
@@ -37,6 +38,18 @@ import {
   selectInheritedBackgroundTurnItems,
 } from "./RunExecutionService.ts";
 import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
+
+export function providerRuntimePolicyForRun(
+  base: ProviderAdapterV2RuntimePolicy,
+  run: Pick<OrchestrationV2Run, "workflowSkillAllowlist">,
+): ProviderAdapterV2RuntimePolicy {
+  return ProviderAdapterV2RuntimePolicy.make({
+    ...base,
+    ...(run.workflowSkillAllowlist === undefined
+      ? {}
+      : { workflowSkillAllowlist: [...run.workflowSkillAllowlist] }),
+  });
+}
 
 export class ProviderTurnStartError extends Schema.TaggedError<ProviderTurnStartError>()(
   "ProviderTurnStartError",
@@ -354,10 +367,11 @@ export const layer: Layer.Layer<
           Effect.catchCause(() => Effect.succeed(false)),
         );
 
-      const resolvedRuntimePolicy = yield* runtimePolicy.resolve({
+      const baseRuntimePolicy = yield* runtimePolicy.resolve({
         thread: projection.thread,
         modelSelection: run.modelSelection,
       });
+      const resolvedRuntimePolicy = providerRuntimePolicyForRun(baseRuntimePolicy, run);
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,
       );

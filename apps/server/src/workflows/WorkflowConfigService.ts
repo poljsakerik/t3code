@@ -217,6 +217,14 @@ export const make = Effect.gen(function* () {
           }),
         );
       }
+      if (role !== "reviewer" && agent.skills.length > 0) {
+        return Effect.fail(
+          new WorkflowConfigError({
+            profileId: input.profileId,
+            detail: `agent ${agentId} cannot assign skills because only reviewers support skill allowlists`,
+          }),
+        );
+      }
       return Effect.succeed(agent);
     };
 

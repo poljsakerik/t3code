@@ -54,8 +54,18 @@ version: 1
 id: planner
 name: Product planner
 role: planner
+providerInstanceId: claude-work
+model: claude-opus-4-1
 instructions: Clarify material choices and produce an implementable plan.
 ```
+
+`providerInstanceId` is the provider instance shown in **Settings → Providers**, not merely the provider driver name. This means different agents can use different accounts or installations of the same provider. The model must belong to that instance.
+
+Planner and implementer roles use the provider's normal skill configuration. Reviewer roles accept a `skills` allowlist and receive only those skills in their model-facing catalog. An omitted or empty reviewer list means no skills. Non-empty skill lists are rejected on planner and implementer definitions.
+
+Reviewers use a fresh native provider thread with a portable summary of the implementation instead of inheriting a native thread that may already have loaded skills. Codex, Claude, and OpenCode currently expose the native controls needed to enforce this allowlist. Reviewer turns fail before starting on Cursor and Grok because those integrations do not expose an exclusive per-session skill control. T3 Code does not fall back to prompt instructions that leave the full skill catalog in context.
+
+Skill entries use the provider's canonical names. For example, a plugin that exposes one `impeccable` skill with a `critique` mode is assigned as `impeccable:impeccable`, even when its invocation is `/impeccable critique`. Codex and Claude fail the reviewer before sending its prompt when an assigned skill is unavailable. Claude reviewer allowlists require Claude Code 2.1.120 or newer.
 
 ```yaml
 # agents/implementer.yaml
@@ -72,6 +82,9 @@ version: 1
 id: correctness
 name: Correctness reviewer
 role: reviewer
+skills:
+  - code-review
+  - repository-conventions
 instructions: Review correctness, regressions, and missing tests. Do not edit files.
 ```
 

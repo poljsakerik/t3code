@@ -29,6 +29,12 @@ export type WorkflowStatus = typeof WorkflowStatus.Type;
 export const WorkflowAgentRole = Schema.Literals(["planner", "implementer", "reviewer"]);
 export type WorkflowAgentRole = typeof WorkflowAgentRole.Type;
 
+export const WorkflowSkillName = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(128),
+  Schema.isPattern(/^[A-Za-z][A-Za-z0-9:_-]*$/),
+);
+export type WorkflowSkillName = typeof WorkflowSkillName.Type;
+
 export const WorkflowAgentDefinition = Schema.Struct({
   version: Schema.Literal(1),
   id: TrimmedNonEmptyString,
@@ -36,6 +42,9 @@ export const WorkflowAgentDefinition = Schema.Struct({
   role: WorkflowAgentRole,
   providerInstanceId: Schema.optional(ProviderInstanceId),
   model: Schema.optional(TrimmedNonEmptyString),
+  skills: Schema.Array(WorkflowSkillName)
+    .check(Schema.isMaxLength(20), Schema.isUnique())
+    .pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   instructions: TrimmedNonEmptyString,
 });
 export type WorkflowAgentDefinition = typeof WorkflowAgentDefinition.Type;

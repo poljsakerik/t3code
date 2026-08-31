@@ -68,6 +68,29 @@ import {
 import type { ProviderContinuationRequest } from "../ProviderContinuationRequests.ts";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
 import {
+  buildCodexTurnStartParams,
+  canReuseCodexContextUsage,
+  CODEX_DEFAULT_INSTANCE_ID,
+  CODEX_DRIVER_KIND,
+  CODEX_THREAD_CONFIG,
+  codexBackgroundCommandDetail,
+  codexFileChangeApprovalPrompt,
+  codexProviderTurnTokenUsage,
+  codexSkillMentionText,
+  codexThreadRuntimeParams,
+  CodexAppServerClientFactory,
+  codexAppServerClientFactoryFromSettingsLayer,
+  codexWorkflowSkillConfig,
+  type CodexAppServerClientFactoryShape,
+  createCodexAdapterV2,
+  makeCodexAdapterV2,
+  makeCodexAppServerProtocolLogger,
+  makeCodexAppServerSpawnCommand,
+  projectCodexDynamicToolItem,
+  resolveCodexForkBoundary,
+  resolveCodexRollbackTurnCount,
+} from "./CodexAdapterV2.ts";
+import {
   makeReplayServerConfig,
   makeCodexProviderAdapterRegistryReplayLayer,
   withCodexReplayChildMetadata,
@@ -612,6 +635,30 @@ describe("CodexAdapterV2 runtime policy", () => {
 });
 
 describe("CodexAdapterV2 process spawning", () => {
+  it("builds an exclusive per-thread Codex reviewer skill configuration", () => {
+    assert.deepEqual(
+      codexWorkflowSkillConfig(
+        ["review"],
+        [
+          { name: "review", path: "/skills/review/SKILL.md" },
+          { name: "deploy", path: "/skills/deploy/SKILL.md" },
+        ],
+      ),
+      {
+        skills: {
+          config: [
+            { path: "/skills/review", enabled: true },
+            { path: "/skills/deploy", enabled: false },
+          ],
+        },
+      },
+    );
+    assert.throws(
+      () => codexWorkflowSkillConfig(["missing"], []),
+      /Assigned Codex reviewer skills are unavailable/,
+    );
+  });
+
   it("injects cwd, model, and MCP authorization into thread-scoped params", () => {
     const threadId = ThreadId.make("thread-codex-mcp");
     McpProviderSession.setMcpProviderSession({

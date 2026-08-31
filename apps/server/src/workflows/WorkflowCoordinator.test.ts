@@ -14,6 +14,7 @@ const agent = (id: string, role: "planner" | "implementer" | "reviewer") => ({
   id,
   name: id,
   role,
+  skills: [],
   instructions: `Act as ${role}.`,
 });
 const workflow: ThreadWorkflowState = {

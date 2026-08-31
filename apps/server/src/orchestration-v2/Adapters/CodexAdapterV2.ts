@@ -154,6 +154,7 @@ import {
 } from "../SubagentProjection.ts";
 
 const CODEX_PROVIDER = ProviderDriverKind.make("codex");
+const isProviderAdapterProtocolError = Schema.is(ProviderAdapterProtocolError);
 export const CODEX_DRIVER_KIND = CODEX_PROVIDER;
 export const CODEX_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(CODEX_DRIVER_KIND);
 
@@ -1159,6 +1160,7 @@ export function codexThreadRuntimeParams(input: {
   readonly threadId: ThreadId | null;
   readonly modelSelection?: { readonly model: string };
   readonly runtimePolicy?: ProviderAdapterV2RuntimePolicy;
+  readonly workflowSkillConfig?: Readonly<Record<string, Schema.Json>>;
 }): {
   readonly cwd?: string;
   readonly model?: string;
@@ -1171,6 +1173,7 @@ export function codexThreadRuntimeParams(input: {
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
     config: {
       ...CODEX_THREAD_CONFIG,
+      ...input.workflowSkillConfig,
       ...(mcpSession === undefined
         ? {}
         : {
@@ -1183,6 +1186,29 @@ export function codexThreadRuntimeParams(input: {
               },
             },
           }),
+    },
+  };
+}
+
+export function codexWorkflowSkillConfig(
+  allowlist: ReadonlyArray<string>,
+  skills: ReadonlyArray<Pick<CodexSchema.V2SkillsListResponse__SkillMetadata, "name" | "path">>,
+): Readonly<Record<string, Schema.Json>> {
+  const available = new Set(skills.map((skill) => skill.name));
+  const missing = allowlist.filter((skill) => !available.has(skill));
+  if (missing.length > 0) {
+    throw new ProviderAdapterProtocolError({
+      driver: CODEX_PROVIDER,
+      detail: `Assigned Codex reviewer skills are unavailable: ${missing.join(", ")}`,
+    });
+  }
+  const selected = new Set(allowlist);
+  return {
+    skills: {
+      config: skills.map((skill) => ({
+        path: skill.path.replace(/[\\/]SKILL\.md$/i, ""),
+        enabled: selected.has(skill.name),
+      })),
     },
   };
 }
@@ -1505,6 +1531,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
   return ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CODEX_PROVIDER,
+    workflowSkillIsolation: "native",
     getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
     openSession: (input) =>
@@ -1559,6 +1586,39 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           });
           yield* client.notify("initialized", undefined);
           yield* Ref.set(initialized, true);
+        });
+        const resolveThreadRuntimeParams = Effect.fnUntraced(function* (threadInput: {
+          readonly threadId: ThreadId | null;
+          readonly modelSelection?: { readonly model: string };
+          readonly runtimePolicy?: ProviderAdapterV2RuntimePolicy;
+        }) {
+          const allowlist = threadInput.runtimePolicy?.workflowSkillAllowlist;
+          if (allowlist === undefined) {
+            return codexThreadRuntimeParams(threadInput);
+          }
+          const cwd = threadInput.runtimePolicy?.cwd ?? input.runtimePolicy.cwd;
+          const response = yield* client.request(
+            "skills/list",
+            cwd === null ? {} : { cwds: [cwd] },
+          );
+          const matchingEntry =
+            cwd === null ? undefined : response.data.find((entry) => entry.cwd === cwd);
+          const skills = matchingEntry?.skills ?? response.data.flatMap((entry) => entry.skills);
+          const workflowSkillConfig = yield* Effect.try({
+            try: () => codexWorkflowSkillConfig(allowlist, skills),
+            catch: (cause) =>
+              isProviderAdapterProtocolError(cause)
+                ? cause
+                : new ProviderAdapterProtocolError({
+                    driver: CODEX_PROVIDER,
+                    detail: "Failed to build the Codex reviewer skill configuration",
+                    payload: cause,
+                  }),
+          });
+          return codexThreadRuntimeParams({
+            ...threadInput,
+            workflowSkillConfig,
+          });
         });
         const now = yield* DateTime.now;
         const session = providerSession({
@@ -5334,15 +5394,13 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           ensureThread: (threadInput) =>
             ensureInitialized.pipe(
               Effect.andThen(
-                client.request(
-                  "thread/start",
-                  codexThreadRuntimeParams({
-                    threadId: threadInput.threadId,
-                    modelSelection: threadInput.modelSelection,
-                    runtimePolicy: threadInput.runtimePolicy,
-                  }),
-                ),
+                resolveThreadRuntimeParams({
+                  threadId: threadInput.threadId,
+                  modelSelection: threadInput.modelSelection,
+                  runtimePolicy: threadInput.runtimePolicy,
+                }),
               ),
+              Effect.flatMap((params) => client.request("thread/start", params)),
               Effect.map((response): OrchestrationV2ProviderThread =>
                 providerThreadFromCodexThread({
                   appThreadId: threadInput.threadId,
@@ -5365,26 +5423,24 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           resumeThread: (threadInput) =>
             Effect.gen(function* () {
               const nativeThreadId = yield* getNativeThreadId(threadInput.providerThread);
-
-              const response = yield* ensureInitialized.pipe(
-                Effect.andThen(
-                  // excludeTurns is not in the generated request schema yet.
-                  client.raw.request("thread/resume", {
-                    threadId: nativeThreadId,
-                    excludeTurns: true,
-                    ...codexThreadRuntimeParams({
-                      threadId: threadInput.threadId ?? threadInput.providerThread.appThreadId,
-                      ...(threadInput.modelSelection === undefined
-                        ? {}
-                        : { modelSelection: threadInput.modelSelection }),
-                      ...(threadInput.runtimePolicy === undefined
-                        ? {}
-                        : { runtimePolicy: threadInput.runtimePolicy }),
-                    }),
-                  }),
-                ),
-                Effect.flatMap(decodeCodexResumeMetadata),
-              );
+              yield* ensureInitialized;
+              const params = yield* resolveThreadRuntimeParams({
+                threadId: threadInput.threadId ?? threadInput.providerThread.appThreadId,
+                ...(threadInput.modelSelection === undefined
+                  ? {}
+                  : { modelSelection: threadInput.modelSelection }),
+                ...(threadInput.runtimePolicy === undefined
+                  ? {}
+                  : { runtimePolicy: threadInput.runtimePolicy }),
+              });
+              // excludeTurns is not in the generated request schema yet.
+              const response = yield* client.raw
+                .request("thread/resume", {
+                  threadId: nativeThreadId,
+                  excludeTurns: true,
+                  ...params,
+                })
+                .pipe(Effect.flatMap(decodeCodexResumeMetadata));
               return {
                 ...threadInput.providerThread,
                 providerSessionId: input.providerSessionId,
@@ -6105,24 +6161,25 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             Effect.gen(function* () {
               const threadId = yield* getNativeThreadId(threadInput.sourceProviderThread);
               const boundary = yield* resolveCodexForkBoundary(threadInput);
-              const response = yield* ensureInitialized.pipe(
-                Effect.andThen(
-                  client.request("thread/fork", {
-                    threadId,
-                    ...(boundary.lastTurnId === undefined
-                      ? {}
-                      : { lastTurnId: boundary.lastTurnId }),
-                    ...codexThreadRuntimeParams({
-                      threadId: threadInput.targetThreadId,
-                      ...(threadInput.modelSelection === undefined
-                        ? {}
-                        : { modelSelection: threadInput.modelSelection }),
-                      ...(threadInput.runtimePolicy === undefined
-                        ? {}
-                        : { runtimePolicy: threadInput.runtimePolicy }),
-                    }),
-                  }),
-                ),
+              yield* ensureInitialized;
+              const params = yield* resolveThreadRuntimeParams({
+                threadId: threadInput.targetThreadId,
+                ...(threadInput.modelSelection === undefined
+                  ? {}
+                  : { modelSelection: threadInput.modelSelection }),
+                ...(threadInput.runtimePolicy === undefined
+                  ? {}
+                  : { runtimePolicy: threadInput.runtimePolicy }),
+              });
+              const response = yield* client
+                .request("thread/fork", {
+                  threadId,
+                  ...(boundary.lastTurnId === undefined
+                    ? {}
+                    : { lastTurnId: boundary.lastTurnId }),
+                  ...params,
+                })
+                .pipe(
                 Effect.mapError(
                   (cause) =>
                     new ProviderAdapterForkThreadError({
@@ -6130,8 +6187,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                       providerThreadId: threadInput.sourceProviderThread.id,
                       cause: normalizeCodexCause(cause),
                     }),
-                ),
-              );
+                ));
               let forkedThread = response.thread;
               if (boundary.rollbackTurnCount > 0) {
                 // Reached only when the selected source turn has no native

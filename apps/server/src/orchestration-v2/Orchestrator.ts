@@ -212,6 +212,19 @@ export function isProposedPlanImplementable(input: {
   return input.workflowStatus === "planned" && input.planStatus === "completed";
 }
 
+function workflowSkillAllowlistsEqual(
+  left: ReadonlyArray<string> | undefined,
+  right: ReadonlyArray<string> | undefined,
+): boolean {
+  return (
+    left === right ||
+    (left !== undefined &&
+      right !== undefined &&
+      left.length === right.length &&
+      left.every((skill) => right.includes(skill)))
+  );
+}
+
 export const OrchestratorV2Error = Schema.Union([
   OrchestratorDispatchError,
   OrchestratorCommandRejectedError,
@@ -2046,15 +2059,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 .pipe(mapDispatchError(command)),
           });
     const workflowProfile = workflowConfig?.profile;
-    const plannerSelection = workflowProfile?.planner
-      ? workflowProfile.planner.providerInstanceId !== undefined &&
-        workflowProfile.planner.model !== undefined
-        ? {
-            instanceId: workflowProfile.planner.providerInstanceId,
-            model: workflowProfile.planner.model,
-          }
-        : command.modelSelection
-      : command.modelSelection;
+    const plannerSelection =
+      (workflowProfile === undefined
+        ? undefined
+        : workflowAgentModelSelection(workflowProfile.planner)) ?? command.modelSelection;
     const emitEvent = emit(events, command);
     const thread: OrchestrationV2AppThread = {
       createdBy: command.createdBy,
@@ -4534,6 +4542,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       let workflowPromptPrefix = "";
       let workflowModelSelection: ModelSelection | undefined;
+      const workflowSkillAllowlist = command.workflowSkillAllowlist;
       const workflow = projection.thread.workflow ?? null;
       if (workflow !== null && workflow.profile !== undefined) {
         if (workflow.status === "draft") {
@@ -4687,6 +4696,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: "Notifications must be server- or provider-created queued messages.",
         });
       }
+      if (workflowSkillAllowlist !== undefined) {
+        const adapter = yield* providerAdapters.get(modelSelection.instanceId).pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestratorProviderAdapterError({
+                commandId: command.commandId,
+                providerInstanceId: modelSelection.instanceId,
+                cause,
+              }),
+          ),
+        );
+        if (adapter.workflowSkillIsolation !== "native") {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Provider ${adapter.driver} cannot enforce an exclusive workflow skill allowlist.`,
+          });
+        }
+      }
       let delegatedCompletion:
         | OrchestrationV2ConversationMessage["delegatedCompletion"]
         | undefined;
@@ -4828,6 +4856,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             });
 
       if (dispatchMode.type === "steer_active" || dispatchMode.type === "restart_active") {
+        const targetRun = projection.runs.find(
+          (candidate) => candidate.id === dispatchMode.targetRunId,
+        );
+        if (
+          targetRun !== undefined &&
+          !workflowSkillAllowlistsEqual(targetRun.workflowSkillAllowlist, workflowSkillAllowlist)
+        ) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause:
+              "A workflow skill policy change requires a fresh provider thread and cannot steer or restart an active turn.",
+          });
+        }
         yield* dispatchSteerIntoRun({
           command,
           events,
@@ -4860,6 +4902,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const activeProviderThread = projection.providerThreads.find(
         (candidate) => candidate.id === projection.thread.activeProviderThreadId,
       );
+      const activeProviderThreadRun =
+        activeProviderThread === undefined
+          ? undefined
+          : projection.runs.findLast(
+              (candidate) => candidate.providerThreadId === activeProviderThread.id,
+            );
+      const workflowSkillPolicyChanged =
+        activeProviderThread !== undefined &&
+        !workflowSkillAllowlistsEqual(
+          activeProviderThreadRun?.workflowSkillAllowlist,
+          workflowSkillAllowlist,
+        );
       const activeRun = projection.runs.find(isBlockingRun);
       const pendingMergeBackTransfers = pendingMergeBackTransfersForThread(projection);
       const shouldQueue =
@@ -4868,6 +4922,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           dispatchMode.type === "start_immediately" ||
           dispatchMode.type === "queue_after_active");
       if (shouldQueue) {
+        if (workflowSkillPolicyChanged) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause:
+              "A workflow role with a different skill allowlist cannot be queued on the active provider thread.",
+          });
+        }
         if (pendingMergeBackTransfers.length > 0) {
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
@@ -4970,6 +5032,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ordinal,
           providerInstanceId: modelSelection.instanceId,
           modelSelection,
+          ...(workflowSkillAllowlist === undefined
+            ? {}
+            : { workflowSkillAllowlist: [...workflowSkillAllowlist] }),
           providerThreadId: queuedProviderThread.id,
           userMessageId: command.messageId,
           rootNodeId,
@@ -5188,13 +5253,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         projection.thread.historyOrigin === "v1_import"
           ? yield* readHandoffItems(command.threadId, [null])
           : [];
-      const isProviderSwitch =
+      const providerInstanceChanged =
         activeProviderThread !== undefined &&
         activeProviderThread.providerInstanceId !== modelSelection.instanceId;
+      const isProviderSwitch =
+        activeProviderThread !== undefined &&
+        (providerInstanceChanged || workflowSkillPolicyChanged);
       // Account overlays share native history. Selection commands may already
       // have updated the app thread, so classify against the native thread's owner.
       const canResumeAcrossInstances =
-        isProviderSwitch &&
+        providerInstanceChanged &&
         activeProviderThread.nativeThreadRef !== null &&
         (yield* providerSwitchService
           .plan({
@@ -5320,6 +5388,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ordinal,
           providerInstanceId: modelSelection.instanceId,
           modelSelection,
+          ...(workflowSkillAllowlist === undefined
+            ? {}
+            : { workflowSkillAllowlist: [...workflowSkillAllowlist] }),
           providerThreadId,
           userMessageId: command.messageId,
           rootNodeId,
@@ -5605,10 +5676,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             }),
         ),
       );
-      const targetProviderThread =
-        isProviderSwitch && !canResumeAcrossInstances
-          ? rootProviderThreadsForProvider(projection, modelSelection.instanceId)[0]
-          : activeProviderThread;
+      const targetProviderThread = isProviderSwitch
+        ? workflowSkillAllowlist !== undefined
+          ? undefined
+          : canResumeAcrossInstances
+            ? activeProviderThread
+            : rootProviderThreadsForProvider(projection, modelSelection.instanceId)[0]
+        : activeProviderThread;
       const providerSessionId =
         (canResumeAcrossInstances ? undefined : targetProviderThread?.providerSessionId) ??
         (yield* mapDispatchError(command)(
@@ -5654,6 +5728,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 providerInstanceId: modelSelection.instanceId,
                 capabilities,
                 sameProvider:
+                  workflowSkillAllowlist === undefined &&
                   pendingForkTransfer.sourceProviderInstanceId === modelSelection.instanceId,
                 hasStrongNativeSource: sourceProviderThread?.nativeThreadRef?.strength === "strong",
                 fromSpecificTurn: sourceRun !== null,
@@ -6005,6 +6080,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ordinal,
         providerInstanceId: modelSelection.instanceId,
         modelSelection,
+        ...(workflowSkillAllowlist === undefined
+          ? {}
+          : { workflowSkillAllowlist: [...workflowSkillAllowlist] }),
         providerThreadId: providerThread.id,
         userMessageId: command.messageId,
         rootNodeId,

@@ -20,6 +20,7 @@ import {
   type SDKMessage,
   type SDKRateLimitInfo,
   type SDKResultMessage,
+  type SDKSystemMessage,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
@@ -29,6 +30,7 @@ import type {
 import { parseCliArgs } from "@t3tools/shared/cliArgs";
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import { applyClaudePromptEffortPrefix } from "@t3tools/shared/model";
+import { compareSemverVersions } from "@t3tools/shared/semver";
 import {
   CLAUDE_RESUME_COMPACTION_NEVER_ANSWER,
   formatClaudeResumeCompactionQuestion,
@@ -192,6 +194,37 @@ export function claudeProviderTurnTokenUsage(
 }
 export const CLAUDE_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(CLAUDE_PROVIDER);
 const DEFAULT_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({});
+const MINIMUM_CLAUDE_WORKFLOW_SKILL_FILTER_VERSION = "2.1.120";
+
+export function claudeWorkflowSkillFilterError(input: {
+  readonly allowlist: ReadonlyArray<string>;
+  readonly init: Pick<SDKSystemMessage, "claude_code_version" | "skills">;
+}): ProviderAdapterProtocolError | undefined {
+  if (
+    compareSemverVersions(
+      input.init.claude_code_version,
+      MINIMUM_CLAUDE_WORKFLOW_SKILL_FILTER_VERSION,
+    ) < 0
+  ) {
+    return new ProviderAdapterProtocolError({
+      driver: CLAUDE_PROVIDER,
+      detail: `Claude Code v${input.init.claude_code_version} cannot enforce reviewer skill isolation. Upgrade to v${MINIMUM_CLAUDE_WORKFLOW_SKILL_FILTER_VERSION} or newer.`,
+    });
+  }
+
+  const missing = input.allowlist.filter(
+    (assigned) =>
+      !input.init.skills.some(
+        (available) => available === assigned || available.endsWith(`:${assigned}`),
+      ),
+  );
+  return missing.length === 0
+    ? undefined
+    : new ProviderAdapterProtocolError({
+        driver: CLAUDE_PROVIDER,
+        detail: `Assigned Claude reviewer skills are unavailable: ${missing.join(", ")}`,
+      });
+}
 
 export const ClaudeProviderCapabilitiesV2 = {
   sessions: {
@@ -734,6 +767,7 @@ export function makeClaudeQueryOptions(input: {
   readonly tools?: ClaudeAgentSdkQueryTools;
   readonly allowedTools?: ReadonlyArray<string>;
   readonly disallowedTools?: ReadonlyArray<string>;
+  readonly skills?: ReadonlyArray<string>;
   readonly permissionMode?: PermissionMode;
   readonly canUseTool?: CanUseTool;
   readonly onUserDialog?: ClaudeQueryOptions["onUserDialog"];
@@ -791,6 +825,7 @@ export function makeClaudeQueryOptions(input: {
     ...(input.resumeSessionAt === undefined ? {} : { resumeSessionAt: input.resumeSessionAt }),
     ...(input.allowedTools === undefined ? {} : { allowedTools: [...input.allowedTools] }),
     ...(input.disallowedTools === undefined ? {} : { disallowedTools: [...input.disallowedTools] }),
+    ...(input.skills === undefined ? {} : { skills: [...input.skills] }),
     ...(input.canUseTool === undefined ? {} : { canUseTool: input.canUseTool }),
     ...(input.allowDangerouslySkipPermissions === true
       ? { allowDangerouslySkipPermissions: true }
@@ -2698,6 +2733,7 @@ export function makeClaudeAdapterV2(
   return ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CLAUDE_PROVIDER,
+    workflowSkillIsolation: "native",
     getCapabilities: () => Effect.succeed(ClaudeProviderCapabilitiesV2),
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
     openSession: Effect.fn("ClaudeAdapterV2.openSession")(
@@ -6027,7 +6063,13 @@ export function makeClaudeAdapterV2(
               ? {}
               : { allowedTools: queryPolicy.allowedTools }),
           });
-          const queryPolicyKey = claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides);
+          const queryPolicyKey = `${claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides)}\nworkflow-skills:${
+            turnInput.runtimePolicy.workflowSkillAllowlist === undefined
+              ? "provider-defaults"
+              : turnInput.runtimePolicy.workflowSkillAllowlist
+                  .map((skill) => encodeURIComponent(skill))
+                  .join(",")
+          }`;
           const compiledSelection = compileClaudeModelSelection(turnInput.modelSelection);
           const resumeSessionAt = yield* getNativeConversationHeadId(turnInput.providerThread);
           const existing = yield* Ref.get(queryContext);
@@ -6078,6 +6120,9 @@ export function makeClaudeAdapterV2(
                 attachmentsDir,
                 settings: adapterOptions.settings,
                 environment: adapterOptions.environment,
+                ...(turnInput.runtimePolicy.workflowSkillAllowlist === undefined
+                  ? {}
+                  : { skills: turnInput.runtimePolicy.workflowSkillAllowlist }),
                 tools: queryPolicy.tools ?? CLAUDE_CODE_PRESET_TOOLS,
                 ...mcpOverrides,
                 permissionMode: queryPolicy.permissionMode,
@@ -6129,6 +6174,14 @@ export function makeClaudeAdapterV2(
             status: "active",
           });
           const closed = yield* Deferred.make<void, never>();
+          const workflowSkillFilterReady = yield* Deferred.make<
+            void,
+            ProviderAdapterProtocolError
+          >();
+          const workflowSkillAllowlist = turnInput.runtimePolicy.workflowSkillAllowlist;
+          if (workflowSkillAllowlist === undefined) {
+            yield* Deferred.succeed(workflowSkillFilterReady, undefined);
+          }
           const context: ClaudeLiveQueryContext = {
             nativeThreadId,
             query: querySession,
@@ -6139,7 +6192,27 @@ export function makeClaudeAdapterV2(
           };
           yield* Ref.set(queryContext, context);
           yield* querySession.messages.pipe(
-            Stream.runForEach((message) => handleSdkMessage({ query: querySession, message })),
+            Stream.runForEach((message) =>
+              Effect.gen(function* () {
+                if (
+                  workflowSkillAllowlist !== undefined &&
+                  message.type === "system" &&
+                  message.subtype === "init"
+                ) {
+                  const error = claudeWorkflowSkillFilterError({
+                    allowlist: workflowSkillAllowlist,
+                    init: message,
+                  });
+                  if (error !== undefined) {
+                    yield* Deferred.fail(workflowSkillFilterReady, error);
+                    yield* querySession.close.pipe(Effect.ignore);
+                    return;
+                  }
+                  yield* Deferred.succeed(workflowSkillFilterReady, undefined);
+                }
+                yield* handleSdkMessage({ query: querySession, message });
+              }),
+            ),
             Effect.exit,
             Effect.flatMap(
               Effect.fnUntraced(function* (exit: ClaudeQueryStreamExit) {
@@ -6164,9 +6237,19 @@ export function makeClaudeAdapterV2(
                 }
               }),
             ),
+            Effect.ensuring(
+              Deferred.fail(
+                workflowSkillFilterReady,
+                new ProviderAdapterProtocolError({
+                  driver: CLAUDE_PROVIDER,
+                  detail: "Claude query exited before reviewer skill isolation was verified.",
+                }),
+              ).pipe(Effect.ignore),
+            ),
             Effect.ensuring(Deferred.succeed(closed, undefined)),
             Effect.forkIn(sessionScope),
           );
+          yield* Deferred.await(workflowSkillFilterReady);
           return context;
         });
 

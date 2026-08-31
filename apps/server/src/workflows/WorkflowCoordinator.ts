@@ -65,7 +65,7 @@ function reviewPrompt(input: {
     .join("\n");
   return `${input.reviewer.instructions}
 
-Review revision ${input.workflow.revision} of this verified workflow. Inspect the inherited repository snapshot and diff. Do not modify files.
+Review revision ${input.workflow.revision} of this verified workflow. Inspect the current repository snapshot and diff. Do not modify files.
 
 Approved plan:
 ${input.planMarkdown}
@@ -346,7 +346,6 @@ export const live = Layer.effectDiscard(
       readonly projection: OrchestrationV2ThreadProjection;
       readonly workflow: ThreadWorkflowState;
       readonly reviewer: ResolvedWorkflowProfile["reviewers"][number];
-      readonly sourceRunId: OrchestrationV2ThreadProjection["runs"][number]["id"];
       readonly planMarkdown: string;
     }) {
       const childThreadId = reviewThreadId(
@@ -355,24 +354,22 @@ export const live = Layer.effectDiscard(
         input.reviewer.id,
       );
       const base = `workflow:${encodeURIComponent(input.projection.thread.id)}:${input.workflow.revision}:review:${encodeURIComponent(input.reviewer.id)}`;
+      const selection =
+        workflowAgentModelSelection(input.reviewer) ?? input.projection.thread.modelSelection;
       yield* threads.dispatch({
-        type: "thread.fork",
-        commandId: CommandId.make(`command:${base}:fork`),
-        sourceThreadId: input.projection.thread.id,
-        targetThreadId: childThreadId,
-        sourcePoint: { type: "run", runId: input.sourceRunId },
+        type: "thread.create",
+        commandId: CommandId.make(`command:${base}:create`),
+        threadId: childThreadId,
+        projectId: input.projection.thread.projectId,
         title: `${input.reviewer.name}: ${input.projection.thread.title}`,
+        modelSelection: selection,
+        runtimeMode: input.projection.thread.runtimeMode,
+        interactionMode: "plan",
+        branch: input.projection.thread.branch,
+        worktreePath: input.projection.thread.worktreePath,
         createdBy: "agent",
         creationSource: "server",
       });
-      yield* threads.dispatch({
-        type: "thread.interaction-mode.set",
-        commandId: CommandId.make(`command:${base}:plan-mode`),
-        threadId: childThreadId,
-        interactionMode: "plan",
-      });
-      const selection =
-        workflowAgentModelSelection(input.reviewer) ?? input.projection.thread.modelSelection;
       yield* threads.dispatch({
         type: "message.dispatch",
         commandId: CommandId.make(`command:${base}:start`),
@@ -395,7 +392,6 @@ export const live = Layer.effectDiscard(
     const launchReviews = Effect.fn("WorkflowCoordinator.launchReviews")(function* (input: {
       readonly projection: OrchestrationV2ThreadProjection;
       readonly workflow: ThreadWorkflowState;
-      readonly sourceRunId: OrchestrationV2ThreadProjection["runs"][number]["id"];
     }) {
       const profile = input.workflow.profile;
       if (profile === undefined) return;
@@ -443,7 +439,6 @@ export const live = Layer.effectDiscard(
             projection: input.projection,
             workflow: reviewing,
             reviewer,
-            sourceRunId: input.sourceRunId,
             planMarkdown: plan.markdown,
           }),
         { concurrency: "unbounded", discard: true },
@@ -465,16 +460,11 @@ export const live = Layer.effectDiscard(
           const reviewer = profile?.reviewers.find(
             (candidate) => candidate.id === pending.reviewerId,
           );
-          if (
-            reviewer !== undefined &&
-            plan?.kind === "proposed_plan" &&
-            input.workflow.candidateRunId !== null
-          ) {
+          if (reviewer !== undefined && plan?.kind === "proposed_plan") {
             yield* startReviewer({
               projection: input.projection,
               workflow: input.workflow,
               reviewer,
-              sourceRunId: input.workflow.candidateRunId,
               planMarkdown: plan.markdown,
             });
           }
@@ -657,7 +647,6 @@ export const live = Layer.effectDiscard(
       yield* launchReviews({
         projection,
         workflow: { ...checking, checks },
-        sourceRunId: candidate.id,
       });
     });
 

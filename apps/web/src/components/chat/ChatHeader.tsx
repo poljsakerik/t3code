@@ -331,7 +331,10 @@ export const ChatHeader = memo(function ChatHeader({
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
       {isVerifiedWorkflow ? (
-        <Badge size="sm" variant="outline" className="shrink-0 gap-1 text-muted-foreground">
+        <Badge
+          variant="success"
+          className="shrink-0 gap-1.5 border border-success/20 bg-success/16 px-2 font-semibold shadow-xs dark:bg-success/20"
+        >
           <ShieldCheckIcon aria-hidden />
           Verified workflow
         </Badge>

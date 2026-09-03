@@ -1,8 +1,10 @@
 import { type EnvironmentId } from "@t3tools/contracts";
+import { ShieldCheckIcon } from "lucide-react";
 import { memo } from "react";
 
 import { cn } from "~/lib/utils";
 import { ProjectFavicon } from "../ProjectFavicon";
+import { Badge } from "../ui/badge";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 interface ChatHeaderProps {
@@ -10,6 +12,7 @@ interface ChatHeaderProps {
   activeThreadTitle: string;
   activeProjectName: string | undefined;
   activeProjectCwd: string | null;
+  isVerifiedWorkflow: boolean;
   rightPanelOpen: boolean;
   onNewThreadInProject: () => void;
 }
@@ -19,6 +22,7 @@ export const ChatHeader = memo(function ChatHeader({
   activeThreadTitle,
   activeProjectName,
   activeProjectCwd,
+  isVerifiedWorkflow,
   rightPanelOpen,
   onNewThreadInProject,
 }: ChatHeaderProps) {
@@ -59,6 +63,15 @@ export const ChatHeader = memo(function ChatHeader({
               /
             </span>
           </span>
+        ) : null}
+        {isVerifiedWorkflow ? (
+          <Badge
+            variant="success"
+            className="shrink-0 gap-1.5 border border-success/20 bg-success/16 px-2 font-semibold shadow-xs dark:bg-success/20"
+          >
+            <ShieldCheckIcon aria-hidden />
+            Verified workflow
+          </Badge>
         ) : null}
         <Tooltip>
           <TooltipTrigger

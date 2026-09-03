@@ -16,7 +16,7 @@ draft → planning → planned → implementing → checking → reviewing → d
 
 Reviewer definitions can declare a `skills` allowlist. Non-empty lists are rejected for planner and implementer definitions. Reviewer dispatches persist the list as `workflowSkillAllowlist` on their run and copy it into `ProviderAdapterV2RuntimePolicy`. Codex translates it to per-thread `skills.config` enablement entries, Claude passes the SDK's main-session `skills` filter, and OpenCode appends per-session deny-all and exact allow rules. These controls remove unlisted skills from model-facing discovery and reject attempts to load them; global provider settings are never mutated. Planner, implementer, and revision turns retain provider defaults.
 
-Codex validates assigned names against `skills/list`. Claude waits for the native initialization frame and validates both the CLI version (2.1.120 or newer) and every assigned canonical name before offering the reviewer prompt. Plugin-qualified names must match the provider inventory; an unqualified name may match the SDK's supported `:name` suffix form. Missing skills and runtimes that predate the context filter fail closed.
+Codex validates assigned names against `skills/list`. Claude passes the configured names directly to the SDK's native `skills` context filter without a separate initialization-inventory preflight. Plugin-qualified names must use the provider's canonical form.
 
 An adapter advertises this guarantee with `workflowSkillIsolation: "native"`. Reviewer turns fail closed on adapters without it. Orchestration never natively forks a reviewer from the implementation thread; it creates a clean native thread and uses a portable context handoff so already-loaded skills cannot cross the reviewer boundary.
 

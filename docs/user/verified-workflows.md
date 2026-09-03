@@ -65,7 +65,7 @@ Planner and implementer roles use the provider's normal skill configuration. Rev
 
 Reviewers use a fresh native provider thread with a portable summary of the implementation instead of inheriting a native thread that may already have loaded skills. Codex, Claude, and OpenCode currently expose the native controls needed to enforce this allowlist. Reviewer turns fail before starting on Cursor and Grok because those integrations do not expose an exclusive per-session skill control. T3 Code does not fall back to prompt instructions that leave the full skill catalog in context.
 
-Skill entries use the provider's canonical names. For example, a plugin that exposes one `impeccable` skill with a `critique` mode is assigned as `impeccable:impeccable`, even when its invocation is `/impeccable critique`. Codex and Claude fail the reviewer before sending its prompt when an assigned skill is unavailable. Claude reviewer allowlists require Claude Code 2.1.120 or newer.
+Skill entries use the provider's canonical names. For example, a plugin that exposes one `impeccable` skill with a `critique` mode is assigned as `impeccable:impeccable`, even when its invocation is `/impeccable critique`. Codex fails the reviewer before sending its prompt when an assigned skill is unavailable. Claude passes the configured allowlist directly to its native skill filter without a separate availability preflight.
 
 ```yaml
 # agents/implementer.yaml

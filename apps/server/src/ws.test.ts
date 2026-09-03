@@ -29,6 +29,8 @@ it("accepts only the current orchestration protocol before websocket RPC setup",
       new URL(`https://host.test/ws?orchestrationProtocol=${ORCHESTRATION_PROTOCOL_VERSION - 1}`),
     ),
   );
+});
+
 describe("buildThreadLaunchServiceInput", () => {
   it("preserves verified workflow launch metadata", () => {
     const input = buildThreadLaunchServiceInput({

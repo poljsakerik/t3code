@@ -99,43 +99,77 @@ const CLAUDE_TEST_RUNTIME_POLICY = ProviderAdapterV2RuntimePolicy.make({
 });
 
 describe("Claude reviewer skill isolation", () => {
-  it("accepts exact and unqualified matches from Claude's canonical skill inventory", () => {
-    const init = {
-      claude_code_version: "2.1.251",
-      skills: ["code-review", "impeccable:impeccable"],
-    };
+  it.effect("starts without waiting for Claude's init inventory", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const idAllocator = yield* IdAllocatorV2;
+        const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-claude-v2-reviewer-skills-",
+        });
+        const nativeThreadId = "native-thread-claude-reviewer-skills";
+        const sdkMessages = yield* Queue.unbounded<SDKMessage>();
+        const offeredMessages: Array<SDKUserMessage> = [];
+        const adapter = makeClaudeAdapterV2({
+          instanceId: CLAUDE_DEFAULT_INSTANCE_ID,
+          settings: DEFAULT_CLAUDE_SETTINGS,
+          environment: {},
+          attachmentsDir,
+          fileSystem,
+          path,
+          idAllocator,
+          queryRunner: {
+            allocateSessionId: Effect.succeed(nativeThreadId),
+            open: () =>
+              Effect.succeed({
+                messages: Stream.fromQueue(sdkMessages),
+                offer: (message) =>
+                  Effect.sync(() => offeredMessages.push(message)).pipe(Effect.asVoid),
+                setModel: () => Effect.void,
+                interrupt: Effect.void,
+                close: Queue.shutdown(sdkMessages),
+              }),
+            forkSession: () => Effect.die("unused forkSession"),
+            assertComplete: Effect.void,
+          },
+        });
+        const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "plan",
+          cwd: "/workspace",
+          workflowSkillAllowlist: ["impeccable:impeccable"],
+        });
+        const threadId = ThreadId.make("thread-claude-reviewer-skills");
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-claude-reviewer-skills"),
+          modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+          runtimePolicy,
+        });
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+          runtimePolicy,
+        });
+        const now = yield* DateTime.now;
 
-    assert.isUndefined(
-      claudeWorkflowSkillFilterError({
-        allowlist: ["code-review", "impeccable"],
-        init,
-      }),
-    );
-  });
+        yield* runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId,
+            providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-reviewer-skills"),
+            text: "Review the implementation.",
+            attachments: [],
+            runtimePolicy,
+          }),
+        );
 
-  it("rejects unavailable assigned skills before the reviewer prompt is sent", () => {
-    const error = claudeWorkflowSkillFilterError({
-      allowlist: ["impeccable:critique"],
-      init: {
-        claude_code_version: "2.1.251",
-        skills: ["impeccable:impeccable"],
-      },
-    });
-
-    assert.equal(
-      error?.detail,
-      "Assigned Claude reviewer skills are unavailable: impeccable:critique",
-    );
-  });
-
-  it("rejects Claude versions that predate the native context filter", () => {
-    const error = claudeWorkflowSkillFilterError({
-      allowlist: [],
-      init: { claude_code_version: "2.1.119", skills: [] },
-    });
-
-    assert.include(error?.detail ?? "", "cannot enforce reviewer skill isolation");
-  });
+        assert.lengthOf(offeredMessages, 1);
+      }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+    ),
+  );
 });
 
 function makeClaudeTestAppThread(input: {

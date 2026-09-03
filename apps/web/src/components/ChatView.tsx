@@ -7481,6 +7481,9 @@ function ChatViewContent(props: ChatViewProps) {
             activeThreadTitle={activeThread.title}
             activeProjectName={activeProject?.title}
             activeProjectCwd={activeProject?.workspaceRoot ?? null}
+            isVerifiedWorkflow={
+              activeThread.workflow !== null || draftThread?.workflowProfileId !== undefined
+            }
             rightPanelOpen={inlineRightPanelOwnsTitleBar}
             onNewThreadInProject={handleNewThreadInActiveProject}
           />

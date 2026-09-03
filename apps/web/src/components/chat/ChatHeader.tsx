@@ -64,6 +64,15 @@ export const ChatHeader = memo(function ChatHeader({
             </span>
           </span>
         ) : null}
+        {isVerifiedWorkflow ? (
+          <Badge
+            variant="success"
+            className="shrink-0 gap-1.5 border border-success/20 bg-success/16 px-2 font-semibold shadow-xs dark:bg-success/20"
+          >
+            <ShieldCheckIcon aria-hidden />
+            Verified workflow
+          </Badge>
+        ) : null}
         <Tooltip>
           <TooltipTrigger
             render={
@@ -77,12 +86,6 @@ export const ChatHeader = memo(function ChatHeader({
           />
           <TooltipPopup side="top">{activeThreadTitle}</TooltipPopup>
         </Tooltip>
-        {isVerifiedWorkflow ? (
-          <Badge size="sm" variant="outline" className="shrink-0 gap-1 text-muted-foreground">
-            <ShieldCheckIcon aria-hidden />
-            Verified workflow
-          </Badge>
-        ) : null}
       </div>
     </div>
   );

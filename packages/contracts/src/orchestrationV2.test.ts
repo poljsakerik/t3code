@@ -208,6 +208,33 @@ describe("orchestration V2 contracts", () => {
     expect(command.parentNodeId).toBe(NodeId.make("node-parent-1"));
   });
 
+  it("decodes server-owned subagent backing thread creation", () => {
+    const command = decodeOrchestrationV2Command({
+      type: "thread.create",
+      createdBy: "system",
+      creationSource: "server",
+      commandId: "command-reviewer-create-1",
+      threadId: "thread-reviewer-1",
+      projectId: "project-1",
+      title: "Correctness reviewer",
+      modelSelection: {
+        instanceId: "codex",
+        model: "gpt-5.4",
+      },
+      runtimeMode: "full-access",
+      interactionMode: "plan",
+      branch: "feature/workflow",
+      worktreePath: "/tmp/workflow",
+      subagentParentThreadId: "thread-workflow-1",
+    });
+
+    expect(command.type).toBe("thread.create");
+    if (command.type !== "thread.create") {
+      throw new Error("expected thread.create");
+    }
+    expect(command.subagentParentThreadId).toBe(ThreadId.make("thread-workflow-1"));
+  });
+
   it("decodes delegated task wake-policy commands", () => {
     const command = decodeOrchestrationV2Command({
       type: "delegated_task.wake-policy",

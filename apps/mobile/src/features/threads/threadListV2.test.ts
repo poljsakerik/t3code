@@ -272,6 +272,29 @@ describe("sortThreadsForListV2", () => {
 });
 
 describe("buildThreadListV2Items", () => {
+  it("keeps subagent backing threads out of the thread list", () => {
+    const parentThreadId = ThreadId.make("workflow-parent");
+    const layout = buildThreadListV2Items({
+      threads: [
+        makeThread({ id: parentThreadId, title: "Verified workflow" }),
+        makeThread({
+          id: ThreadId.make("workflow-reviewer"),
+          title: "Correctness reviewer",
+          lineage: {
+            parentThreadId,
+            relationshipToParent: "subagent",
+            rootThreadId: parentThreadId,
+          },
+        }),
+      ],
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+    });
+
+    expect(layout.items.map((item) => item.thread.id)).toEqual([parentThreadId]);
+  });
+
   it("places a persisted settled thread in the settled shelf", () => {
     const thread = makeThread({
       id: ThreadId.make("linked-merged"),

@@ -367,7 +367,8 @@ export const live = Layer.effectDiscard(
         interactionMode: "plan",
         branch: input.projection.thread.branch,
         worktreePath: input.projection.thread.worktreePath,
-        createdBy: "agent",
+        subagentParentThreadId: input.projection.thread.id,
+        createdBy: "system",
         creationSource: "server",
       });
       yield* threads.dispatch({
@@ -555,10 +556,62 @@ export const live = Layer.effectDiscard(
       });
     });
 
+    const repairReviewerThreadLineage = Effect.fn(
+      "WorkflowCoordinator.repairReviewerThreadLineage",
+    )(function* (input: {
+      readonly projection: OrchestrationV2ThreadProjection;
+      readonly workflow: ThreadWorkflowState;
+    }) {
+      const reviewRefs = new Map(
+        [
+          ...input.workflow.reviews,
+          ...input.projection.turnItems.flatMap((item) =>
+            item.type === "workflow_verification" ? item.reviews : [],
+          ),
+        ].map((review) => [review.reviewerThreadId, review] as const),
+      );
+      yield* Effect.forEach(
+        reviewRefs.values(),
+        Effect.fnUntraced(function* (review) {
+          const parentTask = input.projection.subagents.find(
+            (task) => task.origin === "app_owned" && task.childThreadId === review.reviewerThreadId,
+          );
+          if (parentTask === undefined) return;
+          const child = yield* Effect.option(threads.getThreadProjection(review.reviewerThreadId));
+          if (
+            child._tag === "None" ||
+            (child.value.thread.lineage.relationshipToParent === "subagent" &&
+              child.value.thread.lineage.parentThreadId === input.projection.thread.id)
+          ) {
+            return;
+          }
+          const base = `workflow:${encodeURIComponent(input.projection.thread.id)}:${review.revision}:review:${encodeURIComponent(review.reviewerId)}`;
+          yield* threads.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`command:${base}:repair-lineage`),
+            threadId: review.reviewerThreadId,
+            projectId: input.projection.thread.projectId,
+            title: child.value.thread.title,
+            modelSelection: child.value.thread.modelSelection,
+            runtimeMode: child.value.thread.runtimeMode,
+            interactionMode: child.value.thread.interactionMode,
+            branch: child.value.thread.branch,
+            worktreePath: child.value.thread.worktreePath,
+            subagentParentThreadId: input.projection.thread.id,
+            createdBy: "system",
+            creationSource: "server",
+          });
+        }),
+        { concurrency: "unbounded", discard: true },
+      );
+    });
+
     const reconcile = Effect.fn("WorkflowCoordinator.reconcile")(function* (threadId: ThreadId) {
       const projection = yield* threads.getThreadProjection(threadId);
       const workflow = projection.thread.workflow ?? null;
       if (workflow === null || workflow.profile === undefined) return;
+
+      yield* repairReviewerThreadLineage({ projection, workflow });
 
       if (workflow.status === "planning") {
         const plan = projection.plans.findLast(

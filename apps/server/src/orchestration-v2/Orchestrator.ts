@@ -1402,7 +1402,79 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       "orchestration_v2.driver": command.modelSelection.instanceId,
     });
 
+    const subagentParentThreadId = command.subagentParentThreadId;
+    const parentProjection =
+      subagentParentThreadId === undefined
+        ? undefined
+        : yield* projectionStore.getThreadProjection(subagentParentThreadId).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestratorProjectionError({
+                  threadId: subagentParentThreadId,
+                  cause,
+                }),
+            ),
+          );
+    const parentTask = parentProjection?.subagents.find(
+      (task) => task.origin === "app_owned" && task.childThreadId === command.threadId,
+    );
+    if (subagentParentThreadId !== undefined) {
+      if (command.createdBy !== "system" || command.creationSource !== "server") {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Subagent backing threads can only be created by the server.",
+        });
+      }
+      if (parentProjection?.thread.projectId !== command.projectId || parentTask === undefined) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Thread ${command.threadId} is not a projected subagent of ${subagentParentThreadId}.`,
+        });
+      }
+    }
+
     const now = yield* DateTime.now;
+    const existingChild =
+      subagentParentThreadId === undefined
+        ? Option.none<OrchestrationV2ThreadProjection>()
+        : yield* Effect.option(projectionStore.getThreadProjection(command.threadId));
+    const emitEvent = emit(events, command);
+    if (
+      parentProjection !== undefined &&
+      parentTask !== undefined &&
+      Option.isSome(existingChild)
+    ) {
+      if (existingChild.value.thread.projectId !== command.projectId) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Subagent backing thread ${command.threadId} belongs to another project.`,
+        });
+      }
+      yield* emitEvent({
+        type: "thread.metadata-updated",
+        threadId: command.threadId,
+        providerInstanceId: existingChild.value.thread.providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...existingChild.value.thread,
+          workflow: null,
+          lineage: {
+            parentThreadId: parentProjection.thread.id,
+            relationshipToParent: "subagent",
+            rootThreadId: parentProjection.thread.lineage.rootThreadId,
+          },
+          // WorkflowCoordinator owns the completion path for this child; a
+          // node fork would opt it into delegated-task result delivery.
+          forkedFrom: null,
+          updatedAt: now,
+        },
+      });
+      return;
+    }
+
     const workflowConfig =
       command.workflowProfileId === undefined
         ? undefined
@@ -1428,56 +1500,80 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       (workflowProfile === undefined
         ? undefined
         : workflowAgentModelSelection(workflowProfile.planner)) ?? command.modelSelection;
-    const emitEvent = emit(events, command);
-    const thread: OrchestrationV2AppThread = {
-      createdBy: command.createdBy,
-      creationSource: command.creationSource,
-      id: command.threadId,
-      projectId: command.projectId,
-      title: command.title,
-      providerInstanceId: plannerSelection.instanceId,
-      modelSelection: plannerSelection,
-      runtimeMode: command.runtimeMode,
-      interactionMode: command.interactionMode,
-      branch: command.branch,
-      worktreePath: command.worktreePath,
-      activeProviderThreadId: null,
-      workflow:
-        workflowConfig === undefined
-          ? null
-          : {
-              profileId: workflowConfig.profile.id,
-              workspaceRoot: workflowConfig.workspaceRoot,
-              profile: workflowConfig.profile,
-              status: "draft",
-              revision: 0,
-              revisionCycles: 0,
-              consecutiveFailureCount: 0,
-              lastFailureFingerprint: null,
-              approvedPlanId: null,
-              candidateRunId: null,
-              workspaceDigest: null,
-              checks: [],
-              reviews: [],
-              terminalReason: null,
-              updatedAt: DateTime.formatIso(now),
+    const thread: OrchestrationV2AppThread =
+      parentProjection !== undefined && parentTask !== undefined
+        ? {
+            ...makeSubagentChildThread({
+              parentThread: parentProjection.thread,
+              childThreadId: command.threadId,
+              parentNodeId: parentTask.id,
+              activeProviderThreadId: null,
+              providerInstanceId: plannerSelection.instanceId,
+              modelSelection: plannerSelection,
+              title: command.title,
+              now,
+              createdBy: command.createdBy,
+              creationSource: command.creationSource,
+            }),
+            runtimeMode: command.runtimeMode,
+            interactionMode: command.interactionMode,
+            // The workflow belongs to the visible parent. Its reviewer is an
+            // isolated backing thread, not another workflow coordinator root.
+            workflow: null,
+            // WorkflowCoordinator owns reviewer completion and projects it
+            // into the verification card; generic delegated-task delivery
+            // must not enqueue a continuation turn for this child.
+            forkedFrom: null,
+          }
+        : {
+            createdBy: command.createdBy,
+            creationSource: command.creationSource,
+            id: command.threadId,
+            projectId: command.projectId,
+            title: command.title,
+            providerInstanceId: plannerSelection.instanceId,
+            modelSelection: plannerSelection,
+            runtimeMode: command.runtimeMode,
+            interactionMode: command.interactionMode,
+            branch: command.branch,
+            worktreePath: command.worktreePath,
+            activeProviderThreadId: null,
+            workflow:
+              workflowConfig === undefined
+                ? null
+                : {
+                    profileId: workflowConfig.profile.id,
+                    workspaceRoot: workflowConfig.workspaceRoot,
+                    profile: workflowConfig.profile,
+                    status: "draft",
+                    revision: 0,
+                    revisionCycles: 0,
+                    consecutiveFailureCount: 0,
+                    lastFailureFingerprint: null,
+                    approvedPlanId: null,
+                    candidateRunId: null,
+                    workspaceDigest: null,
+                    checks: [],
+                    reviews: [],
+                    terminalReason: null,
+                    updatedAt: DateTime.formatIso(now),
+                  },
+            lineage: {
+              parentThreadId: null,
+              relationshipToParent: null,
+              rootThreadId: command.threadId,
             },
-      lineage: {
-        parentThreadId: null,
-        relationshipToParent: null,
-        rootThreadId: command.threadId,
-      },
-      forkedFrom: null,
-      createdAt: now,
-      updatedAt: now,
-      archivedAt: null,
-      settledOverride: null,
-      settledAt: null,
-      snoozedUntil: null,
-      snoozedAt: null,
-      lastVisitedAt: null,
-      deletedAt: null,
-    };
+            forkedFrom: null,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            snoozedUntil: null,
+            snoozedAt: null,
+            lastVisitedAt: null,
+            deletedAt: null,
+          };
 
     yield* emitEvent({
       type: "thread.created",

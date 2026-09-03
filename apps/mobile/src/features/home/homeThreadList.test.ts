@@ -69,6 +69,38 @@ function buildGroups(
 }
 
 describe("buildHomeThreadGroups", () => {
+  it("keeps subagent backing threads out of project thread groups", () => {
+    const environmentId = EnvironmentId.make("environment-local");
+    const project = makeProject({
+      environmentId,
+      id: ProjectId.make("project-local"),
+      title: "t3code",
+    });
+    const parentThreadId = ThreadId.make("thread-workflow");
+    const parent = makeThread({
+      environmentId,
+      id: parentThreadId,
+      projectId: project.id,
+      title: "Verified workflow",
+    });
+    const reviewer = makeThread({
+      environmentId,
+      id: ThreadId.make("thread-reviewer"),
+      projectId: project.id,
+      title: "Correctness reviewer",
+      lineage: {
+        parentThreadId,
+        relationshipToParent: "subagent",
+        rootThreadId: parentThreadId,
+      },
+    });
+
+    const groups = buildGroups([project], [parent, reviewer]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.threads.map((thread) => thread.id)).toEqual([parentThreadId]);
+  });
+
   it("builds one v2 scope for the same repository across environments", () => {
     const localEnvironmentId = EnvironmentId.make("environment-local");
     const remoteEnvironmentId = EnvironmentId.make("environment-remote");

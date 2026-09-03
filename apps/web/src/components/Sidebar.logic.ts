@@ -2,6 +2,7 @@ import * as React from "react";
 import { defaultAnimateLayoutChanges, type AnimateLayoutChanges } from "@dnd-kit/sortable";
 import type { ContextMenuItem } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
+import { isSubagentThread } from "@t3tools/client-runtime/state/thread-relationships";
 import {
   activeThreadAnchorTimestampMs,
   getThreadSortTimestamp,
@@ -157,7 +158,7 @@ export function buildMultiSelectThreadContextMenuItems(input: {
 }
 
 export function isSidebarSubagentThread(thread: Pick<SidebarThreadSummary, "lineage">): boolean {
-  return thread.lineage.relationshipToParent === "subagent";
+  return isSubagentThread(thread);
 }
 
 export function filterSidebarV2VisibleThreads<

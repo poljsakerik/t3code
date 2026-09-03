@@ -102,6 +102,27 @@ it("identifies every existing thread that must be hydrated before dispatch", () 
 
   expect(
     existingThreadIdsForCommand({
+      type: "thread.create",
+      createdBy: "system",
+      creationSource: "server",
+      commandId: CommandId.make("command:thread-management:create-subagent"),
+      threadId: targetThreadId,
+      projectId: ProjectId.make("project:thread-management"),
+      title: "Reviewer child",
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5-codex",
+      },
+      runtimeMode: "full-access",
+      interactionMode: "plan",
+      branch: null,
+      worktreePath: null,
+      subagentParentThreadId: parentThreadId,
+    }),
+  ).toEqual([parentThreadId]);
+
+  expect(
+    existingThreadIdsForCommand({
       type: "thread.archive",
       commandId: CommandId.make("command:thread-management:archive"),
       threadId: targetThreadId,

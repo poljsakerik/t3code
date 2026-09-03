@@ -8,6 +8,7 @@ import {
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
+import { isSubagentThread } from "@t3tools/client-runtime/state/thread-relationships";
 import {
   activeThreadAnchorTimestampMs,
   sortPinnedThreadsByOrderKey,
@@ -386,6 +387,7 @@ export function buildThreadListV2Items(input: {
   let nextSnoozeWakeAt: string | null = null;
   for (const thread of input.threads) {
     // Callers pass live shells. The server stamps settledOverride for the tail.
+    if (isSubagentThread(thread)) continue;
     if (input.environmentId !== null && thread.environmentId !== input.environmentId) continue;
     if (projectKeys !== null && !projectKeys.has(`${thread.environmentId}:${thread.projectId}`)) {
       continue;

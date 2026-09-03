@@ -32,6 +32,10 @@ export interface ThreadRelationshipWalkRow {
   readonly edge: ThreadRelationshipEdge;
 }
 
+export function isSubagentThread(thread: Pick<OrchestrationV2ThreadShell, "lineage">): boolean {
+  return thread.lineage.relationshipToParent === "subagent";
+}
+
 export function resolveMergeBackTargetThreadId(
   projection: Pick<OrchestrationV2ThreadProjection, "thread"> | null,
 ): ThreadId | null {

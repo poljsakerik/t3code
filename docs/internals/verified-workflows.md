@@ -1,6 +1,6 @@
 # Verified workflows
 
-Verified workflows are an opt-in orchestration layer on top of ordinary V2 threads. Planners, implementers, and reviewers are selected through normal `ModelSelection`, messages use normal orchestration commands, and reviewer isolation uses normal thread forks or portable handoffs.
+Verified workflows are an opt-in orchestration layer on top of ordinary V2 threads. Planners, implementers, and reviewers are selected through normal `ModelSelection`, and messages use normal orchestration commands. Each reviewer gets a clean subagent backing thread linked to the visible workflow thread; it does not inherit the implementation conversation.
 
 The durable state is `ThreadWorkflowState` in [`packages/contracts/src/workflow.ts`](../../packages/contracts/src/workflow.ts). It snapshots the resolved profile at creation so a running workflow does not change when YAML is edited. Ordinary threads have no workflow state.
 
@@ -18,11 +18,11 @@ Reviewer definitions can declare a `skills` allowlist. Non-empty lists are rejec
 
 Codex validates assigned names against `skills/list`. Claude passes the configured names directly to the SDK's native `skills` context filter without a separate initialization-inventory preflight. Plugin-qualified names must use the provider's canonical form.
 
-An adapter advertises this guarantee with `workflowSkillIsolation: "native"`. Reviewer turns fail closed on adapters without it. Orchestration never natively forks a reviewer from the implementation thread; it creates a clean native thread and uses a portable context handoff so already-loaded skills cannot cross the reviewer boundary.
+An adapter advertises this guarantee with `workflowSkillIsolation: "native"`. Reviewer turns fail closed on adapters without it. Orchestration never natively forks a reviewer from the implementation thread; it creates a clean native thread and supplies only the approved plan and check evidence needed for the review, so already-loaded skills and conversation history cannot cross the reviewer boundary.
 
 [`WorkflowCoordinator.ts`](../../apps/server/src/workflows/WorkflowCoordinator.ts) is an event-driven reactor. It resumes incomplete workflows at startup and reacts to plan, run, checkpoint, message, and workflow events. It never marks `done` from agent prose. Completion requires persisted passing check evidence, valid structured reviewer responses, unanimous approval, and an unchanged workspace digest while reviews run.
 
-Reviewers run concurrently in forked, plan-mode threads and receive the approved plan plus check results. Their strict JSON result is projected back into the parent workflow. Each execution also projects an `app_owned` subagent row on the parent, while one `workflow_verification` turn item per revision preserves the check evidence, reviewer verdicts, findings, and child-thread links rendered by clients. Updating a round reuses its deterministic item ID; a repair creates a new revision ID, so previous rounds remain visible.
+Reviewers run concurrently in fresh, plan-mode subagent threads and receive the approved plan plus check results. Those backing threads stay out of top-level thread lists. Their strict JSON result is projected back into the parent workflow. Each execution also projects an `app_owned` subagent row on the parent, while one `workflow_verification` turn item per revision preserves the check evidence, reviewer verdicts, findings, and child-thread links rendered by clients. Updating a round reuses its deterministic item ID; a repair creates a new revision ID, so previous rounds remain visible.
 
 During `implementing` and `revising`, provider `assistant_message` turn items are normalized to hidden `workflow_candidate_message` items. Their ordinary assistant conversation messages remain in the provider transcript, so follow-up runs and forks retain the real conversational context. A rejected candidate is never published as completed work. When the workflow reaches `done`, the server appends a normal `assistant_message` turn item for the final candidate after the approved `workflow_verification` item. Clients render that persisted sequence directly; they do not reorder timeline rows, so existing history cursors remain stable when approval appends the completion item.
 

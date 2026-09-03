@@ -7,6 +7,7 @@ import {
   EventId,
   MessageId,
   type ModelSelection,
+  NodeId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -198,6 +199,186 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
       assert.equal(projection.thread.projectId, projectId);
       assert.equal(projection.thread.providerInstanceId, "codex");
       assert.deepEqual(projection.runs, []);
+    }),
+  );
+
+  it.effect("creates workflow reviewers as fresh subagent backing threads", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* OrchestratorV2;
+      const eventSink = yield* EventSinkV2;
+      const parentThreadId = ThreadId.make("runtime-layer-workflow-parent");
+      const reviewerThreadId = ThreadId.make("runtime-layer-workflow-reviewer");
+      const reviewerNodeId = NodeId.make("runtime-layer-workflow-reviewer-node");
+      const legacyReviewerThreadId = ThreadId.make("runtime-layer-workflow-legacy-reviewer");
+      const legacyReviewerNodeId = NodeId.make("runtime-layer-workflow-legacy-reviewer-node");
+      const projectId = ProjectId.make("runtime-layer-workflow-project");
+      const now = yield* DateTime.now;
+
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-layer-workflow-parent-create"),
+        threadId: parentThreadId,
+        projectId,
+        title: "Verified workflow",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "plan",
+        branch: "feature/workflow",
+        worktreePath: "/tmp/workflow",
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "agent",
+        creationSource: "server",
+        commandId: CommandId.make("runtime-layer-workflow-legacy-reviewer-create"),
+        threadId: legacyReviewerThreadId,
+        projectId,
+        title: "Legacy reviewer",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "plan",
+        branch: "feature/workflow",
+        worktreePath: "/tmp/workflow",
+      });
+      yield* eventSink.write({
+        commandId: CommandId.make("runtime-layer-workflow-reviewer-project"),
+        events: [
+          {
+            id: EventId.make("runtime-layer-workflow-reviewer-project-event"),
+            type: "subagent.updated",
+            threadId: parentThreadId,
+            nodeId: reviewerNodeId,
+            driver,
+            providerInstanceId: modelSelection.instanceId,
+            occurredAt: now,
+            payload: {
+              id: reviewerNodeId,
+              threadId: parentThreadId,
+              runId: null,
+              parentNodeId: NodeId.make("runtime-layer-workflow-root-node"),
+              origin: "app_owned",
+              createdBy: "system",
+              driver,
+              providerInstanceId: modelSelection.instanceId,
+              providerThreadId: null,
+              childThreadId: reviewerThreadId,
+              nativeTaskRef: null,
+              prompt: "Review revision 1.",
+              title: "Correctness reviewer",
+              role: "Reviewer",
+              model: modelSelection.model,
+              status: "running",
+              result: null,
+              startedAt: now,
+              completedAt: null,
+              updatedAt: now,
+            },
+          },
+          {
+            id: EventId.make("runtime-layer-workflow-legacy-reviewer-project-event"),
+            type: "subagent.updated",
+            threadId: parentThreadId,
+            nodeId: legacyReviewerNodeId,
+            driver,
+            providerInstanceId: modelSelection.instanceId,
+            occurredAt: now,
+            payload: {
+              id: legacyReviewerNodeId,
+              threadId: parentThreadId,
+              runId: null,
+              parentNodeId: NodeId.make("runtime-layer-workflow-root-node"),
+              origin: "app_owned",
+              createdBy: "system",
+              driver,
+              providerInstanceId: modelSelection.instanceId,
+              providerThreadId: null,
+              childThreadId: legacyReviewerThreadId,
+              nativeTaskRef: null,
+              prompt: "Review revision 0.",
+              title: "Legacy reviewer",
+              role: "Reviewer",
+              model: modelSelection.model,
+              status: "completed",
+              result: "Approved.",
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+            },
+          },
+        ],
+      });
+
+      const userCreatedChild = yield* orchestrator
+        .dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make("runtime-layer-workflow-reviewer-user-create"),
+          threadId: reviewerThreadId,
+          projectId,
+          title: "Correctness reviewer: Verified workflow",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "plan",
+          branch: "feature/workflow",
+          worktreePath: "/tmp/workflow",
+          subagentParentThreadId: parentThreadId,
+        })
+        .pipe(Effect.flip);
+      assert.instanceOf(userCreatedChild, OrchestratorDispatchError);
+
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "system",
+        creationSource: "server",
+        commandId: CommandId.make("runtime-layer-workflow-reviewer-create"),
+        threadId: reviewerThreadId,
+        projectId,
+        title: "Correctness reviewer: Verified workflow",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "plan",
+        branch: "feature/workflow",
+        worktreePath: "/tmp/workflow",
+        subagentParentThreadId: parentThreadId,
+      });
+
+      const reviewer = yield* orchestrator.getThreadProjection(reviewerThreadId);
+      assert.deepEqual(reviewer.thread.lineage, {
+        parentThreadId,
+        relationshipToParent: "subagent",
+        rootThreadId: parentThreadId,
+      });
+      assert.isNull(reviewer.thread.forkedFrom);
+      assert.isNull(reviewer.thread.workflow);
+      assert.deepEqual(reviewer.messages, []);
+      assert.deepEqual(reviewer.runs, []);
+
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "system",
+        creationSource: "server",
+        commandId: CommandId.make("runtime-layer-workflow-legacy-reviewer-repair"),
+        threadId: legacyReviewerThreadId,
+        projectId,
+        title: "Legacy reviewer",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "plan",
+        branch: "feature/workflow",
+        worktreePath: "/tmp/workflow",
+        subagentParentThreadId: parentThreadId,
+      });
+      const repaired = yield* orchestrator.getThreadProjection(legacyReviewerThreadId);
+      assert.deepEqual(repaired.thread.lineage, {
+        parentThreadId,
+        relationshipToParent: "subagent",
+        rootThreadId: parentThreadId,
+      });
+      assert.isNull(repaired.thread.forkedFrom);
+      assert.equal(repaired.thread.title, "Legacy reviewer");
     }),
   );
 

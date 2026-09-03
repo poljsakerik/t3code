@@ -2102,6 +2102,12 @@ export const OrchestrationV2Command = Schema.Union([
     branch: Schema.NullOr(TrimmedNonEmptyString),
     worktreePath: Schema.NullOr(TrimmedNonEmptyString),
     workflowProfileId: Schema.optional(TrimmedNonEmptyString),
+    /**
+     * Server-owned backing thread for an already-projected subagent row.
+     * Unlike a fork, this starts with fresh provider context. The parent must
+     * already contain an app-owned subagent that names `threadId` as its child.
+     */
+    subagentParentThreadId: Schema.optional(ThreadId),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.archive"),

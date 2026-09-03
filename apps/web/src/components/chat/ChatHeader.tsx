@@ -5,7 +5,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, ShieldCheckIcon } from "lucide-react";
 import {
   memo,
   useCallback,
@@ -18,6 +18,7 @@ import {
 } from "react";
 import { isTrailingDoubleClick } from "../Sidebar.logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { Badge } from "../ui/badge";
 import { toastManager } from "../ui/toast";
 import { useThreadActionMenu } from "~/hooks/useThreadActionMenu";
 import { readLocalApi } from "~/localApi";
@@ -38,6 +39,7 @@ interface ChatHeaderProps {
   /** Drafts have no server thread yet, so the title carries no action menu. */
   isServerThread: boolean;
   activeProject: EnvironmentProject | null;
+  isVerifiedWorkflow: boolean;
   rightPanelOpen: boolean;
   onNewThreadInProject: () => void;
   onOpenProjectSettings?: (() => void) | undefined;
@@ -70,6 +72,7 @@ export const ChatHeader = memo(function ChatHeader({
   activeThreadTitle,
   isServerThread,
   activeProject,
+  isVerifiedWorkflow,
   rightPanelOpen,
   onNewThreadInProject,
   onOpenProjectSettings,
@@ -327,6 +330,12 @@ export const ChatHeader = memo(function ChatHeader({
           )}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
+      {isVerifiedWorkflow ? (
+        <Badge size="sm" variant="outline" className="shrink-0 gap-1 text-muted-foreground">
+          <ShieldCheckIcon aria-hidden />
+          Verified workflow
+        </Badge>
+      ) : null}
     </div>
   );
 });

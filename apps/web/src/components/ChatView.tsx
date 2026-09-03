@@ -9770,6 +9770,9 @@ export default function ChatView(props: ChatViewProps) {
             isServerThread={isServerThread}
             activeThreadTitle={activeThread.title}
             activeProject={activeProject ?? null}
+            isVerifiedWorkflow={
+              activeThread.workflow !== null || draftThread?.workflowProfileId !== undefined
+            }
             rightPanelOpen={inlineRightPanelOwnsTitleBar}
             onNewThreadInProject={handleNewThreadInActiveProject}
             {...(activeDraftLogicalProjectKey

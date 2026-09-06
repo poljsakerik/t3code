@@ -5,7 +5,6 @@ import * as DateTime from "effect/DateTime";
 import {
   deriveThreadRelationshipGraph,
   immediateThreadRelationships,
-  navigationThreads,
   orderWebThreadLineageRows,
   relatedThreadIds,
   resolveMergeBackTargetThreadId,
@@ -13,33 +12,6 @@ import {
 } from "./threadRelationships.ts";
 
 describe("thread relationships", () => {
-  it("projects subagent backing threads out of navigation", () => {
-    const parent = ThreadId.make("thread-parent");
-    const subagent = ThreadId.make("thread-subagent");
-    const fork = ThreadId.make("thread-fork");
-
-    const visible = navigationThreads([
-      {
-        id: parent,
-        lineage: { rootThreadId: parent, parentThreadId: null, relationshipToParent: null },
-      },
-      {
-        id: subagent,
-        lineage: {
-          rootThreadId: parent,
-          parentThreadId: parent,
-          relationshipToParent: "subagent",
-        },
-      },
-      {
-        id: fork,
-        lineage: { rootThreadId: parent, parentThreadId: parent, relationshipToParent: "fork" },
-      },
-    ] as const);
-
-    expect(visible.map((thread) => thread.id)).toEqual([parent, fork]);
-  });
-
   it("keeps an older activity run visible over a newer cancelled run", () => {
     const parent = ThreadId.make("thread-parent");
     const child = ThreadId.make("thread-child");

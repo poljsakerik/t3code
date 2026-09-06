@@ -83,10 +83,6 @@ export function useThreadShells(): ReadonlyArray<EnvironmentThreadShell> {
   return useAtomValue(environmentThreadShells.threadShellsAtom);
 }
 
-export function useNavigationThreadShells(): ReadonlyArray<EnvironmentThreadShell> {
-  return useAtomValue(environmentThreadShells.navigationThreadShellsAtom);
-}
-
 export function useAllEnvironmentShellsBootstrapped(): boolean {
   return useAtomValue(allEnvironmentShellsBootstrappedAtom);
 }
@@ -95,12 +91,6 @@ export function useThreadShellsForProjectRefs(
   refs: ReadonlyArray<ScopedProjectRef>,
 ): ReadonlyArray<EnvironmentThreadShell> {
   return useAtomValue(environmentThreadShells.threadShellsForProjectRefsAtom(refs));
-}
-
-export function useNavigationThreadShellsForProjectRefs(
-  refs: ReadonlyArray<ScopedProjectRef>,
-): ReadonlyArray<EnvironmentThreadShell> {
-  return useAtomValue(environmentThreadShells.navigationThreadShellsForProjectRefsAtom(refs));
 }
 
 export function useProject(ref: ScopedProjectRef | null): EnvironmentProject | null {

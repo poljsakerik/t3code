@@ -25,11 +25,7 @@ import {
 import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
 
-import {
-  useEnvironmentServerConfig,
-  useNavigationThreadShells,
-  useProjects,
-} from "../../state/entities";
+import { useEnvironmentServerConfig, useProjects, useThreadShells } from "../../state/entities";
 import type { TurnCommandMetadata } from "../../lib/commandMetadata";
 import type { DraftComposerAttachment } from "../../lib/composerImages";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
@@ -203,7 +199,7 @@ const NewTaskFlowContext = React.createContext<NewTaskFlowContextValue | null>(n
 
 export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   const projects = useProjects();
-  const threads = useNavigationThreadShells();
+  const threads = useThreadShells();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const groupingSettings = useMobileProjectGroupingSettings();
   const { enabled: planModeEnabled, loaded: planModePreferenceLoaded } = useLegacyPlanModeState();

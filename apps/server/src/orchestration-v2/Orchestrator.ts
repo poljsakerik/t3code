@@ -5137,33 +5137,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
     const emitEvent = emit(events, command);
     if (Option.isSome(existingChild)) {
-      if (existingChild.value.thread.projectId !== parentProjection.thread.projectId) {
-        return yield* new OrchestratorDispatchError({
-          commandId: command.commandId,
-          commandType: command.type,
-          cause: `Subagent backing thread ${command.childThreadId} belongs to another project.`,
-        });
+      const child = existingChild.value.thread;
+      if (
+        child.projectId === parentProjection.thread.projectId &&
+        child.lineage.relationshipToParent === "subagent" &&
+        child.lineage.parentThreadId === parentProjection.thread.id
+      ) {
+        return;
       }
-      yield* emitEvent({
-        type: "thread.metadata-updated",
-        threadId: command.childThreadId,
-        providerInstanceId: existingChild.value.thread.providerInstanceId,
-        occurredAt: now,
-        payload: {
-          ...existingChild.value.thread,
-          workflow: null,
-          lineage: {
-            parentThreadId: parentProjection.thread.id,
-            relationshipToParent: "subagent",
-            rootThreadId: parentProjection.thread.lineage.rootThreadId,
-          },
-          // The coordinator observes this run directly; delegated-task result
-          // delivery is reserved for children whose node fork is retained.
-          forkedFrom: null,
-          updatedAt: now,
-        },
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Subagent backing thread ${command.childThreadId} already exists with different lineage.`,
       });
-      return;
     }
     if (task.status !== "running") {
       return yield* new OrchestratorDispatchError({

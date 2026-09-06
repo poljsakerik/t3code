@@ -209,8 +209,6 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
       const parentThreadId = ThreadId.make("runtime-layer-workflow-parent");
       const reviewerThreadId = ThreadId.make("runtime-layer-workflow-reviewer");
       const reviewerNodeId = NodeId.make("runtime-layer-workflow-reviewer-node");
-      const legacyReviewerThreadId = ThreadId.make("runtime-layer-workflow-legacy-reviewer");
-      const legacyReviewerNodeId = NodeId.make("runtime-layer-workflow-legacy-reviewer-node");
       const projectId = ProjectId.make("runtime-layer-workflow-project");
       const now = yield* DateTime.now;
 
@@ -222,20 +220,6 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         threadId: parentThreadId,
         projectId,
         title: "Verified workflow",
-        modelSelection,
-        runtimeMode: "full-access",
-        interactionMode: "plan",
-        branch: "feature/workflow",
-        worktreePath: "/tmp/workflow",
-      });
-      yield* orchestrator.dispatch({
-        type: "thread.create",
-        createdBy: "agent",
-        creationSource: "server",
-        commandId: CommandId.make("runtime-layer-workflow-legacy-reviewer-create"),
-        threadId: legacyReviewerThreadId,
-        projectId,
-        title: "Legacy reviewer",
         modelSelection,
         runtimeMode: "full-access",
         interactionMode: "plan",
@@ -273,37 +257,6 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
               result: null,
               startedAt: now,
               completedAt: null,
-              updatedAt: now,
-            },
-          },
-          {
-            id: EventId.make("runtime-layer-workflow-legacy-reviewer-project-event"),
-            type: "subagent.updated",
-            threadId: parentThreadId,
-            nodeId: legacyReviewerNodeId,
-            driver,
-            providerInstanceId: modelSelection.instanceId,
-            occurredAt: now,
-            payload: {
-              id: legacyReviewerNodeId,
-              threadId: parentThreadId,
-              runId: null,
-              parentNodeId: NodeId.make("runtime-layer-workflow-root-node"),
-              origin: "app_owned",
-              createdBy: "system",
-              driver,
-              providerInstanceId: modelSelection.instanceId,
-              providerThreadId: null,
-              childThreadId: legacyReviewerThreadId,
-              nativeTaskRef: null,
-              prompt: "Review revision 0.",
-              title: "Legacy reviewer",
-              role: "Reviewer",
-              model: modelSelection.model,
-              status: "completed",
-              result: "Approved.",
-              startedAt: now,
-              completedAt: now,
               updatedAt: now,
             },
           },
@@ -359,29 +312,6 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
       assert.equal(reviewer.messages.length, 1);
       assert.equal(reviewer.messages[0]?.text, "Review revision 1.");
       assert.equal(reviewer.runs.length, 1);
-
-      yield* orchestrator.dispatch({
-        type: "subagent.start",
-        createdBy: "system",
-        creationSource: "server",
-        commandId: CommandId.make("runtime-layer-workflow-legacy-reviewer-repair"),
-        parentThreadId,
-        taskId: legacyReviewerNodeId,
-        childThreadId: legacyReviewerThreadId,
-        messageId: MessageId.make("runtime-layer-workflow-legacy-reviewer-message"),
-        title: "Legacy reviewer",
-        prompt: "Review revision 0.",
-        modelSelection,
-        interactionMode: "plan",
-      });
-      const repaired = yield* orchestrator.getThreadProjection(legacyReviewerThreadId);
-      assert.deepEqual(repaired.thread.lineage, {
-        parentThreadId,
-        relationshipToParent: "subagent",
-        rootThreadId: parentThreadId,
-      });
-      assert.isNull(repaired.thread.forkedFrom);
-      assert.equal(repaired.thread.title, "Legacy reviewer");
     }),
   );
 

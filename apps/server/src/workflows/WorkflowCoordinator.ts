@@ -549,61 +549,10 @@ export const live = Layer.effectDiscard(
       });
     });
 
-    const repairReviewerThreadLineage = Effect.fn(
-      "WorkflowCoordinator.repairReviewerThreadLineage",
-    )(function* (input: {
-      readonly projection: OrchestrationV2ThreadProjection;
-      readonly workflow: ThreadWorkflowState;
-    }) {
-      const reviewRefs = new Map(
-        [
-          ...input.workflow.reviews,
-          ...input.projection.turnItems.flatMap((item) =>
-            item.type === "workflow_verification" ? item.reviews : [],
-          ),
-        ].map((review) => [review.reviewerThreadId, review] as const),
-      );
-      yield* Effect.forEach(
-        reviewRefs.values(),
-        Effect.fnUntraced(function* (review) {
-          const parentTask = input.projection.subagents.find(
-            (task) => task.origin === "app_owned" && task.childThreadId === review.reviewerThreadId,
-          );
-          if (parentTask === undefined) return;
-          const child = yield* Effect.option(threads.getThreadProjection(review.reviewerThreadId));
-          if (
-            child._tag === "None" ||
-            (child.value.thread.lineage.relationshipToParent === "subagent" &&
-              child.value.thread.lineage.parentThreadId === input.projection.thread.id)
-          ) {
-            return;
-          }
-          const base = `workflow:${encodeURIComponent(input.projection.thread.id)}:${review.revision}:review:${encodeURIComponent(review.reviewerId)}`;
-          yield* threads.dispatch({
-            type: "subagent.start",
-            commandId: CommandId.make(`command:${base}:repair-subagent-lineage`),
-            parentThreadId: input.projection.thread.id,
-            taskId: parentTask.id,
-            childThreadId: review.reviewerThreadId,
-            messageId: MessageId.make(`message:${base}`),
-            title: child.value.thread.title,
-            prompt: parentTask.prompt,
-            modelSelection: child.value.thread.modelSelection,
-            interactionMode: child.value.thread.interactionMode,
-            createdBy: "system",
-            creationSource: "server",
-          });
-        }),
-        { concurrency: "unbounded", discard: true },
-      );
-    });
-
     const reconcile = Effect.fn("WorkflowCoordinator.reconcile")(function* (threadId: ThreadId) {
       const projection = yield* threads.getThreadProjection(threadId);
       const workflow = projection.thread.workflow ?? null;
       if (workflow === null || workflow.profile === undefined) return;
-
-      yield* repairReviewerThreadLineage({ projection, workflow });
 
       if (workflow.status === "planning") {
         const plan = projection.plans.findLast(

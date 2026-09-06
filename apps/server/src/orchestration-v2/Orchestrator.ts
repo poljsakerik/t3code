@@ -5172,6 +5172,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const childThread = makeSubagentChildThread({
       parentThread: parentProjection.thread,
       childThreadId: command.childThreadId,
+      parentNodeId: null,
       activeProviderThreadId: null,
       providerInstanceId: command.modelSelection.instanceId,
       modelSelection: command.modelSelection,
@@ -5180,7 +5181,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       createdBy: command.createdBy,
       creationSource: command.creationSource,
       interactionMode: command.interactionMode,
-      forkedFrom: null,
     });
     yield* emitEvent({
       type: "thread.created",
@@ -5286,6 +5286,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const childThread = makeSubagentChildThread({
         parentThread: parentProjection.thread,
         childThreadId,
+        parentNodeId: taskNodeId,
         activeProviderThreadId: null,
         providerInstanceId: command.modelSelection.instanceId,
         modelSelection: command.modelSelection,
@@ -5295,7 +5296,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         creationSource: command.creationSource,
         runtimeMode: command.runtimeMode,
         interactionMode: command.interactionMode,
-        forkedFrom: { type: "node", nodeId: taskNodeId },
       });
       const task: OrchestrationV2Subagent = {
         id: taskNodeId,

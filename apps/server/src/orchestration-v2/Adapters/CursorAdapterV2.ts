@@ -1536,6 +1536,7 @@ export function makeCursorAdapterV2(
               appThread: makeSubagentChildThread({
                 parentThread: input.context.input.appThread,
                 childThreadId,
+                parentNodeId: nodeId,
                 activeProviderThreadId: null,
                 providerInstanceId: input.context.input.modelSelection.instanceId,
                 modelSelection: input.context.input.modelSelection,
@@ -1548,7 +1549,6 @@ export function makeCursorAdapterV2(
                 now,
                 createdBy: "agent",
                 creationSource: "provider",
-                forkedFrom: { type: "node", nodeId },
               }),
             });
             const promptNativeId = `${nativeItemId}:prompt`;

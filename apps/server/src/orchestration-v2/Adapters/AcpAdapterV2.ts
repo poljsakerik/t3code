@@ -2308,6 +2308,7 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
               appThread: makeSubagentChildThread({
                 parentThread: context.input.appThread,
                 childThreadId,
+                parentNodeId: nodeId,
                 activeProviderThreadId: null,
                 providerInstanceId: context.input.modelSelection.instanceId,
                 modelSelection: {
@@ -2323,7 +2324,6 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
                 now,
                 createdBy: "agent",
                 creationSource: "provider",
-                forkedFrom: { type: "node", nodeId },
               }),
             });
             const promptNativeItemId = `${nativeTaskId}:prompt`;

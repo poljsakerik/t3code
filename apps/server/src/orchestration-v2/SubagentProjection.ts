@@ -40,6 +40,7 @@ export function subagentThreadTitle(input: {
 export function makeSubagentChildThread(input: {
   readonly parentThread: OrchestrationV2AppThread;
   readonly childThreadId: ThreadId;
+  readonly parentNodeId: NodeId | null;
   readonly activeProviderThreadId: ProviderThreadId | null;
   readonly providerInstanceId: ProviderInstanceId;
   readonly modelSelection: ModelSelection;
@@ -49,7 +50,6 @@ export function makeSubagentChildThread(input: {
   readonly creationSource: OrchestrationV2CreationSource;
   readonly runtimeMode?: OrchestrationV2AppThread["runtimeMode"];
   readonly interactionMode?: OrchestrationV2AppThread["interactionMode"];
-  readonly forkedFrom: OrchestrationV2AppThread["forkedFrom"];
 }): OrchestrationV2AppThread {
   return {
     createdBy: input.createdBy,
@@ -70,7 +70,7 @@ export function makeSubagentChildThread(input: {
       relationshipToParent: "subagent",
       rootThreadId: input.parentThread.lineage.rootThreadId,
     },
-    forkedFrom: input.forkedFrom,
+    forkedFrom: input.parentNodeId === null ? null : { type: "node", nodeId: input.parentNodeId },
     createdAt: input.now,
     updatedAt: input.now,
     archivedAt: null,

@@ -82,6 +82,7 @@ it("keeps a subagent child awake when its parent thread is snoozed", () => {
   const childThread = makeSubagentChildThread({
     parentThread,
     childThreadId,
+    parentNodeId,
     activeProviderThreadId: childProviderThreadId,
     providerInstanceId: childProviderInstanceId,
     modelSelection: childModelSelection,
@@ -89,7 +90,6 @@ it("keeps a subagent child awake when its parent thread is snoozed", () => {
     now: childCreatedAt,
     createdBy: "agent",
     creationSource: "provider",
-    forkedFrom: { type: "node", nodeId: parentNodeId },
   });
 
   assert.isNull(childThread.snoozedUntil);

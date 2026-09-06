@@ -81,10 +81,10 @@ import { isTerminalFocused } from "../lib/terminalFocus";
 import { isMacPlatform } from "../lib/utils";
 import {
   readThreadShell,
+  useNavigationThreadShells,
+  useNavigationThreadShellsForProjectRefs,
   useProject,
   useProjects,
-  useThreadShells,
-  useThreadShellsForProjectRefs,
 } from "../state/entities";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { useThreadRunningTerminalIds } from "../state/terminalSessions";
@@ -178,7 +178,6 @@ import {
   resolveAdjacentThreadId,
   isContextMenuPointerDown,
   isSidebarNestedLinkClick,
-  isSidebarSubagentThread,
   isTrailingDoubleClick,
   resolveProjectStatusIndicator,
   resolveThreadRowClassName,
@@ -1212,7 +1211,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     },
   });
   const openPrLink = useOpenPrLink();
-  const sidebarThreads = useThreadShellsForProjectRefs(project.memberProjectRefs);
+  const sidebarThreads = useNavigationThreadShellsForProjectRefs(project.memberProjectRefs);
   const sidebarThreadByKey = useMemo(
     () =>
       new Map(
@@ -3078,7 +3077,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
 
 export default function LegacySidebar() {
   const projects = useProjects();
-  const sidebarThreads = useThreadShells();
+  const sidebarThreads = useNavigationThreadShells();
   const projectExpandedById = useUiStateStore((store) => store.projectExpandedById);
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const reorderProjects = useUiStateStore((store) => store.reorderProjects);
@@ -3228,7 +3227,6 @@ export default function LegacySidebar() {
   const threadsByProjectKey = useMemo(() => {
     const next = new Map<string, SidebarThreadSummary[]>();
     for (const thread of sidebarThreads) {
-      if (isSidebarSubagentThread(thread)) continue;
       const physicalKey =
         projectPhysicalKeyByScopedRef.get(
           scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
@@ -3351,10 +3349,7 @@ export default function LegacySidebar() {
   }, []);
 
   const visibleThreads = useMemo(
-    () =>
-      sidebarThreads.filter(
-        (thread) => thread.archivedAt === null && !isSidebarSubagentThread(thread),
-      ),
+    () => sidebarThreads.filter((thread) => thread.archivedAt === null),
     [sidebarThreads],
   );
   const sortedProjects = useMemo(() => {

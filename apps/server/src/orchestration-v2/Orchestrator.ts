@@ -293,6 +293,7 @@ function commandThreadId(command: OrchestrationV2Command): ThreadId {
     case "delegated_task.wake-policy":
     case "delegated_task.completion-delivery.acknowledge":
     case "delegated_task.completion-delivery.dispose":
+    case "subagent.start":
     case "thread.created.record":
       return command.parentThreadId;
     case "thread.fork":
@@ -1402,79 +1403,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       "orchestration_v2.driver": command.modelSelection.instanceId,
     });
 
-    const subagentParentThreadId = command.subagentParentThreadId;
-    const parentProjection =
-      subagentParentThreadId === undefined
-        ? undefined
-        : yield* projectionStore.getThreadProjection(subagentParentThreadId).pipe(
-            Effect.mapError(
-              (cause) =>
-                new OrchestratorProjectionError({
-                  threadId: subagentParentThreadId,
-                  cause,
-                }),
-            ),
-          );
-    const parentTask = parentProjection?.subagents.find(
-      (task) => task.origin === "app_owned" && task.childThreadId === command.threadId,
-    );
-    if (subagentParentThreadId !== undefined) {
-      if (command.createdBy !== "system" || command.creationSource !== "server") {
-        return yield* new OrchestratorDispatchError({
-          commandId: command.commandId,
-          commandType: command.type,
-          cause: "Subagent backing threads can only be created by the server.",
-        });
-      }
-      if (parentProjection?.thread.projectId !== command.projectId || parentTask === undefined) {
-        return yield* new OrchestratorDispatchError({
-          commandId: command.commandId,
-          commandType: command.type,
-          cause: `Thread ${command.threadId} is not a projected subagent of ${subagentParentThreadId}.`,
-        });
-      }
-    }
-
     const now = yield* DateTime.now;
-    const existingChild =
-      subagentParentThreadId === undefined
-        ? Option.none<OrchestrationV2ThreadProjection>()
-        : yield* Effect.option(projectionStore.getThreadProjection(command.threadId));
-    const emitEvent = emit(events, command);
-    if (
-      parentProjection !== undefined &&
-      parentTask !== undefined &&
-      Option.isSome(existingChild)
-    ) {
-      if (existingChild.value.thread.projectId !== command.projectId) {
-        return yield* new OrchestratorDispatchError({
-          commandId: command.commandId,
-          commandType: command.type,
-          cause: `Subagent backing thread ${command.threadId} belongs to another project.`,
-        });
-      }
-      yield* emitEvent({
-        type: "thread.metadata-updated",
-        threadId: command.threadId,
-        providerInstanceId: existingChild.value.thread.providerInstanceId,
-        occurredAt: now,
-        payload: {
-          ...existingChild.value.thread,
-          workflow: null,
-          lineage: {
-            parentThreadId: parentProjection.thread.id,
-            relationshipToParent: "subagent",
-            rootThreadId: parentProjection.thread.lineage.rootThreadId,
-          },
-          // WorkflowCoordinator owns the completion path for this child; a
-          // node fork would opt it into delegated-task result delivery.
-          forkedFrom: null,
-          updatedAt: now,
-        },
-      });
-      return;
-    }
-
     const workflowConfig =
       command.workflowProfileId === undefined
         ? undefined
@@ -1500,82 +1429,60 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       (workflowProfile === undefined
         ? undefined
         : workflowAgentModelSelection(workflowProfile.planner)) ?? command.modelSelection;
-    const thread: OrchestrationV2AppThread =
-      parentProjection !== undefined && parentTask !== undefined
-        ? {
-            ...makeSubagentChildThread({
-              parentThread: parentProjection.thread,
-              childThreadId: command.threadId,
-              parentNodeId: parentTask.id,
-              activeProviderThreadId: null,
-              providerInstanceId: plannerSelection.instanceId,
-              modelSelection: plannerSelection,
-              title: command.title,
-              now,
-              createdBy: command.createdBy,
-              creationSource: command.creationSource,
-            }),
-            runtimeMode: command.runtimeMode,
-            interactionMode: command.interactionMode,
-            // The workflow belongs to the visible parent. Its reviewer is an
-            // isolated backing thread, not another workflow coordinator root.
-            workflow: null,
-            // WorkflowCoordinator owns reviewer completion and projects it
-            // into the verification card; generic delegated-task delivery
-            // must not enqueue a continuation turn for this child.
-            forkedFrom: null,
-          }
-        : {
-            createdBy: command.createdBy,
-            creationSource: command.creationSource,
-            id: command.threadId,
-            projectId: command.projectId,
-            title: command.title,
-            providerInstanceId: plannerSelection.instanceId,
-            modelSelection: plannerSelection,
-            runtimeMode: command.runtimeMode,
-            interactionMode: command.interactionMode,
-            branch: command.branch,
-            worktreePath: command.worktreePath,
-            activeProviderThreadId: null,
-            workflow:
-              workflowConfig === undefined
-                ? null
-                : {
-                    profileId: workflowConfig.profile.id,
-                    workspaceRoot: workflowConfig.workspaceRoot,
-                    profile: workflowConfig.profile,
-                    status: "draft",
-                    revision: 0,
-                    revisionCycles: 0,
-                    consecutiveFailureCount: 0,
-                    lastFailureFingerprint: null,
-                    approvedPlanId: null,
-                    candidateRunId: null,
-                    workspaceDigest: null,
-                    checks: [],
-                    reviews: [],
-                    terminalReason: null,
-                    updatedAt: DateTime.formatIso(now),
-                  },
-            lineage: {
-              parentThreadId: null,
-              relationshipToParent: null,
-              rootThreadId: command.threadId,
+    const thread: OrchestrationV2AppThread = {
+      createdBy: command.createdBy,
+      creationSource: command.creationSource,
+      id: command.threadId,
+      projectId: command.projectId,
+      title: command.title,
+      providerInstanceId: plannerSelection.instanceId,
+      modelSelection: plannerSelection,
+      runtimeMode: command.runtimeMode,
+      interactionMode: command.interactionMode,
+      branch: command.branch,
+      worktreePath: command.worktreePath,
+      activeProviderThreadId: null,
+      workflow:
+        workflowConfig === undefined
+          ? null
+          : {
+              profileId: workflowConfig.profile.id,
+              workspaceRoot: workflowConfig.workspaceRoot,
+              profile: workflowConfig.profile,
+              status: "draft",
+              revision: 0,
+              revisionCycles: 0,
+              consecutiveFailureCount: 0,
+              lastFailureFingerprint: null,
+              approvedPlanId: null,
+              candidateRunId: null,
+              workspaceDigest: null,
+              checks: [],
+              reviews: [],
+              terminalReason: null,
+              updatedAt: DateTime.formatIso(now),
             },
-            forkedFrom: null,
-            createdAt: now,
-            updatedAt: now,
-            archivedAt: null,
-            settledOverride: null,
-            settledAt: null,
-            snoozedUntil: null,
-            snoozedAt: null,
-            lastVisitedAt: null,
-            deletedAt: null,
-          };
+      lineage: {
+        parentThreadId: null,
+        relationshipToParent: null,
+        rootThreadId: command.threadId,
+      },
+      forkedFrom: null,
+      createdAt: now,
+      updatedAt: now,
+      archivedAt: null,
+      settledOverride: null,
+      settledAt: null,
+      snoozedUntil: null,
+      snoozedAt: null,
+      lastVisitedAt: null,
+      deletedAt: null,
+    };
 
-    yield* emitEvent({
+    yield* emit(
+      events,
+      command,
+    )({
       type: "thread.created",
       threadId: command.threadId,
       providerInstanceId: plannerSelection.instanceId,
@@ -5187,6 +5094,137 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       yield* Ref.update(effects, (existing) => [...existing, pendingEffect]);
     });
 
+  const dispatchSubagentStart = Effect.fn("orchestrationV2.dispatch.subagentStart")(function* (
+    command: Extract<OrchestrationV2Command, { readonly type: "subagent.start" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    if (command.createdBy !== "system" || command.creationSource !== "server") {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "Coordinator-owned subagents can only be started by the server.",
+      });
+    }
+    const parentProjection = yield* projectionStore
+      .getThreadProjection(command.parentThreadId)
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new OrchestratorProjectionError({
+              threadId: command.parentThreadId,
+              cause,
+            }),
+        ),
+      );
+    const task = parentProjection.subagents.find(
+      (candidate) =>
+        candidate.id === command.taskId &&
+        candidate.origin === "app_owned" &&
+        candidate.childThreadId === command.childThreadId,
+    );
+    if (task === undefined || task.providerInstanceId !== command.modelSelection.instanceId) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Task ${command.taskId} is not a matching app-owned subagent of ${command.parentThreadId}.`,
+      });
+    }
+
+    const now = yield* DateTime.now;
+    const existingChild = yield* Effect.option(
+      projectionStore.getThreadProjection(command.childThreadId),
+    );
+    const emitEvent = emit(events, command);
+    if (Option.isSome(existingChild)) {
+      if (existingChild.value.thread.projectId !== parentProjection.thread.projectId) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Subagent backing thread ${command.childThreadId} belongs to another project.`,
+        });
+      }
+      yield* emitEvent({
+        type: "thread.metadata-updated",
+        threadId: command.childThreadId,
+        providerInstanceId: existingChild.value.thread.providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...existingChild.value.thread,
+          workflow: null,
+          lineage: {
+            parentThreadId: parentProjection.thread.id,
+            relationshipToParent: "subagent",
+            rootThreadId: parentProjection.thread.lineage.rootThreadId,
+          },
+          // The coordinator observes this run directly; delegated-task result
+          // delivery is reserved for children whose node fork is retained.
+          forkedFrom: null,
+          updatedAt: now,
+        },
+      });
+      return;
+    }
+    if (task.status !== "running") {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Subagent task ${command.taskId} is already ${task.status}.`,
+      });
+    }
+
+    const targetAdapter = yield* providerAdapters.get(command.modelSelection.instanceId).pipe(
+      Effect.mapError(
+        (cause) =>
+          new OrchestratorProviderAdapterError({
+            commandId: command.commandId,
+            providerInstanceId: command.modelSelection.instanceId,
+            cause,
+          }),
+      ),
+    );
+    const childThread = makeSubagentChildThread({
+      parentThread: parentProjection.thread,
+      childThreadId: command.childThreadId,
+      activeProviderThreadId: null,
+      providerInstanceId: command.modelSelection.instanceId,
+      modelSelection: command.modelSelection,
+      title: command.title,
+      now,
+      createdBy: command.createdBy,
+      creationSource: command.creationSource,
+      interactionMode: command.interactionMode,
+      forkedFrom: null,
+    });
+    yield* emitEvent({
+      type: "thread.created",
+      threadId: command.childThreadId,
+      driver: targetAdapter.driver,
+      providerInstanceId: command.modelSelection.instanceId,
+      occurredAt: now,
+      payload: childThread,
+    });
+    yield* dispatchMessage(
+      {
+        type: "message.dispatch",
+        commandId: command.commandId,
+        threadId: command.childThreadId,
+        messageId: command.messageId,
+        text: command.prompt,
+        attachments: [],
+        modelSelection: command.modelSelection,
+        ...(command.workflowSkillAllowlist === undefined
+          ? {}
+          : { workflowSkillAllowlist: command.workflowSkillAllowlist }),
+        dispatchMode: { type: "start_immediately" },
+        createdBy: command.createdBy,
+        creationSource: command.creationSource,
+      },
+      events,
+      effects,
+    );
+  });
+
   const dispatchDelegatedTaskRequest = Effect.fn("orchestrationV2.dispatch.delegatedTaskRequest")(
     function* (
       command: Extract<OrchestrationV2Command, { readonly type: "delegated_task.request" }>,
@@ -5259,22 +5297,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.title === undefined ? {} : { title: command.title }),
         ordinal: parentProjection.subagents.length + 1,
       });
-      const childThread: OrchestrationV2AppThread = {
-        ...makeSubagentChildThread({
-          parentThread: parentProjection.thread,
-          childThreadId,
-          parentNodeId: taskNodeId,
-          activeProviderThreadId: null,
-          providerInstanceId: command.modelSelection.instanceId,
-          modelSelection: command.modelSelection,
-          title: taskTitle,
-          now,
-          createdBy: command.createdBy,
-          creationSource: command.creationSource,
-        }),
+      const childThread = makeSubagentChildThread({
+        parentThread: parentProjection.thread,
+        childThreadId,
+        activeProviderThreadId: null,
+        providerInstanceId: command.modelSelection.instanceId,
+        modelSelection: command.modelSelection,
+        title: taskTitle,
+        now,
+        createdBy: command.createdBy,
+        creationSource: command.creationSource,
         runtimeMode: command.runtimeMode,
         interactionMode: command.interactionMode,
-      };
+        forkedFrom: { type: "node", nodeId: taskNodeId },
+      });
       const task: OrchestrationV2Subagent = {
         id: taskNodeId,
         threadId: command.parentThreadId,
@@ -7563,6 +7599,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "delegated_task.request":
         yield* dispatchDelegatedTaskRequest(command, events, effects);
+        break;
+      case "subagent.start":
+        yield* dispatchSubagentStart(command, events, effects);
         break;
       case "delegated_task.wake-policy":
         yield* dispatchDelegatedTaskWakePolicy(command, events);

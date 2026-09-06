@@ -208,31 +208,31 @@ describe("orchestration V2 contracts", () => {
     expect(command.parentNodeId).toBe(NodeId.make("node-parent-1"));
   });
 
-  it("decodes server-owned subagent backing thread creation", () => {
+  it("decodes a server-owned subagent start without duplicated workspace fields", () => {
     const command = decodeOrchestrationV2Command({
-      type: "thread.create",
+      type: "subagent.start",
       createdBy: "system",
       creationSource: "server",
-      commandId: "command-reviewer-create-1",
-      threadId: "thread-reviewer-1",
-      projectId: "project-1",
+      commandId: "command-reviewer-start-1",
+      parentThreadId: "thread-workflow-1",
+      taskId: "node-reviewer-1",
+      childThreadId: "thread-reviewer-1",
+      messageId: "message-reviewer-1",
       title: "Correctness reviewer",
+      prompt: "Review revision 1.",
       modelSelection: {
         instanceId: "codex",
         model: "gpt-5.4",
       },
-      runtimeMode: "full-access",
       interactionMode: "plan",
-      branch: "feature/workflow",
-      worktreePath: "/tmp/workflow",
-      subagentParentThreadId: "thread-workflow-1",
     });
 
-    expect(command.type).toBe("thread.create");
-    if (command.type !== "thread.create") {
-      throw new Error("expected thread.create");
+    expect(command.type).toBe("subagent.start");
+    if (command.type !== "subagent.start") {
+      throw new Error("expected subagent.start");
     }
-    expect(command.subagentParentThreadId).toBe(ThreadId.make("thread-workflow-1"));
+    expect(command.parentThreadId).toBe(ThreadId.make("thread-workflow-1"));
+    expect(command.childThreadId).toBe(ThreadId.make("thread-reviewer-1"));
   });
 
   it("decodes delegated task wake-policy commands", () => {

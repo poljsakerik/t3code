@@ -1239,7 +1239,6 @@ export function makeOpenCodeAdapterV2(options: OpenCodeAdapterV2Options): Provid
             const childThread = makeSubagentChildThread({
               parentThread: turn.appThread,
               childThreadId: context.childThreadId,
-              parentNodeId: nodeId,
               activeProviderThreadId: context.childProviderThreadId,
               providerInstanceId: options.instanceId,
               modelSelection: childModelSelection,
@@ -1252,6 +1251,7 @@ export function makeOpenCodeAdapterV2(options: OpenCodeAdapterV2Options): Provid
               now,
               createdBy: "agent",
               creationSource: "provider",
+              forkedFrom: { type: "node", nodeId },
             });
             const childProviderThread: OrchestrationV2ProviderThread = {
               id: context.childProviderThreadId,

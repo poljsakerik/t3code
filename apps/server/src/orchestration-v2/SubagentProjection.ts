@@ -40,7 +40,6 @@ export function subagentThreadTitle(input: {
 export function makeSubagentChildThread(input: {
   readonly parentThread: OrchestrationV2AppThread;
   readonly childThreadId: ThreadId;
-  readonly parentNodeId: NodeId;
   readonly activeProviderThreadId: ProviderThreadId | null;
   readonly providerInstanceId: ProviderInstanceId;
   readonly modelSelection: ModelSelection;
@@ -48,34 +47,42 @@ export function makeSubagentChildThread(input: {
   readonly now: DateTime.Utc;
   readonly createdBy: OrchestrationV2Actor;
   readonly creationSource: OrchestrationV2CreationSource;
+  readonly runtimeMode?: OrchestrationV2AppThread["runtimeMode"];
+  readonly interactionMode?: OrchestrationV2AppThread["interactionMode"];
+  readonly forkedFrom: OrchestrationV2AppThread["forkedFrom"];
 }): OrchestrationV2AppThread {
   return {
-    ...input.parentThread,
     createdBy: input.createdBy,
     creationSource: input.creationSource,
     id: input.childThreadId,
+    projectId: input.parentThread.projectId,
     title: input.title,
-    historyOrigin: undefined,
     providerInstanceId: input.providerInstanceId,
     modelSelection: input.modelSelection,
+    runtimeMode: input.runtimeMode ?? input.parentThread.runtimeMode,
+    interactionMode: input.interactionMode ?? input.parentThread.interactionMode,
+    branch: input.parentThread.branch,
+    worktreePath: input.parentThread.worktreePath,
     activeProviderThreadId: input.activeProviderThreadId,
+    workflow: null,
     lineage: {
       parentThreadId: input.parentThread.id,
       relationshipToParent: "subagent",
       rootThreadId: input.parentThread.lineage.rootThreadId,
     },
-    forkedFrom: {
-      type: "node",
-      nodeId: input.parentNodeId,
-    },
+    forkedFrom: input.forkedFrom,
     createdAt: input.now,
     updatedAt: input.now,
     archivedAt: null,
     settledOverride: null,
     settledAt: null,
+    unsettledAt: null,
     snoozedUntil: null,
     snoozedAt: null,
+    pinnedAt: null,
+    pinOrderKey: null,
     lastVisitedAt: null,
+    titleRegeneration: null,
     deletedAt: null,
   };
 }

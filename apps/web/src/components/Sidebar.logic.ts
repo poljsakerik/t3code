@@ -2,7 +2,6 @@ import * as React from "react";
 import { defaultAnimateLayoutChanges, type AnimateLayoutChanges } from "@dnd-kit/sortable";
 import type { ContextMenuItem } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
-import { isSubagentThread } from "@t3tools/client-runtime/state/thread-relationships";
 import {
   activeThreadAnchorTimestampMs,
   getThreadSortTimestamp,
@@ -157,12 +156,8 @@ export function buildMultiSelectThreadContextMenuItems(input: {
   ];
 }
 
-export function isSidebarSubagentThread(thread: Pick<SidebarThreadSummary, "lineage">): boolean {
-  return isSubagentThread(thread);
-}
-
 export function filterSidebarV2VisibleThreads<
-  T extends Pick<SidebarThreadSummary, "archivedAt" | "lineage"> & {
+  T extends Pick<SidebarThreadSummary, "archivedAt"> & {
     environmentId: string;
     projectId: string;
   },
@@ -170,7 +165,6 @@ export function filterSidebarV2VisibleThreads<
   return threads.filter(
     (thread) =>
       thread.archivedAt === null &&
-      !isSidebarSubagentThread(thread) &&
       (scopedProjectKeys === null ||
         scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
   );
@@ -1085,7 +1079,7 @@ export function sortLogicalProjectsForSidebar<
 
 export function sortSidebarV2ProjectGroups<
   TProject extends LogicalSidebarProject,
-  TThread extends ScopedSidebarThread & Pick<SidebarThreadSummary, "lineage">,
+  TThread extends ScopedSidebarThread,
 >(
   projects: readonly TProject[],
   threads: readonly TThread[],

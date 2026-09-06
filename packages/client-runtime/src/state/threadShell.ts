@@ -20,6 +20,7 @@ import {
   threadKey,
   threadRefsEqual,
 } from "./entities.ts";
+import { navigationThreads } from "./threadRelationships.ts";
 
 const EMPTY_THREADS: ReadonlyArray<OrchestrationV2ThreadShell> = Object.freeze([]);
 const EMPTY_SCOPED_THREAD_REFS: ReadonlyArray<ScopedThreadRef> = Object.freeze([]);
@@ -146,6 +147,18 @@ export function createEnvironmentThreadShellAtoms(input: {
     }).pipe(Atom.withLabel(`environment-thread-shells-for-projects:${key}`));
   });
 
+  const navigationThreadShellsForProjectRefsAtomFamily = Atom.family((key: string) => {
+    let previous: ReadonlyArray<EnvironmentThreadShell> = [];
+    return Atom.make((get) => {
+      const next = navigationThreads(get(threadShellsForProjectRefsAtomFamily(key)));
+      if (arrayElementsEqual(previous, next)) {
+        return previous;
+      }
+      previous = next;
+      return previous;
+    }).pipe(Atom.withLabel(`environment-navigation-thread-shells-for-projects:${key}`));
+  });
+
   let previousThreadRefs: ReadonlyArray<ScopedThreadRef> = [];
   const threadRefsAtom = Atom.make((get) => {
     const refs: ScopedThreadRef[] = [];
@@ -172,6 +185,16 @@ export function createEnvironmentThreadShellAtoms(input: {
     return previousThreadShells;
   }).pipe(Atom.withLabel("environment-thread-shell-list"));
 
+  let previousNavigationThreadShells: ReadonlyArray<EnvironmentThreadShell> = [];
+  const navigationThreadShellsAtom = Atom.make((get) => {
+    const next = navigationThreads(get(threadShellsAtom));
+    if (arrayElementsEqual(previousNavigationThreadShells, next)) {
+      return previousNavigationThreadShells;
+    }
+    previousNavigationThreadShells = next;
+    return previousNavigationThreadShells;
+  }).pipe(Atom.withLabel("environment-navigation-thread-shell-list"));
+
   return {
     environmentThreadsAtom,
     environmentThreadIndexAtom,
@@ -179,8 +202,11 @@ export function createEnvironmentThreadShellAtoms(input: {
     environmentThreadRefsByProjectAtom,
     threadRefsAtom,
     threadShellsAtom,
+    navigationThreadShellsAtom,
     threadShellsForProjectRefsAtom: (refs: ReadonlyArray<ScopedProjectRef>) =>
       threadShellsForProjectRefsAtomFamily(projectRefCollectionKey(refs)),
+    navigationThreadShellsForProjectRefsAtom: (refs: ReadonlyArray<ScopedProjectRef>) =>
+      navigationThreadShellsForProjectRefsAtomFamily(projectRefCollectionKey(refs)),
     threadShellAtom: (ref: ScopedThreadRef) => threadShellAtomFamily(threadKey(ref)),
   };
 }

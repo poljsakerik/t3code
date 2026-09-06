@@ -3237,7 +3237,6 @@ export function makeClaudeAdapterV2(
             const childThread = makeSubagentChildThread({
               parentThread: input.context.input.appThread,
               childThreadId,
-              parentNodeId: nodeId,
               activeProviderThreadId: null,
               providerInstanceId: input.context.input.modelSelection.instanceId,
               modelSelection: input.context.input.modelSelection,
@@ -3250,6 +3249,7 @@ export function makeClaudeAdapterV2(
               now,
               createdBy: "agent",
               creationSource: "provider",
+              forkedFrom: { type: "node", nodeId },
             });
             yield* emitProviderEvent({
               type: "app_thread.created",

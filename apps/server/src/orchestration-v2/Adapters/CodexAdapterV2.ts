@@ -2156,7 +2156,6 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             const childThread = makeSubagentChildThread({
               parentThread: input.context.projectionAppThread,
               childThreadId,
-              parentNodeId: subagentNodeId,
               activeProviderThreadId: providerThread.id,
               providerInstanceId: input.context.input.modelSelection.instanceId,
               modelSelection: {
@@ -2172,6 +2171,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               now,
               createdBy: "agent",
               creationSource: "provider",
+              forkedFrom: { type: "node", nodeId: subagentNodeId },
             });
             const subagent = {
               parentContext: input.context,

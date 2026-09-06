@@ -36,6 +36,13 @@ export function isSubagentThread(thread: Pick<OrchestrationV2ThreadShell, "linea
   return thread.lineage.relationshipToParent === "subagent";
 }
 
+/** Threads that belong in user-facing thread navigation. */
+export function navigationThreads<T extends Pick<OrchestrationV2ThreadShell, "lineage">>(
+  threads: ReadonlyArray<T>,
+): T[] {
+  return threads.filter((thread) => !isSubagentThread(thread));
+}
+
 export function resolveMergeBackTargetThreadId(
   projection: Pick<OrchestrationV2ThreadProjection, "thread"> | null,
 ): ThreadId | null {

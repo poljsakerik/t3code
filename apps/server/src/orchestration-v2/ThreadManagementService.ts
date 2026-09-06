@@ -53,6 +53,7 @@ export function withCreationProvenance(
     case "thread.fork":
     case "thread.merge_back":
     case "delegated_task.request":
+    case "subagent.start":
       return { ...command, ...provenance };
     default:
       return command;
@@ -64,7 +65,7 @@ export function existingThreadIdsForCommand(
 ): ReadonlyArray<ThreadId> {
   switch (command.type) {
     case "thread.create":
-      return command.subagentParentThreadId === undefined ? [] : [command.subagentParentThreadId];
+      return [];
     // Read-state commands only rewrite the thread payload's visited/unread
     // watermark; they never touch messages, so they do not need the imported
     // v1 transcript hydrated first. Visits fire on every thread-activity bump
@@ -82,6 +83,7 @@ export function existingThreadIdsForCommand(
     case "delegated_task.wake-policy":
     case "delegated_task.completion-delivery.acknowledge":
     case "delegated_task.completion-delivery.dispose":
+    case "subagent.start":
       return [command.parentThreadId];
     case "thread.created.record":
       return command.parentThreadId === command.targetThreadId

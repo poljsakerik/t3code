@@ -22,6 +22,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ProcessRunner from "../processRunner.ts";
+import { IdAllocatorV2 } from "../orchestration-v2/IdAllocator.ts";
 import { makeKeyedSerialExecutor } from "../orchestration-v2/KeyedSerialExecutor.ts";
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
 
@@ -147,6 +148,7 @@ export function allWorkflowReviewsApprove(reviews: ReadonlyArray<WorkflowReviewR
 export const live = Layer.effectDiscard(
   Effect.gen(function* () {
     const threads = yield* ThreadManagementService;
+    const ids = yield* IdAllocatorV2;
     const processes = yield* ProcessRunner.ProcessRunner;
     const platform = yield* HostProcessPlatform;
     const serial = yield* makeKeyedSerialExecutor<ThreadId>();
@@ -357,35 +359,26 @@ export const live = Layer.effectDiscard(
       const selection =
         workflowAgentModelSelection(input.reviewer) ?? input.projection.thread.modelSelection;
       yield* threads.dispatch({
-        type: "thread.create",
-        commandId: CommandId.make(`command:${base}:create`),
-        threadId: childThreadId,
-        projectId: input.projection.thread.projectId,
-        title: `${input.reviewer.name}: ${input.projection.thread.title}`,
-        modelSelection: selection,
-        runtimeMode: input.projection.thread.runtimeMode,
-        interactionMode: "plan",
-        branch: input.projection.thread.branch,
-        worktreePath: input.projection.thread.worktreePath,
-        subagentParentThreadId: input.projection.thread.id,
-        createdBy: "system",
-        creationSource: "server",
-      });
-      yield* threads.dispatch({
-        type: "message.dispatch",
-        commandId: CommandId.make(`command:${base}:start`),
-        threadId: childThreadId,
+        type: "subagent.start",
+        commandId: CommandId.make(`command:${base}:subagent-start`),
+        parentThreadId: input.projection.thread.id,
+        taskId: ids.derive.workflowReviewerNode({
+          threadId: input.projection.thread.id,
+          revision: input.workflow.revision,
+          reviewerId: input.reviewer.id,
+        }),
+        childThreadId,
         messageId: MessageId.make(`message:${base}`),
-        text: reviewPrompt({
+        title: `${input.reviewer.name}: ${input.projection.thread.title}`,
+        prompt: reviewPrompt({
           reviewer: input.reviewer,
           workflow: input.workflow,
           planMarkdown: input.planMarkdown,
         }),
-        attachments: [],
         modelSelection: selection,
+        interactionMode: "plan",
         workflowSkillAllowlist: input.reviewer.skills,
-        dispatchMode: { type: "start_immediately" },
-        createdBy: "agent",
+        createdBy: "system",
         creationSource: "server",
       });
     });
@@ -587,17 +580,16 @@ export const live = Layer.effectDiscard(
           }
           const base = `workflow:${encodeURIComponent(input.projection.thread.id)}:${review.revision}:review:${encodeURIComponent(review.reviewerId)}`;
           yield* threads.dispatch({
-            type: "thread.create",
-            commandId: CommandId.make(`command:${base}:repair-lineage`),
-            threadId: review.reviewerThreadId,
-            projectId: input.projection.thread.projectId,
+            type: "subagent.start",
+            commandId: CommandId.make(`command:${base}:repair-subagent-lineage`),
+            parentThreadId: input.projection.thread.id,
+            taskId: parentTask.id,
+            childThreadId: review.reviewerThreadId,
+            messageId: MessageId.make(`message:${base}`),
             title: child.value.thread.title,
+            prompt: parentTask.prompt,
             modelSelection: child.value.thread.modelSelection,
-            runtimeMode: child.value.thread.runtimeMode,
             interactionMode: child.value.thread.interactionMode,
-            branch: child.value.thread.branch,
-            worktreePath: child.value.thread.worktreePath,
-            subagentParentThreadId: input.projection.thread.id,
             createdBy: "system",
             creationSource: "server",
           });

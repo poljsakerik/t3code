@@ -312,37 +312,35 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
 
       const userCreatedChild = yield* orchestrator
         .dispatch({
-          type: "thread.create",
+          type: "subagent.start",
           createdBy: "user",
           creationSource: "web",
-          commandId: CommandId.make("runtime-layer-workflow-reviewer-user-create"),
-          threadId: reviewerThreadId,
-          projectId,
+          commandId: CommandId.make("runtime-layer-workflow-reviewer-user-start"),
+          parentThreadId,
+          taskId: reviewerNodeId,
+          childThreadId: reviewerThreadId,
+          messageId: MessageId.make("runtime-layer-workflow-reviewer-user-message"),
           title: "Correctness reviewer: Verified workflow",
+          prompt: "Review revision 1.",
           modelSelection,
-          runtimeMode: "full-access",
           interactionMode: "plan",
-          branch: "feature/workflow",
-          worktreePath: "/tmp/workflow",
-          subagentParentThreadId: parentThreadId,
         })
         .pipe(Effect.flip);
       assert.instanceOf(userCreatedChild, OrchestratorDispatchError);
 
       yield* orchestrator.dispatch({
-        type: "thread.create",
+        type: "subagent.start",
         createdBy: "system",
         creationSource: "server",
-        commandId: CommandId.make("runtime-layer-workflow-reviewer-create"),
-        threadId: reviewerThreadId,
-        projectId,
+        commandId: CommandId.make("runtime-layer-workflow-reviewer-start"),
+        parentThreadId,
+        taskId: reviewerNodeId,
+        childThreadId: reviewerThreadId,
+        messageId: MessageId.make("runtime-layer-workflow-reviewer-message"),
         title: "Correctness reviewer: Verified workflow",
+        prompt: "Review revision 1.",
         modelSelection,
-        runtimeMode: "full-access",
         interactionMode: "plan",
-        branch: "feature/workflow",
-        worktreePath: "/tmp/workflow",
-        subagentParentThreadId: parentThreadId,
       });
 
       const reviewer = yield* orchestrator.getThreadProjection(reviewerThreadId);
@@ -353,23 +351,28 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
       });
       assert.isNull(reviewer.thread.forkedFrom);
       assert.isNull(reviewer.thread.workflow);
-      assert.deepEqual(reviewer.messages, []);
-      assert.deepEqual(reviewer.runs, []);
+      assert.equal(reviewer.thread.projectId, projectId);
+      assert.equal(reviewer.thread.branch, "feature/workflow");
+      assert.equal(reviewer.thread.worktreePath, "/tmp/workflow");
+      assert.equal(reviewer.thread.runtimeMode, "full-access");
+      assert.equal(reviewer.thread.interactionMode, "plan");
+      assert.equal(reviewer.messages.length, 1);
+      assert.equal(reviewer.messages[0]?.text, "Review revision 1.");
+      assert.equal(reviewer.runs.length, 1);
 
       yield* orchestrator.dispatch({
-        type: "thread.create",
+        type: "subagent.start",
         createdBy: "system",
         creationSource: "server",
         commandId: CommandId.make("runtime-layer-workflow-legacy-reviewer-repair"),
-        threadId: legacyReviewerThreadId,
-        projectId,
+        parentThreadId,
+        taskId: legacyReviewerNodeId,
+        childThreadId: legacyReviewerThreadId,
+        messageId: MessageId.make("runtime-layer-workflow-legacy-reviewer-message"),
         title: "Legacy reviewer",
+        prompt: "Review revision 0.",
         modelSelection,
-        runtimeMode: "full-access",
         interactionMode: "plan",
-        branch: "feature/workflow",
-        worktreePath: "/tmp/workflow",
-        subagentParentThreadId: parentThreadId,
       });
       const repaired = yield* orchestrator.getThreadProjection(legacyReviewerThreadId);
       assert.deepEqual(repaired.thread.lineage, {

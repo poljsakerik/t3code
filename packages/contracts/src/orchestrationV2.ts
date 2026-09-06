@@ -2102,12 +2102,6 @@ export const OrchestrationV2Command = Schema.Union([
     branch: Schema.NullOr(TrimmedNonEmptyString),
     worktreePath: Schema.NullOr(TrimmedNonEmptyString),
     workflowProfileId: Schema.optional(TrimmedNonEmptyString),
-    /**
-     * Server-owned backing thread for an already-projected subagent row.
-     * Unlike a fork, this starts with fresh provider context. The parent must
-     * already contain an app-owned subagent that names `threadId` as its child.
-     */
-    subagentParentThreadId: Schema.optional(ThreadId),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.archive"),
@@ -2244,6 +2238,25 @@ export const OrchestrationV2Command = Schema.Union([
     threadId: ThreadId,
     expectedStatus: Schema.optional(Schema.NullOr(WorkflowStatus)),
     workflow: ThreadWorkflowState,
+  }),
+  Schema.Struct({
+    /**
+     * Starts the initial run for an already-projected app-owned subagent.
+     * The backing thread derives its workspace and runtime from the parent.
+     */
+    type: Schema.Literal("subagent.start"),
+    ...OrchestrationV2CreationFields,
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    childThreadId: ThreadId,
+    messageId: MessageId,
+    title: TrimmedNonEmptyString,
+    prompt: Schema.String,
+    modelSelection: ModelSelection,
+    interactionMode: ProviderInteractionMode,
+    /** Server-owned native skill allowlist for verified-workflow reviewers. */
+    workflowSkillAllowlist: Schema.optional(Schema.Array(WorkflowSkillName)),
   }),
   Schema.Struct({
     type: Schema.Literal("provider-session.detach"),

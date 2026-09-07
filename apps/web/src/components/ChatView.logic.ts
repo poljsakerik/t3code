@@ -15,6 +15,7 @@ import {
   type ScopedThreadRef,
   type ThreadId,
   type RunId,
+  type WorkflowStatus,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
@@ -521,13 +522,14 @@ export function shouldShowBranchMismatchBanner(input: {
 export function shouldShowPlanFollowUpPrompt(input: {
   pendingUserInputCount: number;
   interactionMode: ProviderInteractionMode;
+  workflowStatus?: WorkflowStatus | null;
   latestTurnSettled: boolean;
   hasActionableProposedPlan: boolean;
   hasComposerAttachments: boolean;
 }): boolean {
   return (
     input.pendingUserInputCount === 0 &&
-    input.interactionMode === "plan" &&
+    (input.interactionMode === "plan" || input.workflowStatus === "planned") &&
     input.latestTurnSettled &&
     input.hasActionableProposedPlan &&
     !input.hasComposerAttachments

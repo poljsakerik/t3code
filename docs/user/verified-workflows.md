@@ -4,7 +4,7 @@ Verified workflows turn a request into a plan, an implementation, deterministic 
 
 Open the command palette and choose **New verified workflow**. The web app creates a planning thread with the `default` workflow profile. Ordinary new threads are unchanged and do not run this loop.
 
-The planner may ask clarifying questions with A/B/C choices. When its proposed plan is ready, use the existing **Implement** action. T3 Code then:
+The planner may ask clarifying questions with A/B/C choices. When its proposed plan is ready, use the existing **Implement** action. This action is available even when the general Plan Mode setting is off. T3 Code then:
 
 1. runs the configured implementer;
 2. runs checks sequentially, stopping at the first failure;

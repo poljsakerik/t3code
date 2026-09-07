@@ -613,6 +613,34 @@ describe("shouldShowPlanFollowUpPrompt", () => {
     expect(shouldShowPlanFollowUpPrompt({ ...base, hasComposerAttachments: true })).toBe(false);
   });
 
+  it("allows approval of a planned workflow with general plan mode disabled", () => {
+    const plannedWorkflow = {
+      ...base,
+      interactionMode: resolveEffectiveInteractionMode({
+        planModeEnabled: false,
+        composerInteractionMode: null,
+        threadInteractionMode: "plan",
+      }),
+      workflowStatus: "planned" as const,
+    };
+    expect(shouldShowPlanFollowUpPrompt(plannedWorkflow)).toBe(true);
+    expect(shouldShowPlanFollowUpPrompt({ ...plannedWorkflow, latestTurnSettled: false })).toBe(
+      false,
+    );
+    expect(shouldShowPlanFollowUpPrompt({ ...plannedWorkflow, pendingUserInputCount: 1 })).toBe(
+      false,
+    );
+    expect(shouldShowPlanFollowUpPrompt({ ...plannedWorkflow, hasComposerAttachments: true })).toBe(
+      false,
+    );
+    expect(
+      shouldShowPlanFollowUpPrompt({ ...plannedWorkflow, hasActionableProposedPlan: false }),
+    ).toBe(false);
+    expect(
+      shouldShowPlanFollowUpPrompt({ ...plannedWorkflow, workflowStatus: "implementing" }),
+    ).toBe(false);
+  });
+
   it("preserves the existing plan follow-up gates", () => {
     expect(shouldShowPlanFollowUpPrompt({ ...base, pendingUserInputCount: 1 })).toBe(false);
     expect(shouldShowPlanFollowUpPrompt({ ...base, interactionMode: "default" })).toBe(false);

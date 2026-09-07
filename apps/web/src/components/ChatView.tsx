@@ -2617,6 +2617,7 @@ function ChatViewContent(props: ChatViewProps) {
   const showPlanFollowUpPrompt = shouldShowPlanFollowUpPrompt({
     pendingUserInputCount: pendingUserInputs.length,
     interactionMode,
+    workflowStatus: serverProjection?.thread.workflow?.status ?? null,
     latestTurnSettled: latestRunSettled,
     hasActionableProposedPlan: hasActionableProposedPlan(
       activeProposedPlan,

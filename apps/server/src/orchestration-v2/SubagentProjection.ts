@@ -50,19 +50,15 @@ export function makeSubagentChildThread(input: {
   readonly creationSource: OrchestrationV2CreationSource;
 }): OrchestrationV2AppThread {
   return {
+    ...input.parentThread,
     createdBy: input.createdBy,
     creationSource: input.creationSource,
     id: input.childThreadId,
-    projectId: input.parentThread.projectId,
     title: input.title,
+    historyOrigin: undefined,
     providerInstanceId: input.providerInstanceId,
     modelSelection: input.modelSelection,
-    runtimeMode: input.parentThread.runtimeMode,
-    interactionMode: input.parentThread.interactionMode,
-    branch: input.parentThread.branch,
-    worktreePath: input.parentThread.worktreePath,
     activeProviderThreadId: input.activeProviderThreadId,
-    workflow: null,
     lineage: {
       parentThreadId: input.parentThread.id,
       relationshipToParent: "subagent",
@@ -77,13 +73,9 @@ export function makeSubagentChildThread(input: {
     archivedAt: null,
     settledOverride: null,
     settledAt: null,
-    unsettledAt: null,
     snoozedUntil: null,
     snoozedAt: null,
-    pinnedAt: null,
-    pinOrderKey: null,
     lastVisitedAt: null,
-    titleRegeneration: null,
     deletedAt: null,
   };
 }

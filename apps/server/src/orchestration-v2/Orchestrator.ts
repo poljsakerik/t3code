@@ -5019,17 +5019,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               }),
           ),
         );
+      const childThreadId = idAllocator.derive.delegatedTaskThread({
+        commandId: command.commandId,
+      });
+      const workflow = parentProjection.thread.workflow;
+      const isWorkflowReviewer =
+        workflow?.status === "reviewing" &&
+        workflow.candidateRunId === command.parentRunId &&
+        workflow.reviews.some((review) => review.reviewerThreadId === childThreadId);
       const parentRun = parentProjection.runs.find(
         (candidate) => candidate.id === command.parentRunId,
       );
       if (
         parentRun === undefined ||
-        (!isBlockingRun(parentRun) && parentRun.status !== "completed")
+        (!isBlockingRun(parentRun) && !(isWorkflowReviewer && parentRun.status === "completed"))
       ) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
-          cause: `Parent run ${command.parentRunId} is not active or completed.`,
+          cause: `Parent run ${command.parentRunId} is not active.`,
         });
       }
       const parentNode = parentProjection.nodes.find(
@@ -5062,9 +5070,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const taskNodeId = idAllocator.derive.delegatedTaskNode({
         commandId: command.commandId,
       });
-      const childThreadId = idAllocator.derive.delegatedTaskThread({
-        commandId: command.commandId,
-      });
       const childMessageId = idAllocator.derive.delegatedTaskMessage({
         commandId: command.commandId,
       });
@@ -5092,6 +5097,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }),
         runtimeMode: command.runtimeMode,
         interactionMode: command.interactionMode,
+        // Reviewers participate in the parent's workflow without running their own workflow.
+        ...(isWorkflowReviewer ? { workflow: null } : {}),
       };
       const task: OrchestrationV2Subagent = {
         id: taskNodeId,

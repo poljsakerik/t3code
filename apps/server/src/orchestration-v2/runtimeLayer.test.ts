@@ -235,39 +235,64 @@ const finishDelegationRun = Effect.fn("test.finishDelegationRun")(function* (
   });
 });
 
-const createCompletedDelegationParent = Effect.fn("test.createCompletedDelegationParent")(
-  function* (threadId: ThreadId) {
-    const orchestrator = yield* OrchestratorV2;
-    yield* orchestrator.dispatch({
-      type: "thread.create",
-      createdBy: "user",
-      creationSource: "web",
-      commandId: CommandId.make(`command:create:${threadId}`),
-      threadId,
-      projectId: ProjectId.make(`project:${threadId}`),
-      title: "Verified workflow",
-      modelSelection,
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      branch: "feature/workflow",
-      worktreePath: "/tmp/workflow",
-    });
-    yield* orchestrator.dispatch({
-      type: "message.dispatch",
-      createdBy: "user",
-      creationSource: "web",
-      commandId: CommandId.make(`command:implement:${threadId}`),
-      threadId,
-      messageId: MessageId.make(`message:implement:${threadId}`),
-      text: "Parent conversation that must not be copied to reviewers.",
-      attachments: [],
-      modelSelection,
-      dispatchMode: { type: "start_immediately" },
-    });
-    yield* finishDelegationRun(threadId, "Implementation ready for review.");
-    return yield* orchestrator.getThreadProjection(threadId);
-  },
-);
+const createDelegationParent = Effect.fn("test.createDelegationParent")(function* (
+  threadId: ThreadId,
+) {
+  const orchestrator = yield* OrchestratorV2;
+  yield* orchestrator.dispatch({
+    type: "thread.create",
+    createdBy: "user",
+    creationSource: "web",
+    commandId: CommandId.make(`command:create:${threadId}`),
+    threadId,
+    projectId: ProjectId.make(`project:${threadId}`),
+    title: "Verified workflow",
+    modelSelection,
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: "feature/workflow",
+    worktreePath: "/tmp/workflow",
+  });
+  yield* orchestrator.dispatch({
+    type: "message.dispatch",
+    createdBy: "user",
+    creationSource: "web",
+    commandId: CommandId.make(`command:implement:${threadId}`),
+    threadId,
+    messageId: MessageId.make(`message:implement:${threadId}`),
+    text: "Parent conversation that must not be copied to reviewers.",
+    attachments: [],
+    modelSelection,
+    dispatchMode: { type: "start_immediately" },
+  });
+  const eventSink = yield* EventSinkV2;
+  const parent = yield* orchestrator.getThreadProjection(threadId);
+  const now = yield* DateTime.now;
+  yield* eventSink.write({
+    events: [
+      {
+        id: EventId.make(`event:metadata:${threadId}`),
+        type: "thread.metadata-updated",
+        threadId,
+        occurredAt: now,
+        payload: {
+          ...parent.thread,
+          pinnedAt: now,
+          pinOrderKey: "pinned-parent",
+          unsettledAt: now,
+          titleRegeneration: { requestId: CommandId.make(`title:${threadId}`), startedAt: now },
+          linkedPullRequest: {
+            projectId: parent.thread.projectId,
+            repository: "example/repo",
+            number: 1,
+            url: "https://github.com/example/repo/pull/1",
+          },
+        },
+      },
+    ],
+  });
+  return yield* orchestrator.getThreadProjection(threadId);
+});
 
 it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
   it.effect("creates and reads a thread through the production V2 composition", () =>
@@ -301,17 +326,17 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
     }),
   );
 
-  it.effect("delegates from a completed run with fresh context and manual result delivery", () =>
+  it.effect("preserves delegated subagent inheritance with fresh context and manual delivery", () =>
     Effect.gen(function* () {
       const orchestrator = yield* OrchestratorV2;
       const eventSink = yield* EventSinkV2;
-      const parent = yield* createCompletedDelegationParent(ThreadId.make("delegation-parent"));
+      const parent = yield* createDelegationParent(ThreadId.make("delegation-parent"));
       const parentRun = parent.runs[0]!;
       const command = {
         type: "delegated_task.request",
         createdBy: "system",
         creationSource: "server",
-        commandId: CommandId.make("delegate-completed-parent"),
+        commandId: CommandId.make("delegate-active-parent"),
         parentThreadId: parent.thread.id,
         parentRunId: parentRun.id,
         parentNodeId: parentRun.rootNodeId!,
@@ -340,6 +365,11 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
       assert.equal(child.thread.projectId, parent.thread.projectId);
       assert.equal(child.thread.worktreePath, parent.thread.worktreePath);
       assert.equal(child.thread.branch, parent.thread.branch);
+      assert.deepEqual(child.thread.linkedPullRequest, parent.thread.linkedPullRequest);
+      assert.deepEqual(child.thread.pinnedAt, parent.thread.pinnedAt);
+      assert.equal(child.thread.pinOrderKey, parent.thread.pinOrderKey);
+      assert.deepEqual(child.thread.unsettledAt, parent.thread.unsettledAt);
+      assert.deepEqual(child.thread.titleRegeneration, parent.thread.titleRegeneration);
       assert.equal(child.thread.interactionMode, "plan");
       assert.deepEqual(
         child.messages.map((message) => message.text),
@@ -383,13 +413,45 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
     }),
   );
 
+  it.effect("keeps the active-parent requirement for ordinary delegation", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* OrchestratorV2;
+      const parent = yield* createDelegationParent(ThreadId.make("ordinary-completed-parent"));
+      const run = parent.runs[0]!;
+      yield* finishDelegationRun(parent.thread.id, "Parent finished.");
+      const error = yield* orchestrator
+        .dispatch({
+          type: "delegated_task.request",
+          createdBy: "system",
+          creationSource: "server",
+          commandId: CommandId.make("ordinary-completed-delegation"),
+          parentThreadId: parent.thread.id,
+          parentRunId: run.id,
+          parentNodeId: run.rootNodeId!,
+          task: "Review the code.",
+          modelSelection,
+          runtimeMode: parent.thread.runtimeMode,
+          interactionMode: "plan",
+          completionWake: "manual",
+          workflowSkillAllowlist: ["review-code"],
+        })
+        .pipe(Effect.flip);
+      assert.instanceOf(error, OrchestratorDispatchError);
+      assert.include(String(error.cause), "is not active");
+      const projection = yield* orchestrator.getThreadProjection(parent.thread.id);
+      assert.equal(projection.subagents.length, 0);
+    }),
+  );
+
   for (const verdict of ["approve", "request_changes", "invalid"] as const) {
     it.effect(`collects delegated reviewer feedback before continuing: ${verdict}`, () =>
       Effect.gen(function* () {
         const orchestrator = yield* OrchestratorV2;
         const eventSink = yield* EventSinkV2;
         const threadId = ThreadId.make(`workflow-delegation-${verdict}`);
-        const parent = yield* createCompletedDelegationParent(threadId);
+        yield* createDelegationParent(threadId);
+        yield* finishDelegationRun(threadId, "Implementation ready for review.");
+        const parent = yield* orchestrator.getThreadProjection(threadId);
         const run = parent.runs[0]!;
         const now = yield* DateTime.now;
         const agent = (id: string, role: "planner" | "implementer" | "reviewer") => ({
@@ -485,6 +547,13 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         for (const task of reviewing.subagents) {
           assert.equal(task.completionWake, "manual");
           assert.equal(task.runId, run.id);
+          const child = yield* orchestrator.getThreadProjection(task.childThreadId!);
+          assert.isNull(child.thread.workflow);
+          assert.deepEqual(child.thread.linkedPullRequest, parent.thread.linkedPullRequest);
+          assert.deepEqual(child.thread.pinnedAt, parent.thread.pinnedAt);
+          assert.equal(child.thread.pinOrderKey, parent.thread.pinOrderKey);
+          assert.deepEqual(child.thread.unsettledAt, parent.thread.unsettledAt);
+          assert.deepEqual(child.thread.titleRegeneration, parent.thread.titleRegeneration);
           assert.isTrue(
             reviewing.thread.workflow!.reviews.some(
               (review) => review.reviewerThreadId === task.childThreadId,

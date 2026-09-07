@@ -1,6 +1,5 @@
 import { assert, it } from "@effect/vitest";
 import {
-  CommandId,
   type ModelSelection,
   NodeId,
   type OrchestrationV2AppThread,
@@ -43,12 +42,6 @@ function makeParentThread(): OrchestrationV2AppThread {
     interactionMode: "plan",
     branch: "feature/source",
     worktreePath: "/tmp/source-worktree",
-    linkedPullRequest: {
-      projectId: ProjectId.make("project:subagent-snooze"),
-      repository: "pingdotgg/t3code",
-      number: 1,
-      url: "https://github.com/pingdotgg/t3code/pull/1",
-    },
     activeProviderThreadId: ProviderThreadId.make("provider-thread:subagent-snoozed-parent"),
     lineage: {
       parentThreadId: null,
@@ -61,13 +54,7 @@ function makeParentThread(): OrchestrationV2AppThread {
     archivedAt: null,
     settledOverride: null,
     settledAt: null,
-    pinnedAt: snoozedAt,
-    pinOrderKey: "pinned-parent",
     lastVisitedAt: null,
-    titleRegeneration: {
-      requestId: CommandId.make("command:parent-title-regeneration"),
-      startedAt: snoozedAt,
-    },
     snoozedUntil,
     snoozedAt,
     deletedAt: null,
@@ -99,14 +86,10 @@ it("keeps a subagent child awake when its parent thread is snoozed", () => {
   assert.equal(childThread.interactionMode, parentThread.interactionMode);
   assert.equal(childThread.branch, parentThread.branch);
   assert.equal(childThread.worktreePath, parentThread.worktreePath);
-  assert.isUndefined(childThread.linkedPullRequest);
   assert.equal(childThread.providerInstanceId, childProviderInstanceId);
   assert.deepEqual(childThread.modelSelection, childModelSelection);
   assert.equal(childThread.activeProviderThreadId, childProviderThreadId);
   assert.isUndefined(childThread.historyOrigin);
-  assert.isNull(childThread.pinnedAt);
-  assert.isNull(childThread.pinOrderKey);
-  assert.isNull(childThread.titleRegeneration);
   assert.deepEqual(childThread.lineage, {
     parentThreadId,
     relationshipToParent: "subagent",

@@ -21,7 +21,7 @@ import { ProjectionProjectRepository } from "../persistence/Services/ProjectionP
 import { T3ProjectFileLoader } from "../project/T3ProjectFileLoader.ts";
 import { WorkspacePaths } from "../workspace/WorkspacePaths.ts";
 
-export class WorkflowConfigError extends Schema.TaggedErrorClass<WorkflowConfigError>()(
+export class WorkflowConfigError extends Schema.TaggedError<WorkflowConfigError>()(
   "WorkflowConfigError",
   {
     profileId: Schema.String,

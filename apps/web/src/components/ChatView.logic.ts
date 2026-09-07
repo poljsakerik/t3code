@@ -23,6 +23,7 @@ import {
   type ThreadLinkedPullRequest,
   type RunId,
   type WorktreeSetupSnapshot,
+  type WorkflowStatus,
 } from "@t3tools/contracts";
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 import * as DateTime from "effect/DateTime";
@@ -949,13 +950,14 @@ export function shouldShowBranchMismatchBanner(input: {
 export function shouldShowPlanFollowUpPrompt(input: {
   pendingUserInputCount: number;
   interactionMode: ProviderInteractionMode;
+  workflowStatus?: WorkflowStatus | null;
   latestTurnSettled: boolean;
   hasActionableProposedPlan: boolean;
   hasComposerAttachments: boolean;
 }): boolean {
   return (
     input.pendingUserInputCount === 0 &&
-    input.interactionMode === "plan" &&
+    (input.interactionMode === "plan" || input.workflowStatus === "planned") &&
     input.latestTurnSettled &&
     input.hasActionableProposedPlan &&
     !input.hasComposerAttachments

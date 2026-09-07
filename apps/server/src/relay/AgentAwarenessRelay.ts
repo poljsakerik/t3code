@@ -84,6 +84,7 @@ export function shouldPublishAgentAwarenessEvent(
     case "thread.pull-request-synced":
     case "thread.model-selection-updated":
     case "thread.provider-switched":
+    case "thread.workflow-updated":
     case "run.created":
     case "run.updated":
     case "runtime-request.updated":

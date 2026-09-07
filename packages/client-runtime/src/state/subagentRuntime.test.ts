@@ -6,11 +6,7 @@ import {
   foldSubagentActivities,
   formatSubagentModelLabel,
   formatSubagentTokenCount,
-  isAgentAttributedToolActivity,
-  isSubagentActivityKind,
-  isTimelineBypassActivity,
   projectedSubagentsToRuntime,
-  workflowCardMembers,
 } from "./subagentRuntime.ts";
 
 let sequence = 0;

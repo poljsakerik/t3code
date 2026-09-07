@@ -10,7 +10,6 @@ import * as DateTime from "effect/DateTime";
 import {
   verificationStateOfWorkflow,
   workflowCandidateMessageOfRun,
-  workflowReviewerExecution,
 } from "./WorkflowVerification.ts";
 
 const timestamp = "2026-08-26T12:00:00.000Z";
@@ -80,16 +79,6 @@ describe("verified workflow projection", () => {
       }),
     ).toMatchObject({ phase: "needs_human", itemStatus: "failed" });
     expect(verificationStateOfWorkflow({ ...workflow, status: "planning" })).toBeNull();
-  });
-
-  it("separates reviewer execution status from its review verdict", () => {
-    const rejected = workflowReviewerExecution(
-      review("completed", "request_changes", null, "Changes are required."),
-    );
-    const failed = workflowReviewerExecution(review("failed", null, "Invalid JSON"));
-
-    expect(rejected).toEqual({ status: "completed", result: "Changes are required." });
-    expect(failed).toEqual({ status: "failed", result: "Invalid JSON" });
   });
 
   it("selects the final candidate response from the implementation run", () => {

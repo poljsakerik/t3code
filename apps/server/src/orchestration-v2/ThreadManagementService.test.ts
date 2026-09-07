@@ -57,29 +57,6 @@ it("stamps authoritative provenance on commands that create threads or messages"
     createdBy: "user",
     creationSource: "web",
   });
-
-  expect(
-    withCreationProvenance(
-      {
-        type: "subagent.start",
-        createdBy: "system",
-        creationSource: "server",
-        commandId: CommandId.make("command:thread-management:start-subagent"),
-        parentThreadId: ThreadId.make("thread:thread-management:parent"),
-        taskId: NodeId.make("node:thread-management:subagent"),
-        childThreadId: ThreadId.make("thread:thread-management:subagent"),
-        messageId: MessageId.make("message:thread-management:subagent"),
-        title: "Reviewer",
-        prompt: "Review the work.",
-        modelSelection: {
-          instanceId: ProviderInstanceId.make("codex"),
-          model: "gpt-5-codex",
-        },
-        interactionMode: "plan",
-      },
-      { createdBy: "user", creationSource: "web" },
-    ),
-  ).toMatchObject({ createdBy: "user", creationSource: "web" });
 });
 
 it("leaves commands that do not create durable authored content unchanged", () => {
@@ -122,26 +99,6 @@ it("identifies every existing thread that must be hydrated before dispatch", () 
       worktreePath: null,
     }),
   ).toEqual([]);
-
-  expect(
-    existingThreadIdsForCommand({
-      type: "subagent.start",
-      createdBy: "system",
-      creationSource: "server",
-      commandId: CommandId.make("command:thread-management:start-subagent"),
-      parentThreadId,
-      taskId: NodeId.make("node:thread-management:subagent"),
-      childThreadId: targetThreadId,
-      messageId: MessageId.make("message:thread-management:subagent"),
-      title: "Reviewer child",
-      prompt: "Review the plan.",
-      modelSelection: {
-        instanceId: ProviderInstanceId.make("codex"),
-        model: "gpt-5-codex",
-      },
-      interactionMode: "plan",
-    }),
-  ).toEqual([parentThreadId]);
 
   expect(
     existingThreadIdsForCommand({

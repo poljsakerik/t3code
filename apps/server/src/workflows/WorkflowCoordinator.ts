@@ -50,9 +50,9 @@ function reviewJson(text: string): string {
   return fenced?.[1] ?? trimmed;
 }
 
-function reviewThreadId(threadId: ThreadId, revision: number, reviewerId: string): ThreadId {
-  return ThreadId.make(
-    `workflow-review:${encodeURIComponent(threadId)}:${revision}:${encodeURIComponent(reviewerId)}`,
+function reviewCommandId(threadId: ThreadId, revision: number, reviewerId: string): CommandId {
+  return CommandId.make(
+    `command:workflow:${encodeURIComponent(threadId)}:${revision}:review:${encodeURIComponent(reviewerId)}`,
   );
 }
 
@@ -90,22 +90,21 @@ function revisionFeedback(input: {
       (check) =>
         `Check ${check.name} failed (exit ${check.exitCode ?? "unknown"}${check.timedOut ? ", timed out" : ""}).\n${check.stdout}\n${check.stderr}`,
     );
-  const findings = input.reviews.flatMap((result) => {
+  const reviews = input.reviews.map((result) => {
     if (result.review === null) {
-      return [
-        `Reviewer ${result.reviewerId} failed to return a valid review: ${result.error ?? "unknown error"}`,
-      ];
+      return `Reviewer ${result.reviewerId} failed to return a valid review: ${result.error ?? "unknown error"}`;
     }
-    return result.review.findings
-      .filter((finding) => finding.severity === "blocking")
-      .map(
+    return [
+      `Reviewer ${result.reviewerId}: ${result.review.verdict}\n${result.review.summary}`,
+      ...result.review.findings.map(
         (finding) =>
-          `[${result.reviewerId}/${finding.id}] ${finding.title}: ${finding.description}${finding.file ? ` (${finding.file}${finding.line ? `:${finding.line}` : ""})` : ""}`,
-      );
+          `[${result.reviewerId}/${finding.id}, ${finding.severity}] ${finding.title}: ${finding.description}${finding.file ? ` (${finding.file}${finding.line ? `:${finding.line}` : ""})` : ""}${finding.evidence ? `\nEvidence: ${finding.evidence}` : ""}`,
+      ),
+    ].join("\n");
   });
-  return `The verified workflow gates rejected this revision. Address every item, rerun relevant local checks, and report the fixes clearly.\n\n${[
+  return `The verified workflow gates rejected this revision. Assess the reviewer feedback, address every blocking finding and failed check, rerun relevant local checks, and report the fixes clearly.\n\n${[
     ...failedChecks,
-    ...findings,
+    ...reviews,
   ].join("\n\n")}`;
 }
 
@@ -350,33 +349,40 @@ export const live = Layer.effectDiscard(
       readonly reviewer: ResolvedWorkflowProfile["reviewers"][number];
       readonly planMarkdown: string;
     }) {
-      const childThreadId = reviewThreadId(
-        input.projection.thread.id,
-        input.workflow.revision,
-        input.reviewer.id,
+      const parentRun = input.projection.runs.find(
+        (run) => run.id === input.workflow.candidateRunId,
       );
-      const base = `workflow:${encodeURIComponent(input.projection.thread.id)}:${input.workflow.revision}:review:${encodeURIComponent(input.reviewer.id)}`;
+      if (parentRun?.rootNodeId === null || parentRun?.rootNodeId === undefined) {
+        yield* markNeedsHuman({
+          threadId: input.projection.thread.id,
+          workflow: input.workflow,
+          reason: "The implementation run is no longer available for review.",
+          key: "missing-review-parent",
+        });
+        return;
+      }
       const selection =
         workflowAgentModelSelection(input.reviewer) ?? input.projection.thread.modelSelection;
       yield* threads.dispatch({
-        type: "subagent.start",
-        commandId: CommandId.make(`command:${base}:subagent-start`),
+        type: "delegated_task.request",
+        commandId: reviewCommandId(
+          input.projection.thread.id,
+          input.workflow.revision,
+          input.reviewer.id,
+        ),
         parentThreadId: input.projection.thread.id,
-        taskId: ids.derive.workflowReviewerNode({
-          threadId: input.projection.thread.id,
-          revision: input.workflow.revision,
-          reviewerId: input.reviewer.id,
-        }),
-        childThreadId,
-        messageId: MessageId.make(`message:${base}`),
+        parentRunId: parentRun.id,
+        parentNodeId: parentRun.rootNodeId,
         title: `${input.reviewer.name}: ${input.projection.thread.title}`,
-        prompt: reviewPrompt({
+        task: reviewPrompt({
           reviewer: input.reviewer,
           workflow: input.workflow,
           planMarkdown: input.planMarkdown,
         }),
         modelSelection: selection,
+        runtimeMode: input.projection.thread.runtimeMode,
         interactionMode: "plan",
+        completionWake: "manual",
         workflowSkillAllowlist: input.reviewer.skills,
         createdBy: "system",
         creationSource: "server",
@@ -403,11 +409,13 @@ export const live = Layer.effectDiscard(
       }
       const runningReviews: WorkflowReviewResult[] = profile.reviewers.map((reviewer) => ({
         reviewerId: reviewer.id,
-        reviewerThreadId: reviewThreadId(
-          input.projection.thread.id,
-          input.workflow.revision,
-          reviewer.id,
-        ),
+        reviewerThreadId: ids.derive.delegatedTaskThread({
+          commandId: reviewCommandId(
+            input.projection.thread.id,
+            input.workflow.revision,
+            reviewer.id,
+          ),
+        }),
         revision: input.workflow.revision,
         status: "running",
         review: null,

@@ -73,7 +73,6 @@ import { WorkflowConfigService } from "../workflows/WorkflowConfigService.ts";
 import {
   verificationStateOfWorkflow,
   workflowCandidateMessageOfRun,
-  workflowReviewerExecution,
 } from "../workflows/WorkflowVerification.ts";
 
 export class OrchestratorDispatchError extends Schema.TaggedErrorClass<OrchestratorDispatchError>()(
@@ -293,7 +292,6 @@ function commandThreadId(command: OrchestrationV2Command): ThreadId {
     case "delegated_task.wake-policy":
     case "delegated_task.completion-delivery.acknowledge":
     case "delegated_task.completion-delivery.dispose":
-    case "subagent.start":
     case "thread.created.record":
       return command.parentThreadId;
     case "thread.fork":
@@ -1429,6 +1427,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       (workflowProfile === undefined
         ? undefined
         : workflowAgentModelSelection(workflowProfile.planner)) ?? command.modelSelection;
+    const emitEvent = emit(events, command);
     const thread: OrchestrationV2AppThread = {
       createdBy: command.createdBy,
       creationSource: command.creationSource,
@@ -1479,10 +1478,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       deletedAt: null,
     };
 
-    yield* emit(
-      events,
-      command,
-    )({
+    yield* emitEvent({
       type: "thread.created",
       threadId: command.threadId,
       providerInstanceId: plannerSelection.instanceId,
@@ -1654,94 +1650,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           payload: completionItem,
         });
       }
-    }
-
-    for (const review of workflow.reviews) {
-      const reviewer = workflow.profile?.reviewers.find(
-        (candidate) => candidate.id === review.reviewerId,
-      );
-      const modelSelection =
-        (reviewer === undefined ? undefined : workflowAgentModelSelection(reviewer)) ??
-        projection.thread.modelSelection;
-      const adapter = yield* providerAdapters.get(modelSelection.instanceId).pipe(
-        Effect.mapError(
-          (cause) =>
-            new OrchestratorProviderAdapterError({
-              commandId: command.commandId,
-              providerInstanceId: modelSelection.instanceId,
-              cause,
-            }),
-        ),
-      );
-      const reviewerNodeId = idAllocator.derive.workflowReviewerNode({
-        threadId: command.threadId,
-        revision: review.revision,
-        reviewerId: review.reviewerId,
-      });
-      const existingTask = projection.subagents.find((task) => task.id === reviewerNodeId);
-      const existingNode = projection.nodes.find((node) => node.id === reviewerNodeId);
-      const execution = workflowReviewerExecution(review);
-      const status = execution.status;
-      const completedAt = status === "running" ? null : (existingTask?.completedAt ?? now);
-      const reviewerNode: OrchestrationV2ExecutionNode = {
-        id: reviewerNodeId,
-        threadId: command.threadId,
-        runId: candidateRun.id,
-        parentNodeId: rootNode.id,
-        rootNodeId: rootNode.id,
-        kind: "subagent",
-        status,
-        countsForRun: false,
-        providerThreadId: null,
-        providerTurnId: null,
-        nativeItemRef: null,
-        runtimeRequestId: null,
-        checkpointScopeId: null,
-        startedAt: existingNode?.startedAt ?? now,
-        completedAt,
-      };
-      const task: OrchestrationV2Subagent = {
-        id: reviewerNodeId,
-        threadId: command.threadId,
-        runId: candidateRun.id,
-        parentNodeId: rootNode.id,
-        origin: "app_owned",
-        createdBy: "system",
-        driver: adapter.driver,
-        providerInstanceId: modelSelection.instanceId,
-        providerThreadId: null,
-        childThreadId: review.reviewerThreadId,
-        nativeTaskRef: null,
-        prompt: `Review revision ${review.revision} of verified workflow ${workflow.profileId}.`,
-        title: reviewer?.name ?? review.reviewerId,
-        role: "Reviewer",
-        model: modelSelection.model,
-        status,
-        result: execution.result,
-        startedAt: existingTask?.startedAt ?? now,
-        completedAt,
-        updatedAt: now,
-      };
-      yield* emitEvent({
-        type: "node.updated",
-        threadId: command.threadId,
-        runId: candidateRun.id,
-        nodeId: reviewerNodeId,
-        driver: adapter.driver,
-        providerInstanceId: modelSelection.instanceId,
-        occurredAt: now,
-        payload: reviewerNode,
-      });
-      yield* emitEvent({
-        type: "subagent.updated",
-        threadId: command.threadId,
-        runId: candidateRun.id,
-        nodeId: reviewerNodeId,
-        driver: adapter.driver,
-        providerInstanceId: modelSelection.instanceId,
-        occurredAt: now,
-        payload: task,
-      });
     }
   });
 
@@ -5094,123 +5002,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       yield* Ref.update(effects, (existing) => [...existing, pendingEffect]);
     });
 
-  const dispatchSubagentStart = Effect.fn("orchestrationV2.dispatch.subagentStart")(function* (
-    command: Extract<OrchestrationV2Command, { readonly type: "subagent.start" }>,
-    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
-    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
-  ) {
-    if (command.createdBy !== "system" || command.creationSource !== "server") {
-      return yield* new OrchestratorDispatchError({
-        commandId: command.commandId,
-        commandType: command.type,
-        cause: "Coordinator-owned subagents can only be started by the server.",
-      });
-    }
-    const parentProjection = yield* projectionStore
-      .getThreadProjection(command.parentThreadId)
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new OrchestratorProjectionError({
-              threadId: command.parentThreadId,
-              cause,
-            }),
-        ),
-      );
-    const task = parentProjection.subagents.find(
-      (candidate) =>
-        candidate.id === command.taskId &&
-        candidate.origin === "app_owned" &&
-        candidate.childThreadId === command.childThreadId,
-    );
-    if (task === undefined || task.providerInstanceId !== command.modelSelection.instanceId) {
-      return yield* new OrchestratorDispatchError({
-        commandId: command.commandId,
-        commandType: command.type,
-        cause: `Task ${command.taskId} is not a matching app-owned subagent of ${command.parentThreadId}.`,
-      });
-    }
-
-    const now = yield* DateTime.now;
-    const existingChild = yield* Effect.option(
-      projectionStore.getThreadProjection(command.childThreadId),
-    );
-    const emitEvent = emit(events, command);
-    if (Option.isSome(existingChild)) {
-      const child = existingChild.value.thread;
-      if (
-        child.projectId === parentProjection.thread.projectId &&
-        child.lineage.relationshipToParent === "subagent" &&
-        child.lineage.parentThreadId === parentProjection.thread.id
-      ) {
-        return;
-      }
-      return yield* new OrchestratorDispatchError({
-        commandId: command.commandId,
-        commandType: command.type,
-        cause: `Subagent backing thread ${command.childThreadId} already exists with different lineage.`,
-      });
-    }
-    if (task.status !== "running") {
-      return yield* new OrchestratorDispatchError({
-        commandId: command.commandId,
-        commandType: command.type,
-        cause: `Subagent task ${command.taskId} is already ${task.status}.`,
-      });
-    }
-
-    const targetAdapter = yield* providerAdapters.get(command.modelSelection.instanceId).pipe(
-      Effect.mapError(
-        (cause) =>
-          new OrchestratorProviderAdapterError({
-            commandId: command.commandId,
-            providerInstanceId: command.modelSelection.instanceId,
-            cause,
-          }),
-      ),
-    );
-    const childThread = makeSubagentChildThread({
-      parentThread: parentProjection.thread,
-      childThreadId: command.childThreadId,
-      parentNodeId: null,
-      activeProviderThreadId: null,
-      providerInstanceId: command.modelSelection.instanceId,
-      modelSelection: command.modelSelection,
-      title: command.title,
-      now,
-      createdBy: command.createdBy,
-      creationSource: command.creationSource,
-      interactionMode: command.interactionMode,
-    });
-    yield* emitEvent({
-      type: "thread.created",
-      threadId: command.childThreadId,
-      driver: targetAdapter.driver,
-      providerInstanceId: command.modelSelection.instanceId,
-      occurredAt: now,
-      payload: childThread,
-    });
-    yield* dispatchMessage(
-      {
-        type: "message.dispatch",
-        commandId: command.commandId,
-        threadId: command.childThreadId,
-        messageId: command.messageId,
-        text: command.prompt,
-        attachments: [],
-        modelSelection: command.modelSelection,
-        ...(command.workflowSkillAllowlist === undefined
-          ? {}
-          : { workflowSkillAllowlist: command.workflowSkillAllowlist }),
-        dispatchMode: { type: "start_immediately" },
-        createdBy: command.createdBy,
-        creationSource: command.creationSource,
-      },
-      events,
-      effects,
-    );
-  });
-
   const dispatchDelegatedTaskRequest = Effect.fn("orchestrationV2.dispatch.delegatedTaskRequest")(
     function* (
       command: Extract<OrchestrationV2Command, { readonly type: "delegated_task.request" }>,
@@ -5231,11 +5022,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const parentRun = parentProjection.runs.find(
         (candidate) => candidate.id === command.parentRunId,
       );
-      if (parentRun === undefined || !isBlockingRun(parentRun)) {
+      if (
+        parentRun === undefined ||
+        (!isBlockingRun(parentRun) && parentRun.status !== "completed")
+      ) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
-          cause: `Parent run ${command.parentRunId} is not active.`,
+          cause: `Parent run ${command.parentRunId} is not active or completed.`,
         });
       }
       const parentNode = parentProjection.nodes.find(
@@ -5249,7 +5043,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
-          cause: `Parent node ${command.parentNodeId} is not part of active run ${parentRun.id}.`,
+          cause: `Parent node ${command.parentNodeId} is not part of run ${parentRun.id}.`,
         });
       }
 
@@ -5283,20 +5077,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.title === undefined ? {} : { title: command.title }),
         ordinal: parentProjection.subagents.length + 1,
       });
-      const childThread = makeSubagentChildThread({
-        parentThread: parentProjection.thread,
-        childThreadId,
-        parentNodeId: taskNodeId,
-        activeProviderThreadId: null,
-        providerInstanceId: command.modelSelection.instanceId,
-        modelSelection: command.modelSelection,
-        title: taskTitle,
-        now,
-        createdBy: command.createdBy,
-        creationSource: command.creationSource,
+      const childThread: OrchestrationV2AppThread = {
+        ...makeSubagentChildThread({
+          parentThread: parentProjection.thread,
+          childThreadId,
+          parentNodeId: taskNodeId,
+          activeProviderThreadId: null,
+          providerInstanceId: command.modelSelection.instanceId,
+          modelSelection: command.modelSelection,
+          title: taskTitle,
+          now,
+          createdBy: command.createdBy,
+          creationSource: command.creationSource,
+        }),
         runtimeMode: command.runtimeMode,
         interactionMode: command.interactionMode,
-      });
+      };
       const task: OrchestrationV2Subagent = {
         id: taskNodeId,
         threadId: command.parentThreadId,
@@ -5412,6 +5208,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         text: command.task,
         attachments: [],
         modelSelection: command.modelSelection,
+        ...(command.workflowSkillAllowlist === undefined
+          ? {}
+          : { workflowSkillAllowlist: command.workflowSkillAllowlist }),
         dispatchMode: { type: "start_immediately" },
       } satisfies Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>;
       yield* dispatchMessage(childMessageCommand, events, effects);
@@ -5523,14 +5322,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // offer would wake the parent twice. (If the parent settled in between,
     // this skips a wake that finalize also skipped; a missed wake is cheaper
     // than a duplicate one, and the result is already in the projection.)
+    // Manual tasks never offered, so enabling automatic delivery can also
+    // offer their completed result while the parent is idle.
     const parentRun =
       task.runId === null
         ? undefined
         : parentProjection.runs.find((candidate) => candidate.id === task.runId);
     const completionPlan =
-      command.completionWake === "always" &&
+      command.completionWake !== "manual" &&
       isTerminalDelegatedTaskStatus(task.status) &&
-      hasLiveRun(parentProjection)
+      (task.completionWake === "manual" ||
+        (command.completionWake === "always" && hasLiveRun(parentProjection)))
         ? yield* planDelegatedCompletionDelivery({
             parentProjection,
             parentRun,
@@ -6871,9 +6673,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly now: DateTime.Utc;
   }) {
     const taskDelivery = input.updatedTask.completionDelivery;
-    // delivered ownership has already settled through a completed wake run.
-    // A later wake-policy upgrade must not re-claim the task or offer again.
+    // Manual callers own continuation. Completed delivery ownership must not
+    // be re-claimed by a later wake-policy upgrade.
     if (
+      input.task.completionWake === "manual" ||
       taskDelivery?.state === "acknowledged" ||
       taskDelivery?.state === "delivered" ||
       taskDelivery?.state === "disposed"
@@ -7585,9 +7388,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "delegated_task.request":
         yield* dispatchDelegatedTaskRequest(command, events, effects);
-        break;
-      case "subagent.start":
-        yield* dispatchSubagentStart(command, events, effects);
         break;
       case "delegated_task.wake-policy":
         yield* dispatchDelegatedTaskWakePolicy(command, events);

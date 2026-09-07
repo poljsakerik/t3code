@@ -53,7 +53,6 @@ export function withCreationProvenance(
     case "thread.fork":
     case "thread.merge_back":
     case "delegated_task.request":
-    case "subagent.start":
       return { ...command, ...provenance };
     default:
       return command;
@@ -83,7 +82,6 @@ export function existingThreadIdsForCommand(
     case "delegated_task.wake-policy":
     case "delegated_task.completion-delivery.acknowledge":
     case "delegated_task.completion-delivery.dispose":
-    case "subagent.start":
       return [command.parentThreadId];
     case "thread.created.record":
       return command.parentThreadId === command.targetThreadId

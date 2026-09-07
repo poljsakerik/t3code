@@ -1,10 +1,4 @@
-import type {
-  OrchestrationV2Subagent,
-  OrchestrationV2TurnItem,
-  RunId,
-  ThreadWorkflowState,
-  WorkflowReviewResult,
-} from "@t3tools/contracts";
+import type { OrchestrationV2TurnItem, RunId, ThreadWorkflowState } from "@t3tools/contracts";
 
 export interface WorkflowVerificationState {
   readonly revision: number;
@@ -45,17 +39,6 @@ export function verificationStateOfWorkflow(
     phase,
     terminal,
     itemStatus: phase === "needs_human" ? "failed" : terminal ? "completed" : "running",
-  };
-}
-
-export function workflowReviewerExecution(review: WorkflowReviewResult): {
-  readonly status: OrchestrationV2Subagent["status"];
-  readonly result: string | null;
-} {
-  return {
-    status:
-      review.status === "running" ? "running" : review.status === "failed" ? "failed" : "completed",
-    result: review.review?.summary ?? review.error,
   };
 }
 

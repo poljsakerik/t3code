@@ -1812,6 +1812,7 @@ function ChatViewContent(props: ChatViewProps) {
     planModeEnabled: settings.planModeEnabled,
     composerInteractionMode,
     threadInteractionMode: activeThread?.interactionMode,
+    workflowStatus: serverProjection?.thread.workflow?.status,
   });
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;

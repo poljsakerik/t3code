@@ -208,6 +208,36 @@ describe("orchestration V2 contracts", () => {
     expect(command.parentNodeId).toBe(NodeId.make("node-parent-1"));
   });
 
+  it("decodes reviewer delegation with manual continuation and a skill allowlist", () => {
+    const command = decodeOrchestrationV2Command({
+      type: "delegated_task.request",
+      createdBy: "system",
+      creationSource: "server",
+      commandId: "command-reviewer-start-1",
+      parentThreadId: "thread-workflow-1",
+      parentRunId: "run-implementation-1",
+      parentNodeId: "node-implementation-1",
+      title: "Correctness reviewer",
+      task: "Review revision 1.",
+      modelSelection: {
+        instanceId: "codex",
+        model: "gpt-5.4",
+      },
+      interactionMode: "plan",
+      runtimeMode: "full-access",
+      completionWake: "manual",
+      workflowSkillAllowlist: ["review-code"],
+    });
+
+    expect(command.type).toBe("delegated_task.request");
+    if (command.type !== "delegated_task.request") {
+      throw new Error("expected delegated_task.request");
+    }
+    expect(command.parentThreadId).toBe(ThreadId.make("thread-workflow-1"));
+    expect(command.completionWake).toBe("manual");
+    expect(command.workflowSkillAllowlist).toEqual(["review-code"]);
+  });
+
   it("decodes delegated task wake-policy commands", () => {
     const command = decodeOrchestrationV2Command({
       type: "delegated_task.wake-policy",
@@ -623,6 +653,7 @@ describe("orchestration V2 contracts", () => {
     // Legacy records predate the field and must behave as settled_only.
     expect(decode(appOwnedSubagent).completionWake).toBeUndefined();
     expect(decode({ ...appOwnedSubagent, completionWake: "always" }).completionWake).toBe("always");
+    expect(decode({ ...appOwnedSubagent, completionWake: "manual" }).completionWake).toBe("manual");
     expect(decode({ ...appOwnedSubagent, completionWake: "settled_only" }).completionWake).toBe(
       "settled_only",
     );

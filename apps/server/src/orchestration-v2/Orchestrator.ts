@@ -73,7 +73,6 @@ import { WorkflowConfigService } from "../workflows/WorkflowConfigService.ts";
 import {
   verificationStateOfWorkflow,
   workflowCandidateMessageOfRun,
-  workflowReviewerExecution,
 } from "../workflows/WorkflowVerification.ts";
 
 export class OrchestratorDispatchError extends Schema.TaggedErrorClass<OrchestratorDispatchError>()(
@@ -1651,94 +1650,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           payload: completionItem,
         });
       }
-    }
-
-    for (const review of workflow.reviews) {
-      const reviewer = workflow.profile?.reviewers.find(
-        (candidate) => candidate.id === review.reviewerId,
-      );
-      const modelSelection =
-        (reviewer === undefined ? undefined : workflowAgentModelSelection(reviewer)) ??
-        projection.thread.modelSelection;
-      const adapter = yield* providerAdapters.get(modelSelection.instanceId).pipe(
-        Effect.mapError(
-          (cause) =>
-            new OrchestratorProviderAdapterError({
-              commandId: command.commandId,
-              providerInstanceId: modelSelection.instanceId,
-              cause,
-            }),
-        ),
-      );
-      const reviewerNodeId = idAllocator.derive.workflowReviewerNode({
-        threadId: command.threadId,
-        revision: review.revision,
-        reviewerId: review.reviewerId,
-      });
-      const existingTask = projection.subagents.find((task) => task.id === reviewerNodeId);
-      const existingNode = projection.nodes.find((node) => node.id === reviewerNodeId);
-      const execution = workflowReviewerExecution(review);
-      const status = execution.status;
-      const completedAt = status === "running" ? null : (existingTask?.completedAt ?? now);
-      const reviewerNode: OrchestrationV2ExecutionNode = {
-        id: reviewerNodeId,
-        threadId: command.threadId,
-        runId: candidateRun.id,
-        parentNodeId: rootNode.id,
-        rootNodeId: rootNode.id,
-        kind: "subagent",
-        status,
-        countsForRun: false,
-        providerThreadId: null,
-        providerTurnId: null,
-        nativeItemRef: null,
-        runtimeRequestId: null,
-        checkpointScopeId: null,
-        startedAt: existingNode?.startedAt ?? now,
-        completedAt,
-      };
-      const task: OrchestrationV2Subagent = {
-        id: reviewerNodeId,
-        threadId: command.threadId,
-        runId: candidateRun.id,
-        parentNodeId: rootNode.id,
-        origin: "app_owned",
-        createdBy: "system",
-        driver: adapter.driver,
-        providerInstanceId: modelSelection.instanceId,
-        providerThreadId: null,
-        childThreadId: review.reviewerThreadId,
-        nativeTaskRef: null,
-        prompt: `Review revision ${review.revision} of verified workflow ${workflow.profileId}.`,
-        title: reviewer?.name ?? review.reviewerId,
-        role: "Reviewer",
-        model: modelSelection.model,
-        status,
-        result: execution.result,
-        startedAt: existingTask?.startedAt ?? now,
-        completedAt,
-        updatedAt: now,
-      };
-      yield* emitEvent({
-        type: "node.updated",
-        threadId: command.threadId,
-        runId: candidateRun.id,
-        nodeId: reviewerNodeId,
-        driver: adapter.driver,
-        providerInstanceId: modelSelection.instanceId,
-        occurredAt: now,
-        payload: reviewerNode,
-      });
-      yield* emitEvent({
-        type: "subagent.updated",
-        threadId: command.threadId,
-        runId: candidateRun.id,
-        nodeId: reviewerNodeId,
-        driver: adapter.driver,
-        providerInstanceId: modelSelection.instanceId,
-        occurredAt: now,
-        payload: task,
-      });
     }
   });
 
@@ -5108,10 +5019,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               }),
           ),
         );
+      const childThreadId = idAllocator.derive.delegatedTaskThread({
+        commandId: command.commandId,
+      });
+      const workflow = parentProjection.thread.workflow;
+      const isWorkflowReviewer =
+        workflow?.status === "reviewing" &&
+        workflow.candidateRunId === command.parentRunId &&
+        workflow.reviews.some((review) => review.reviewerThreadId === childThreadId);
       const parentRun = parentProjection.runs.find(
         (candidate) => candidate.id === command.parentRunId,
       );
-      if (parentRun === undefined || !isBlockingRun(parentRun)) {
+      if (
+        parentRun === undefined ||
+        (!isBlockingRun(parentRun) && !(isWorkflowReviewer && parentRun.status === "completed"))
+      ) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
@@ -5129,7 +5051,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
-          cause: `Parent node ${command.parentNodeId} is not part of active run ${parentRun.id}.`,
+          cause: `Parent node ${command.parentNodeId} is not part of run ${parentRun.id}.`,
         });
       }
 
@@ -5146,9 +5068,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
       const now = command.createdAt ?? (yield* DateTime.now);
       const taskNodeId = idAllocator.derive.delegatedTaskNode({
-        commandId: command.commandId,
-      });
-      const childThreadId = idAllocator.derive.delegatedTaskThread({
         commandId: command.commandId,
       });
       const childMessageId = idAllocator.derive.delegatedTaskMessage({
@@ -5178,6 +5097,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }),
         runtimeMode: command.runtimeMode,
         interactionMode: command.interactionMode,
+        // Reviewers participate in the parent's workflow without running their own workflow.
+        ...(isWorkflowReviewer ? { workflow: null } : {}),
       };
       const task: OrchestrationV2Subagent = {
         id: taskNodeId,
@@ -5294,6 +5215,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         text: command.task,
         attachments: [],
         modelSelection: command.modelSelection,
+        ...(command.workflowSkillAllowlist === undefined
+          ? {}
+          : { workflowSkillAllowlist: command.workflowSkillAllowlist }),
         dispatchMode: { type: "start_immediately" },
       } satisfies Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>;
       yield* dispatchMessage(childMessageCommand, events, effects);
@@ -5405,14 +5329,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // offer would wake the parent twice. (If the parent settled in between,
     // this skips a wake that finalize also skipped; a missed wake is cheaper
     // than a duplicate one, and the result is already in the projection.)
+    // Manual tasks never offered, so enabling automatic delivery can also
+    // offer their completed result while the parent is idle.
     const parentRun =
       task.runId === null
         ? undefined
         : parentProjection.runs.find((candidate) => candidate.id === task.runId);
     const completionPlan =
-      command.completionWake === "always" &&
+      command.completionWake !== "manual" &&
       isTerminalDelegatedTaskStatus(task.status) &&
-      hasLiveRun(parentProjection)
+      (task.completionWake === "manual" ||
+        (command.completionWake === "always" && hasLiveRun(parentProjection)))
         ? yield* planDelegatedCompletionDelivery({
             parentProjection,
             parentRun,
@@ -6753,9 +6680,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly now: DateTime.Utc;
   }) {
     const taskDelivery = input.updatedTask.completionDelivery;
-    // delivered ownership has already settled through a completed wake run.
-    // A later wake-policy upgrade must not re-claim the task or offer again.
+    // Manual callers own continuation. Completed delivery ownership must not
+    // be re-claimed by a later wake-policy upgrade.
     if (
+      input.task.completionWake === "manual" ||
       taskDelivery?.state === "acknowledged" ||
       taskDelivery?.state === "delivered" ||
       taskDelivery?.state === "disposed"

@@ -15,6 +15,7 @@ import {
   type ScopedThreadRef,
   type ThreadId,
   type RunId,
+  type WorkflowStatus,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
@@ -70,7 +71,15 @@ export function resolveEffectiveInteractionMode(input: {
   planModeEnabled: boolean;
   composerInteractionMode: ProviderInteractionMode | null;
   threadInteractionMode: ProviderInteractionMode | null | undefined;
+  workflowStatus: WorkflowStatus | null | undefined;
 }): ProviderInteractionMode {
+  if (
+    input.workflowStatus === "draft" ||
+    input.workflowStatus === "planning" ||
+    input.workflowStatus === "planned"
+  ) {
+    return "plan";
+  }
   if (!input.planModeEnabled) return "default";
   return input.composerInteractionMode ?? input.threadInteractionMode ?? "default";
 }

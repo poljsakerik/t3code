@@ -522,8 +522,10 @@ export const OrchestrationV2Subagent = Schema.Struct({
   // every terminal (async delegations; queue_after_active sequences it behind
   // a live parent run), "settled_only" offers only when the parent has no
   // live run (wait-mode delegations, whose result returns through the
-  // blocking tool call). Absent on legacy records; treated as settled_only.
-  completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
+  // blocking tool call). "manual" returns results to the parent but leaves
+  // continuation to the caller, such as a workflow collecting a review round.
+  // Omitted is treated as settled_only.
+  completionWake: Schema.optional(Schema.Literals(["always", "settled_only", "manual"])),
   completionDelivery: Schema.optional(OrchestrationV2DelegatedCompletionTaskDelivery),
   status: Schema.Literals([
     "pending",
@@ -2380,9 +2382,11 @@ export const OrchestrationV2Command = Schema.Union([
     modelSelection: ModelSelection,
     runtimeMode: RuntimeMode,
     interactionMode: ProviderInteractionMode,
+    /** Server-owned native skill allowlist for verified-workflow reviewers. */
+    workflowSkillAllowlist: Schema.optional(Schema.Array(WorkflowSkillName)),
     // Omitted behaves as "settled_only" (no wake while the parent has a live
-    // run); producers that want fire-and-forget wakes must set "always".
-    completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
+    // run); "manual" leaves continuation to the caller after it reads results.
+    completionWake: Schema.optional(Schema.Literals(["always", "settled_only", "manual"])),
     createdAt: Schema.optional(Schema.DateTimeUtc),
   }),
   Schema.Struct({
@@ -2390,7 +2394,7 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     parentThreadId: ThreadId,
     taskId: NodeId,
-    completionWake: Schema.Literals(["always", "settled_only"]),
+    completionWake: Schema.Literals(["always", "settled_only", "manual"]),
   }),
   Schema.Struct({
     type: Schema.Literal("delegated_task.completion-delivery.acknowledge"),

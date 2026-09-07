@@ -254,7 +254,7 @@ const providerRuntimeRecoveryProvided = providerRuntimeRecoveryLayer.pipe(
   ),
 );
 const workflowCoordinatorProvided = workflowCoordinatorLive.pipe(
-  Layer.provide(Layer.merge(threadManagementProvided, ProcessRunner.layer)),
+  Layer.provide(Layer.mergeAll(threadManagementProvided, ProcessRunner.layer, idAllocatorLayer)),
 );
 
 export const OrchestrationV2LayerLive = Layer.mergeAll(

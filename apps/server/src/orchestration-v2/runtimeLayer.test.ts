@@ -1,3 +1,5 @@
+import * as NodeCrypto from "node:crypto";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -7,25 +9,32 @@ import {
   EventId,
   MessageId,
   type ModelSelection,
+  PlanId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderThreadId,
   RunId,
   ThreadId,
+  type ThreadWorkflowState,
+  WorkflowReview,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import { ServerConfig } from "../config.ts";
+import { ProcessRunner } from "../processRunner.ts";
+import * as WorkflowCoordinator from "../workflows/WorkflowCoordinator.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationLayerLive } from "../orchestration/runtimeLayer.ts";
@@ -53,6 +62,7 @@ import { OrchestrationV2EventSinkLayerLive, OrchestrationV2LayerLive } from "./r
 import { shellStreamItemFromThreadShell } from "./ShellStream.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { ThreadManagementService } from "./ThreadManagementService.ts";
+import { layer as idAllocatorLayer } from "./IdAllocator.ts";
 
 const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-orchestration-v2-runtime-layer-",
@@ -87,6 +97,7 @@ const orchestrationAdapter = {
   getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
   openSession: () => Effect.die("sessions are not used by lifecycle tests"),
+  workflowSkillIsolation: "native",
 } as ProviderAdapterV2Shape;
 const providerInstance = {
   instanceId: modelSelection.instanceId,
@@ -169,6 +180,120 @@ const SharedApplicationDataPlaneTestLayer = Layer.merge(
   Layer.provide(NodeServices.layer),
 );
 
+const encodeReview = Schema.encodeSync(Schema.fromJsonString(WorkflowReview));
+
+const finishDelegationRun = Effect.fn("test.finishDelegationRun")(function* (
+  threadId: ThreadId,
+  text: string,
+) {
+  const orchestrator = yield* OrchestratorV2;
+  const eventSink = yield* EventSinkV2;
+  const projection = yield* orchestrator.getThreadProjection(threadId);
+  const run = projection.runs.at(-1)!;
+  const root = projection.nodes.find((node) => node.id === run.rootNodeId)!;
+  const now = yield* DateTime.now;
+  yield* eventSink.write({
+    events: [
+      {
+        id: EventId.make(`event:finish-message:${run.id}`),
+        type: "message.updated",
+        threadId,
+        runId: run.id,
+        occurredAt: now,
+        payload: {
+          id: MessageId.make(`message:finish:${run.id}`),
+          threadId,
+          runId: run.id,
+          nodeId: run.rootNodeId,
+          createdBy: "agent",
+          creationSource: "provider",
+          role: "assistant",
+          text,
+          attachments: [],
+          streaming: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      },
+      {
+        id: EventId.make(`event:finish-node:${run.id}`),
+        type: "node.updated",
+        threadId,
+        runId: run.id,
+        occurredAt: now,
+        payload: { ...root, status: "completed", completedAt: now },
+      },
+      {
+        id: EventId.make(`event:finish-run:${run.id}`),
+        type: "run.updated",
+        threadId,
+        runId: run.id,
+        occurredAt: now,
+        payload: { ...run, status: "completed", completedAt: now },
+      },
+    ],
+  });
+});
+
+const createDelegationParent = Effect.fn("test.createDelegationParent")(function* (
+  threadId: ThreadId,
+) {
+  const orchestrator = yield* OrchestratorV2;
+  yield* orchestrator.dispatch({
+    type: "thread.create",
+    createdBy: "user",
+    creationSource: "web",
+    commandId: CommandId.make(`command:create:${threadId}`),
+    threadId,
+    projectId: ProjectId.make(`project:${threadId}`),
+    title: "Verified workflow",
+    modelSelection,
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: "feature/workflow",
+    worktreePath: "/tmp/workflow",
+  });
+  yield* orchestrator.dispatch({
+    type: "message.dispatch",
+    createdBy: "user",
+    creationSource: "web",
+    commandId: CommandId.make(`command:implement:${threadId}`),
+    threadId,
+    messageId: MessageId.make(`message:implement:${threadId}`),
+    text: "Parent conversation that must not be copied to reviewers.",
+    attachments: [],
+    modelSelection,
+    dispatchMode: { type: "start_immediately" },
+  });
+  const eventSink = yield* EventSinkV2;
+  const parent = yield* orchestrator.getThreadProjection(threadId);
+  const now = yield* DateTime.now;
+  yield* eventSink.write({
+    events: [
+      {
+        id: EventId.make(`event:metadata:${threadId}`),
+        type: "thread.metadata-updated",
+        threadId,
+        occurredAt: now,
+        payload: {
+          ...parent.thread,
+          pinnedAt: now,
+          pinOrderKey: "pinned-parent",
+          unsettledAt: now,
+          titleRegeneration: { requestId: CommandId.make(`title:${threadId}`), startedAt: now },
+          linkedPullRequest: {
+            projectId: parent.thread.projectId,
+            repository: "example/repo",
+            number: 1,
+            url: "https://github.com/example/repo/pull/1",
+          },
+        },
+      },
+    ],
+  });
+  return yield* orchestrator.getThreadProjection(threadId);
+});
+
 it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
   it.effect("creates and reads a thread through the production V2 composition", () =>
     Effect.gen(function* () {
@@ -200,6 +325,333 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
       assert.deepEqual(projection.runs, []);
     }),
   );
+
+  it.effect("preserves delegated subagent inheritance with fresh context and manual delivery", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* OrchestratorV2;
+      const eventSink = yield* EventSinkV2;
+      const parent = yield* createDelegationParent(ThreadId.make("delegation-parent"));
+      const parentRun = parent.runs[0]!;
+      const command = {
+        type: "delegated_task.request",
+        createdBy: "system",
+        creationSource: "server",
+        commandId: CommandId.make("delegate-active-parent"),
+        parentThreadId: parent.thread.id,
+        parentRunId: parentRun.id,
+        parentNodeId: parentRun.rootNodeId!,
+        title: "Correctness reviewer",
+        task: "Review revision 1.",
+        modelSelection,
+        runtimeMode: parent.thread.runtimeMode,
+        interactionMode: "plan",
+        completionWake: "manual",
+        workflowSkillAllowlist: ["review-code"],
+      } as const;
+      const receipt = yield* orchestrator.dispatch(command);
+      const replay = yield* orchestrator.dispatch(command);
+      assert.equal(replay.sequence, receipt.sequence);
+      const projectedParent = yield* orchestrator.getThreadProjection(parent.thread.id);
+      assert.equal(projectedParent.subagents.length, 1);
+      const task = projectedParent.subagents[0]!;
+      const child = yield* orchestrator.getThreadProjection(task.childThreadId!);
+      assert.deepEqual(child.thread.lineage, {
+        parentThreadId: parent.thread.id,
+        relationshipToParent: "subagent",
+        rootThreadId: parent.thread.id,
+      });
+      assert.deepEqual(child.thread.forkedFrom, { type: "node", nodeId: task.id });
+      assert.isNull(child.thread.workflow);
+      assert.equal(child.thread.projectId, parent.thread.projectId);
+      assert.equal(child.thread.worktreePath, parent.thread.worktreePath);
+      assert.equal(child.thread.branch, parent.thread.branch);
+      assert.deepEqual(child.thread.linkedPullRequest, parent.thread.linkedPullRequest);
+      assert.deepEqual(child.thread.pinnedAt, parent.thread.pinnedAt);
+      assert.equal(child.thread.pinOrderKey, parent.thread.pinOrderKey);
+      assert.deepEqual(child.thread.unsettledAt, parent.thread.unsettledAt);
+      assert.deepEqual(child.thread.titleRegeneration, parent.thread.titleRegeneration);
+      assert.equal(child.thread.interactionMode, "plan");
+      assert.deepEqual(
+        child.messages.map((message) => message.text),
+        [command.task],
+      );
+      assert.equal(child.runs.length, 1);
+      assert.deepEqual(child.runs[0]!.workflowSkillAllowlist, ["review-code"]);
+      assert.notEqual(child.runs[0]!.providerThreadId, parentRun.providerThreadId);
+      assert.deepEqual(
+        child.providerThreads.map((thread) => thread.forkedFrom),
+        [null],
+      );
+
+      yield* finishDelegationRun(child.thread.id, "Review findings.");
+      yield* eventSink.stream({ threadId: parent.thread.id, afterSequence: receipt.sequence }).pipe(
+        Stream.filter(
+          (stored) =>
+            stored.event.type === "context-transfer.created" &&
+            stored.event.payload.type === "subagent_result",
+        ),
+        Stream.runHead,
+      );
+      const completed = yield* orchestrator.getThreadProjection(parent.thread.id);
+      assert.equal(completed.subagents[0]!.status, "completed");
+      assert.equal(completed.subagents[0]!.result, "Review findings.");
+      assert.equal(completed.runs.length, 1);
+      assert.isUndefined(completed.runs[0]!.delegatedCompletion);
+      assert.isTrue(
+        completed.contextTransfers.some((transfer) => transfer.type === "subagent_result"),
+      );
+
+      yield* orchestrator.dispatch({
+        type: "delegated_task.wake-policy",
+        commandId: CommandId.make("delegate-enable-wake"),
+        parentThreadId: parent.thread.id,
+        taskId: task.id,
+        completionWake: "always",
+      });
+      const resumed = yield* orchestrator.getThreadProjection(parent.thread.id);
+      assert.deepEqual(resumed.runs[0]!.delegatedCompletion?.delivery?.taskIds, [task.id]);
+    }),
+  );
+
+  it.effect("keeps the active-parent requirement for ordinary delegation", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* OrchestratorV2;
+      const parent = yield* createDelegationParent(ThreadId.make("ordinary-completed-parent"));
+      const run = parent.runs[0]!;
+      yield* finishDelegationRun(parent.thread.id, "Parent finished.");
+      const error = yield* orchestrator
+        .dispatch({
+          type: "delegated_task.request",
+          createdBy: "system",
+          creationSource: "server",
+          commandId: CommandId.make("ordinary-completed-delegation"),
+          parentThreadId: parent.thread.id,
+          parentRunId: run.id,
+          parentNodeId: run.rootNodeId!,
+          task: "Review the code.",
+          modelSelection,
+          runtimeMode: parent.thread.runtimeMode,
+          interactionMode: "plan",
+          completionWake: "manual",
+          workflowSkillAllowlist: ["review-code"],
+        })
+        .pipe(Effect.flip);
+      assert.instanceOf(error, OrchestratorDispatchError);
+      assert.include(String(error.cause), "is not active");
+      const projection = yield* orchestrator.getThreadProjection(parent.thread.id);
+      assert.equal(projection.subagents.length, 0);
+    }),
+  );
+
+  for (const verdict of ["approve", "request_changes", "invalid"] as const) {
+    it.effect(`collects delegated reviewer feedback before continuing: ${verdict}`, () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* OrchestratorV2;
+        const eventSink = yield* EventSinkV2;
+        const threadId = ThreadId.make(`workflow-delegation-${verdict}`);
+        yield* createDelegationParent(threadId);
+        yield* finishDelegationRun(threadId, "Implementation ready for review.");
+        const parent = yield* orchestrator.getThreadProjection(threadId);
+        const run = parent.runs[0]!;
+        const now = yield* DateTime.now;
+        const agent = (id: string, role: "planner" | "implementer" | "reviewer") => ({
+          version: 1 as const,
+          id,
+          name: id,
+          role,
+          skills: [],
+          instructions: `Act as ${role}.`,
+        });
+        const planId = PlanId.make(`plan:${threadId}`);
+        const workflow: ThreadWorkflowState = {
+          profileId: "default",
+          workspaceRoot: "/tmp/workflow",
+          profile: {
+            version: 1,
+            id: "default",
+            name: "Default",
+            planner: agent("planner", "planner"),
+            implementer: agent("implementer", "implementer"),
+            reviewers: [agent("correctness", "reviewer"), agent("maintainability", "reviewer")],
+            checks: [{ id: "test", name: "Tests", run: "test", timeoutMs: 60_000 }],
+            limits: { maxRevisionCycles: 3, identicalFailureLimit: 2 },
+          },
+          status: "checking",
+          revision: 1,
+          revisionCycles: 0,
+          consecutiveFailureCount: 0,
+          lastFailureFingerprint: null,
+          approvedPlanId: planId,
+          candidateRunId: run.id,
+          workspaceDigest: NodeCrypto.createHash("sha256").update("\n--status--\n").digest("hex"),
+          checks: [],
+          reviews: [],
+          terminalReason: null,
+          updatedAt: DateTime.formatIso(now),
+        };
+        const startSequence = yield* eventSink.latestSequence();
+        yield* eventSink.write({
+          events: [
+            {
+              id: EventId.make(`event:workflow:${threadId}`),
+              type: "thread.workflow-updated",
+              threadId,
+              occurredAt: now,
+              payload: { ...parent.thread, workflow },
+            },
+            {
+              id: EventId.make(`event:plan:${threadId}`),
+              type: "plan.updated",
+              threadId,
+              occurredAt: now,
+              payload: {
+                id: planId,
+                threadId,
+                runId: run.id,
+                nodeId: run.rootNodeId!,
+                kind: "proposed_plan",
+                status: "completed",
+                markdown: "The approved implementation plan.",
+              },
+            },
+          ],
+        });
+        yield* Layer.build(
+          WorkflowCoordinator.live.pipe(
+            Layer.provide(idAllocatorLayer),
+            Layer.provide(
+              Layer.mock(ProcessRunner)({
+                run: () =>
+                  Effect.succeed({
+                    stdout: "",
+                    stderr: "",
+                    code: ChildProcessSpawner.ExitCode(0),
+                    timedOut: false,
+                    stdoutTruncated: false,
+                    stderrTruncated: false,
+                    stdoutInvalidUtf8: false,
+                    stderrInvalidUtf8: false,
+                  }),
+              }),
+            ),
+          ),
+        );
+        yield* eventSink.stream({ threadId, afterSequence: startSequence }).pipe(
+          Stream.filter((stored) => stored.event.type === "subagent.updated"),
+          Stream.take(2),
+          Stream.runCollect,
+        );
+        const reviewing = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(reviewing.subagents.length, 2);
+        assert.equal(reviewing.thread.workflow!.reviews.length, 2);
+        for (const task of reviewing.subagents) {
+          assert.equal(task.completionWake, "manual");
+          assert.equal(task.runId, run.id);
+          const child = yield* orchestrator.getThreadProjection(task.childThreadId!);
+          assert.isNull(child.thread.workflow);
+          assert.deepEqual(child.thread.linkedPullRequest, parent.thread.linkedPullRequest);
+          assert.deepEqual(child.thread.pinnedAt, parent.thread.pinnedAt);
+          assert.equal(child.thread.pinOrderKey, parent.thread.pinOrderKey);
+          assert.deepEqual(child.thread.unsettledAt, parent.thread.unsettledAt);
+          assert.deepEqual(child.thread.titleRegeneration, parent.thread.titleRegeneration);
+          assert.isTrue(
+            reviewing.thread.workflow!.reviews.some(
+              (review) => review.reviewerThreadId === task.childThreadId,
+            ),
+          );
+        }
+        const [first, second] = reviewing.thread.workflow!.reviews;
+        const feedback =
+          verdict === "invalid"
+            ? "Invalid review JSON"
+            : encodeReview({
+                verdict,
+                summary: "The reviewer assessed the implementation.",
+                findings:
+                  verdict === "approve"
+                    ? []
+                    : [
+                        {
+                          id: "missing-check",
+                          severity: "blocking",
+                          title: "Missing input check",
+                          description: "Validate input before writing.",
+                          file: "api.ts",
+                          line: 12,
+                          evidence: "An empty input reaches the write.",
+                        },
+                      ],
+              });
+        yield* finishDelegationRun(first!.reviewerThreadId, feedback);
+        yield* eventSink.stream({ threadId, afterSequence: startSequence }).pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "thread.workflow-updated" &&
+              stored.event.payload.workflow?.status === "reviewing" &&
+              stored.event.payload.workflow.reviews[0]?.status !== "running",
+          ),
+          Stream.runHead,
+        );
+        const partial = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(partial.runs.length, 1);
+        assert.equal(partial.subagents.length, 2);
+        assert.equal(partial.thread.workflow!.status, "reviewing");
+
+        yield* finishDelegationRun(
+          second!.reviewerThreadId,
+          encodeReview({
+            verdict: "approve",
+            summary: "The second reviewer approved the design.",
+            findings: [],
+          }),
+        );
+        yield* eventSink.stream({ threadId, afterSequence: startSequence }).pipe(
+          Stream.filter((stored) =>
+            verdict === "approve"
+              ? stored.event.type === "thread.workflow-updated" &&
+                stored.event.payload.workflow?.status === "done"
+              : stored.event.type === "run.created" && stored.event.payload.ordinal === 2,
+          ),
+          Stream.runHead,
+        );
+        yield* eventSink.stream({ threadId, afterSequence: startSequence }).pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "context-transfer.created" &&
+              stored.event.payload.type === "subagent_result",
+          ),
+          Stream.take(2),
+          Stream.runCollect,
+        );
+        const completed = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(completed.subagents.length, 2);
+        assert.isTrue(completed.subagents.every((task) => task.status === "completed"));
+        assert.isUndefined(completed.runs[0]!.delegatedCompletion);
+        assert.equal(
+          completed.thread.workflow!.status,
+          verdict === "approve" ? "done" : "revising",
+        );
+        assert.equal(completed.runs.length, verdict === "approve" ? 1 : 2);
+        if (verdict !== "approve") {
+          const instruction = completed.messages.find(
+            (message) => message.id === completed.runs[1]!.userMessageId,
+          )!;
+          assert.include(instruction.text, "The second reviewer approved the design.");
+          assert.include(
+            instruction.text,
+            verdict === "invalid"
+              ? "failed to return a valid review"
+              : "The reviewer assessed the implementation.",
+          );
+          if (verdict === "request_changes") {
+            assert.include(instruction.text, "Validate input before writing.");
+            assert.include(instruction.text, "api.ts:12");
+            assert.include(instruction.text, "An empty input reaches the write.");
+          }
+        }
+      }),
+    );
+  }
 
   it.effect("merges an explicit provider-finished run while checkpoint capture is pending", () =>
     Effect.gen(function* () {

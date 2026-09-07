@@ -298,6 +298,7 @@ describe("resolveEffectiveInteractionMode", () => {
         planModeEnabled: false,
         composerInteractionMode: "plan",
         threadInteractionMode: "plan",
+        workflowStatus: null,
       }),
     ).toBe("default");
   });
@@ -308,9 +309,24 @@ describe("resolveEffectiveInteractionMode", () => {
         planModeEnabled: true,
         composerInteractionMode: null,
         threadInteractionMode: "plan",
+        workflowStatus: null,
       }),
     ).toBe("plan");
   });
+
+  it.each(["draft", "planning", "planned"] as const)(
+    "keeps %s workflows in plan mode when legacy plan mode is disabled",
+    (workflowStatus) => {
+      expect(
+        resolveEffectiveInteractionMode({
+          planModeEnabled: false,
+          composerInteractionMode: "default",
+          threadInteractionMode: "plan",
+          workflowStatus,
+        }),
+      ).toBe("plan");
+    },
+  );
 });
 
 describe("resolveThreadMetadataUpdateForNextTurn", () => {

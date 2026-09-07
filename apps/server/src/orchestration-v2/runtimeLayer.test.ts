@@ -564,7 +564,8 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
 
       const projection = yield* orchestrator.getThreadProjection(threadId);
 
-      assert.equal(result.sequence, 1);
+      assert.lengthOf(result.storedEvents, 1);
+      assert.equal(result.sequence, result.storedEvents[0]?.sequence);
       assert.equal(projection.thread.id, threadId);
       assert.equal(projection.thread.projectId, projectId);
       assert.equal(projection.thread.providerInstanceId, "codex");

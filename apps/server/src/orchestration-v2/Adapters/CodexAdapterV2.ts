@@ -5754,20 +5754,19 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               const response = yield* client
                 .request("thread/fork", {
                   threadId,
-                  ...(boundary.lastTurnId === undefined
-                    ? {}
-                    : { lastTurnId: boundary.lastTurnId }),
+                  ...(boundary.lastTurnId === undefined ? {} : { lastTurnId: boundary.lastTurnId }),
                   ...params,
                 })
                 .pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new ProviderAdapterForkThreadError({
-                      driver: CODEX_PROVIDER,
-                      providerThreadId: threadInput.sourceProviderThread.id,
-                      cause: normalizeCodexCause(cause),
-                    }),
-                ));
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderAdapterForkThreadError({
+                        driver: CODEX_PROVIDER,
+                        providerThreadId: threadInput.sourceProviderThread.id,
+                        cause: normalizeCodexCause(cause),
+                      }),
+                  ),
+                );
               let forkedThread = response.thread;
               if (boundary.rollbackTurnCount > 0) {
                 // Reached only when the selected source turn has no native

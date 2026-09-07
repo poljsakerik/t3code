@@ -96,6 +96,9 @@ export function createOrchestrationV2TurnItemVisibility(input: {
     input.items.filter((item) => item.type === "run_interrupt_request").map((item) => item.runId),
   );
   return (item) => {
+    if (item.type === "workflow_instruction" || item.type === "workflow_candidate_message") {
+      return false;
+    }
     const status = item.runId === null ? undefined : statuses.get(item.runId);
     if (status === "rolled_back") return false;
     if (

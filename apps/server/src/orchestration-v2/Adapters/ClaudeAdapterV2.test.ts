@@ -78,7 +78,6 @@ import {
   claudeTodoSteps,
   claudeProposedPlan,
   awaitClaudeApprovalDecision,
-  claudeWorkflowSkillFilterError,
   loggedClaudeQueryOptions,
   makeClaudeAdapterV2,
   makeClaudeAgentSdkProtocolLogger,

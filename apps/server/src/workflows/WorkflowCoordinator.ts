@@ -357,20 +357,6 @@ export const live = Layer.effectDiscard(
       const selection =
         workflowAgentModelSelection(input.reviewer) ?? input.projection.thread.modelSelection;
       yield* threads.dispatch({
-        type: "thread.create",
-        commandId: CommandId.make(`command:${base}:create`),
-        threadId: childThreadId,
-        projectId: input.projection.thread.projectId,
-        title: `${input.reviewer.name}: ${input.projection.thread.title}`,
-        modelSelection: selection,
-        runtimeMode: input.projection.thread.runtimeMode,
-        interactionMode: "plan",
-        branch: input.projection.thread.branch,
-        worktreePath: input.projection.thread.worktreePath,
-        createdBy: "agent",
-        creationSource: "server",
-      });
-      yield* threads.dispatch({
         type: "message.dispatch",
         commandId: CommandId.make(`command:${base}:start`),
         threadId: childThreadId,

@@ -1676,6 +1676,31 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         reviewerId: review.reviewerId,
       });
       const existingTask = projection.subagents.find((task) => task.id === reviewerNodeId);
+      if (existingTask === undefined) {
+        const childThread = {
+          ...makeSubagentChildThread({
+            parentThread: projection.thread,
+            childThreadId: review.reviewerThreadId,
+            parentNodeId: reviewerNodeId,
+            activeProviderThreadId: null,
+            providerInstanceId: modelSelection.instanceId,
+            modelSelection,
+            title: `${reviewer?.name ?? review.reviewerId}: ${projection.thread.title}`,
+            now,
+            createdBy: "system",
+            creationSource: "server",
+          }),
+          workflow: null,
+          interactionMode: "plan" as const,
+        };
+        yield* emitEvent({
+          type: "thread.created",
+          threadId: childThread.id,
+          providerInstanceId: childThread.providerInstanceId,
+          occurredAt: now,
+          payload: childThread,
+        });
+      }
       const existingNode = projection.nodes.find((node) => node.id === reviewerNodeId);
       const execution = workflowReviewerExecution(review);
       const status = execution.status;
@@ -6979,6 +7004,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
       const parentThreadId = childProjection.thread.lineage.parentThreadId;
       const parentProjection = yield* projectionStore.getThreadProjection(parentThreadId);
+      // The workflow coordinator consumes review verdicts and owns repairs and
+      // completion. Generic delegation must not deliver their raw JSON as a wake.
+      if (
+        parentProjection.turnItems.some(
+          (item) =>
+            item.type === "workflow_verification" &&
+            item.reviews.some((review) => review.reviewerThreadId === childThreadId),
+        )
+      ) {
+        return;
+      }
       const task = parentProjection.subagents.find(
         (candidate) =>
           candidate.id === forkedFrom.nodeId &&

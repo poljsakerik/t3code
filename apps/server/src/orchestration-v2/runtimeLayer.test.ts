@@ -6,6 +6,8 @@ import {
   ContextTransferId,
   EventId,
   MessageId,
+  NodeId,
+  type ThreadWorkflowState,
   type ModelSelection,
   ProjectId,
   ProviderDriverKind,
@@ -170,6 +172,186 @@ const SharedApplicationDataPlaneTestLayer = Layer.merge(
 );
 
 it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
+  it.effect("creates workflow reviewers as owned subagents", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* OrchestratorV2;
+      const sink = yield* EventSinkV2;
+      const now = yield* DateTime.now;
+      const parentId = ThreadId.make("workflow-subagents-parent");
+      const secondId = ThreadId.make("workflow-subagents-second");
+      const freshId = ThreadId.make("workflow-subagents-fresh");
+      const runId = RunId.make("workflow-subagents-run");
+      const rootId = NodeId.make("workflow-subagents-root");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create-${parentId}`),
+        threadId: parentId,
+        projectId: ProjectId.make("workflow-subagents-project"),
+        title: parentId,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: "feature/review",
+        worktreePath: "/workspace/review",
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const parent = (yield* orchestrator.getThreadProjection(parentId)).thread;
+      const role = (id: string, role: "planner" | "implementer" | "reviewer") => ({
+        version: 1 as const,
+        id,
+        name: id,
+        role,
+        skills: [],
+        instructions: "Review carefully",
+      });
+      const workflow: ThreadWorkflowState = {
+        profileId: "default",
+        workspaceRoot: "/workspace/review",
+        profile: {
+          version: 1,
+          id: "default",
+          name: "Default",
+          planner: role("planner", "planner"),
+          implementer: role("implementer", "implementer"),
+          reviewers: [role("second", "reviewer"), role("fresh", "reviewer")],
+          checks: [{ id: "test", name: "Tests", run: "true", timeoutMs: 1000 }],
+          limits: { maxRevisionCycles: 3, identicalFailureLimit: 2 },
+        },
+        status: "reviewing",
+        revision: 1,
+        revisionCycles: 0,
+        consecutiveFailureCount: 0,
+        lastFailureFingerprint: null,
+        approvedPlanId: null,
+        candidateRunId: runId,
+        workspaceDigest: "digest",
+        checks: [],
+        terminalReason: null,
+        updatedAt: DateTime.formatIso(now),
+        reviews: [secondId, freshId].map((reviewerThreadId, index) => ({
+          reviewerId: index === 0 ? "second" : "fresh",
+          reviewerThreadId,
+          revision: 1,
+          status: "running",
+          review: null,
+          error: null,
+        })),
+      };
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("workflow-subagents-state"),
+            type: "thread.workflow-updated",
+            threadId: parentId,
+            occurredAt: now,
+            payload: { ...parent, workflow },
+          },
+          {
+            id: EventId.make("workflow-subagents-run-created"),
+            type: "run.created",
+            threadId: parentId,
+            runId,
+            occurredAt: now,
+            payload: {
+              id: runId,
+              threadId: parentId,
+              ordinal: 1,
+              providerInstanceId: modelSelection.instanceId,
+              modelSelection,
+              providerThreadId: null,
+              userMessageId: MessageId.make("workflow-request"),
+              rootNodeId: rootId,
+              activeAttemptId: null,
+              status: "completed",
+              queuePosition: null,
+              requestedAt: now,
+              startedAt: now,
+              completedAt: now,
+              checkpointId: null,
+              contextHandoffId: null,
+            },
+          },
+          {
+            id: EventId.make("workflow-subagents-root-created"),
+            type: "node.updated",
+            threadId: parentId,
+            runId,
+            nodeId: rootId,
+            occurredAt: now,
+            payload: {
+              id: rootId,
+              threadId: parentId,
+              runId,
+              parentNodeId: null,
+              rootNodeId: rootId,
+              kind: "root_turn",
+              status: "completed",
+              countsForRun: true,
+              providerThreadId: null,
+              providerTurnId: null,
+              nativeItemRef: null,
+              runtimeRequestId: null,
+              checkpointScopeId: null,
+              startedAt: now,
+              completedAt: now,
+            },
+          },
+        ],
+      });
+      const result = yield* orchestrator.dispatch({
+        type: "workflow.update",
+        commandId: CommandId.make("workflow-subagents-create"),
+        threadId: parentId,
+        expectedStatus: "reviewing",
+        workflow,
+        createdBy: "system",
+        creationSource: "server",
+      });
+      const updated = yield* orchestrator.getThreadProjection(parentId);
+      assert.lengthOf(updated.subagents, 2);
+      for (const childId of [secondId, freshId]) {
+        const child = yield* orchestrator.getThreadProjection(childId);
+        const task = updated.subagents.find((task) => task.childThreadId === childId)!;
+        assert.deepEqual(child.thread.lineage, {
+          parentThreadId: parentId,
+          relationshipToParent: "subagent",
+          rootThreadId: parentId,
+        });
+        assert.deepEqual(child.thread.forkedFrom, { type: "node", nodeId: task.id });
+        assert.isNull(child.thread.workflow);
+        assert.equal(child.thread.worktreePath, parent.worktreePath);
+        assert.equal(task.origin, "app_owned");
+        assert.equal(task.runId, runId);
+      }
+      const fresh = yield* orchestrator.getThreadProjection(freshId);
+      assert.isNull(fresh.thread.activeProviderThreadId);
+      assert.equal(fresh.thread.interactionMode, "plan");
+      assert.isEmpty(fresh.messages);
+      assert.isEmpty(fresh.runs);
+      assert.lengthOf(
+        result.storedEvents.filter((stored) => stored.event.type === "thread.created"),
+        2,
+      );
+      const repeated = yield* orchestrator.dispatch({
+        type: "workflow.update",
+        commandId: CommandId.make("workflow-subagents-repeat"),
+        threadId: parentId,
+        expectedStatus: "reviewing",
+        workflow,
+        createdBy: "system",
+        creationSource: "server",
+      });
+      assert.isFalse(
+        repeated.storedEvents.some(
+          (stored) =>
+            stored.event.type === "thread.created" ||
+            stored.event.type === "thread.metadata-updated",
+        ),
+      );
+    }),
+  );
+
   it.effect("creates and reads a thread through the production V2 composition", () =>
     Effect.gen(function* () {
       const orchestrator = yield* OrchestratorV2;

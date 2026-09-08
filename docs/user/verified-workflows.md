@@ -12,7 +12,7 @@ The planner may ask clarifying questions with A/B/C choices. When its proposed p
 4. sends failed checks and blocking review findings back to the implementer;
 5. repeats all checks and reviews after every repair.
 
-Each verification round appears as its own card in the conversation. The card updates while checks and reviewers run, then retains their verdicts, findings, commands, and failure output after the workflow moves on. Open a reviewer from the card to inspect its full thread. Reviewer executions also appear in the Agents panel.
+Each verification round appears as its own card in the conversation. The card updates while checks and reviewers run, then retains their verdicts, findings, commands, and failure output after the workflow moves on. Open a reviewer from the card to inspect its full thread. Reviewers belong to the workflow as subagents and appear in the Agents panel, rather than as separate top-level conversations.
 
 The implementer's final response is held as an internal candidate while checks and reviews run. Rejected candidates are never presented as completed work. After every check passes and every reviewer approves, T3 Code publishes the approved response immediately below the successful verification card.
 

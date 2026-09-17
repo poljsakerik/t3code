@@ -1,3 +1,4 @@
+import { ThreadAgentDefinition } from "./agentDefinitions.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -355,6 +356,11 @@ export const OrchestrationV2AppThread = Schema.Struct({
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
   /** Absent/null for ordinary threads. Workflow configuration is snapshotted at creation. */
   workflow: Schema.optional(Schema.NullOr(ThreadWorkflowState)),
+  /** Frozen execution configuration; transport sends only agentDefinitionSummary. */
+  agentDefinition: Schema.optional(Schema.NullOr(ThreadAgentDefinition)),
+  agentDefinitionSummary: Schema.optional(
+    Schema.Struct({ id: TrimmedNonEmptyString, name: TrimmedNonEmptyString }),
+  ),
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   lineage: OrchestrationV2AppThreadLineage,
   forkedFrom: Schema.NullOr(
@@ -2275,6 +2281,7 @@ export const OrchestrationV2Command = Schema.Union([
       }),
     ),
     workflowProfileId: Schema.optional(TrimmedNonEmptyString),
+    agentDefinitionId: Schema.optional(TrimmedNonEmptyString),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.archive"),
@@ -2613,6 +2620,7 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("delegated_task.request"),
+    agentDefinitionId: Schema.optional(TrimmedNonEmptyString),
     ...OrchestrationV2CreationFields,
     commandId: CommandId,
     parentThreadId: ThreadId,
@@ -2739,6 +2747,7 @@ export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   workflowProfileId: Schema.optional(TrimmedNonEmptyString),
+  agentDefinitionId: Schema.optional(TrimmedNonEmptyString),
   workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
   initialMessage: Schema.optional(
     Schema.Struct({

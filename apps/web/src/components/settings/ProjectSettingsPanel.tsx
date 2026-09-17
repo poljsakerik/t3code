@@ -1,3 +1,4 @@
+import { AgentDefinitionsSettings } from "./AgentDefinitionsSettings";
 import {
   isAtomCommandInterrupted,
   mapAtomCommandResult,
@@ -479,6 +480,7 @@ function ProjectDetail({
           />
         </SettingsSection>
         <ProjectActionsSettings />
+        <AgentDefinitionsSettings />
         {hasMultipleCheckouts ? checkoutChoices : null}
         <SettingsSection title="Danger">
           <SettingsRow

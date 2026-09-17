@@ -15,7 +15,11 @@ import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 
-import { projectTurnItemForWire, projectDomainEventForWire } from "./WireProjection.ts";
+import {
+  projectTurnItemForWire,
+  projectDomainEventForWire,
+  projectThreadProjectionForWire,
+} from "./WireProjection.ts";
 import { threadShellFromProjection } from "./ProjectionStore.ts";
 
 const decodeTurnItem = Schema.decodeUnknownSync(OrchestrationV2TurnItem);
@@ -43,6 +47,39 @@ const base = {
 };
 
 describe("orchestration V2 wire projection", () => {
+  it("keeps agent execution snapshots off the wire while preserving identity", () => {
+    const agentDefinition = {
+      definition: {
+        id: "agent",
+        parentId: null,
+        config: { version: 1 as const, name: "Google", description: "" },
+        instructions: "private instructions".repeat(3000),
+        skillPaths: [],
+      },
+      descendants: [],
+    };
+    const projection = {
+      thread: { agentDefinition },
+      turnItems: [],
+      visibleTurnItems: [],
+    } as unknown as OrchestrationV2ThreadProjection;
+    const wire = projectThreadProjectionForWire(projection);
+    expect(wire.thread.agentDefinition).toBeUndefined();
+    expect(wire.thread.agentDefinitionSummary).toEqual({ id: "agent", name: "Google" });
+    expect(projection.thread.agentDefinition).toBe(agentDefinition);
+    expect(JSON.stringify(wire).length).toBeLessThan(300);
+    const event = {
+      id: EventId.make("agent-wire-event"),
+      type: "thread.created" as const,
+      threadId: ThreadId.make("agent-wire-thread"),
+      occurredAt: DateTime.makeUnsafe("2026-09-17T00:00:00.000Z"),
+      payload: projection.thread,
+    };
+    const wireEvent = projectDomainEventForWire(event);
+    expect(JSON.stringify(wireEvent)).not.toContain("private instructions");
+    expect(JSON.stringify(wireEvent)).toContain("Google");
+  });
+
   it("preserves image metadata through wire and JSON contracts while redacting output", () => {
     const item = {
       ...base,

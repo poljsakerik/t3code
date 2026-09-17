@@ -1,5 +1,6 @@
 import type {
   OrchestrationV2DomainEvent,
+  OrchestrationV2AppThread,
   OrchestrationV2ThreadProjection,
   OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
@@ -104,6 +105,18 @@ export function projectTurnItemForWire(item: OrchestrationV2TurnItem): Orchestra
   }
 }
 
+function projectThreadForWire(thread: OrchestrationV2AppThread): OrchestrationV2AppThread {
+  if (!thread.agentDefinition) return thread;
+  const { agentDefinition, ...rest } = thread;
+  return {
+    ...rest,
+    agentDefinitionSummary: {
+      id: agentDefinition.definition.id,
+      name: agentDefinition.definition.config.name,
+    },
+  };
+}
+
 export function projectThreadProjectionForWire(
   projection: OrchestrationV2ThreadProjection,
 ): OrchestrationV2ThreadProjection {
@@ -118,6 +131,7 @@ export function projectThreadProjectionForWire(
   };
   return {
     ...projection,
+    thread: projectThreadForWire(projection.thread),
     turnItems: projection.turnItems.map(project),
     visibleTurnItems: projection.visibleTurnItems.map((row) => ({
       ...row,
@@ -129,6 +143,30 @@ export function projectThreadProjectionForWire(
 export function projectDomainEventForWire(
   event: OrchestrationV2DomainEvent,
 ): OrchestrationV2DomainEvent {
+  switch (event.type) {
+    case "thread.created":
+    case "thread.archived":
+    case "thread.unarchived":
+    case "thread.deleted":
+    case "thread.settled":
+    case "thread.unsettled":
+    case "thread.snoozed":
+    case "thread.unsnoozed":
+    case "thread.pinned":
+    case "thread.unpinned":
+    case "thread.pin-reordered":
+    case "thread.active-reordered":
+    case "thread.visited":
+    case "thread.marked-unread":
+    case "thread.metadata-updated":
+    case "thread.pull-request-synced":
+    case "thread.runtime-mode-updated":
+    case "thread.interaction-mode-updated":
+    case "thread.model-selection-updated":
+    case "thread.provider-switched":
+    case "thread.workflow-updated":
+      return { ...event, payload: projectThreadForWire(event.payload) };
+  }
   return event.type === "turn-item.updated"
     ? { ...event, payload: projectTurnItemForWire(event.payload) }
     : event;

@@ -150,7 +150,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Agent definitions",
     to: "/settings/projects",
     scope: "project",
-    searchTerms: ["agents subagents instructions models eve folders"],
+    searchTerms: ["agents subagents eve folders"],
   },
   {
     id: "project-defaults",

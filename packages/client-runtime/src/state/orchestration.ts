@@ -13,10 +13,6 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
 ) {
   return {
     v2: {
-      launchThread: createEnvironmentRpcCommand(runtime, {
-        label: "environment-data:orchestration-v2:launch-thread",
-        tag: ORCHESTRATION_V2_WS_METHODS.launchThread,
-      }),
       dispatchCommand: createEnvironmentRpcCommand(runtime, {
         label: "environment-data:orchestration-v2:dispatch-command",
         tag: ORCHESTRATION_V2_WS_METHODS.dispatchCommand,

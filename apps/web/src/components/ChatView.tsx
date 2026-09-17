@@ -10385,10 +10385,6 @@ export default function ChatView(props: ChatViewProps) {
             isServerThread={isServerThread}
             activeThreadTitle={activeThread.title}
             activeProject={activeProject ?? null}
-            agentName={
-              serverProjection?.thread.agentDefinitionSummary?.name ??
-              serverProjection?.thread.agentDefinition?.definition.config.name
-            }
             workflowProfileName={
               serverProjection?.thread.workflow?.profile?.name ??
               activeThread.workflow?.profileId ??

@@ -1,5 +1,4 @@
 import { modelSelectionsEqual } from "@t3tools/shared/model";
-import { withAgentDefinitionContext } from "../agents/agentDefinitionContext.ts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   CommandId,
@@ -1169,7 +1168,7 @@ export const layer: Layer.Layer<
         hasUnpairedRunInterruptRequest: runControls.hasUnpairedRunInterruptRequest,
         message: {
           messageId: message.id,
-          text: withAgentDefinitionContext(projection.thread.agentDefinition, userText),
+          text: userText,
           attachments: message.attachments,
           createdBy: message.createdBy,
           creationSource: message.creationSource,

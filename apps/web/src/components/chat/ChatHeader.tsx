@@ -40,7 +40,7 @@ interface ChatHeaderProps {
   /** Drafts have no server thread yet, so the title carries no action menu. */
   isServerThread: boolean;
   activeProject: EnvironmentProject | null;
-  isVerifiedWorkflow: boolean;
+  workflowProfileName: string | null;
   rightPanelOpen: boolean;
   onNewThreadInProject: () => void;
   onOpenProjectSettings?: (() => void) | undefined;
@@ -73,7 +73,7 @@ export const ChatHeader = memo(function ChatHeader({
   activeThreadTitle,
   isServerThread,
   activeProject,
-  isVerifiedWorkflow,
+  workflowProfileName,
   rightPanelOpen,
   onNewThreadInProject,
   onOpenProjectSettings,
@@ -335,13 +335,14 @@ export const ChatHeader = memo(function ChatHeader({
           )}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
-      {isVerifiedWorkflow ? (
+      {workflowProfileName !== null ? (
         <Badge
           variant="success"
-          className="shrink-0 gap-1.5 border border-success/20 bg-success/16 px-2 font-semibold shadow-xs dark:bg-success/20"
+          title={`Verified workflow · ${workflowProfileName}`}
+          className="max-w-[45%] shrink-0 gap-1.5 border border-success/20 bg-success/16 px-2 font-semibold shadow-xs dark:bg-success/20"
         >
           <ShieldCheckIcon aria-hidden />
-          Verified workflow
+          <span className="truncate">Verified workflow · {workflowProfileName}</span>
         </Badge>
       ) : null}
     </div>

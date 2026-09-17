@@ -55,6 +55,11 @@ export function createProjectEnvironmentAtoms<R, E>(
       JSON.stringify([environmentId, input.projectId]),
   };
   return {
+    workflowProfiles: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:projects:workflow-profiles",
+      tag: WS_METHODS.workflowsListProfiles,
+      staleTimeMs: 0,
+    }),
     searchEntries: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:projects:search-entries",
       tag: WS_METHODS.projectsSearchEntries,

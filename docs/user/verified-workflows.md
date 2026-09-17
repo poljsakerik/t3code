@@ -2,7 +2,7 @@
 
 Verified workflows turn a request into a plan, an implementation, deterministic checks, and independent agent reviews. A workflow is only marked **Verified** after every configured check passes and every configured reviewer approves the same repository revision.
 
-Open the command palette and choose **New verified workflow**. The web app creates a planning thread with the `default` workflow profile. Ordinary new threads are unchanged and do not run this loop.
+Open the command palette (Cmd+K / Ctrl+K) and choose **New verified workflow** with the profile you want. Each profile available to the current project has its own entry. The web and desktop apps create a planning thread with that profile, which is shown in the thread header and verification cards. Ordinary new threads are unchanged and do not run this loop.
 
 The planner may ask clarifying questions with A/B/C choices. When its proposed plan is ready, use the existing **Implement** action. This action is available even when the general Plan Mode setting is off. T3 Code then:
 
@@ -88,7 +88,7 @@ skills:
 instructions: Review correctness, regressions, and missing tests. Do not edit files.
 ```
 
-The web command selects the profile whose ID is `default`:
+Each configured profile appears in the command palette by name. For example:
 
 ```yaml
 # profiles/default.yaml

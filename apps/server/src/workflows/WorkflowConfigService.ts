@@ -2,6 +2,8 @@ import {
   ProjectId,
   ResolvedWorkflowProfile,
   WorkflowAgentDefinition,
+  WorkflowConfigError,
+  type WorkflowProfileSummary,
   WorkflowProfileDefinition,
   type ResolvedWorkflowProfile as ResolvedWorkflowProfileType,
   type WorkflowAgentDefinition as WorkflowAgentDefinitionType,
@@ -21,21 +23,12 @@ import { ProjectionProjectRepository } from "../persistence/Services/ProjectionP
 import { T3ProjectFileLoader } from "../project/T3ProjectFileLoader.ts";
 import { WorkspacePaths } from "../workspace/WorkspacePaths.ts";
 
-export class WorkflowConfigError extends Schema.TaggedError<WorkflowConfigError>()(
-  "WorkflowConfigError",
-  {
-    profileId: Schema.String,
-    path: Schema.optional(Schema.String),
-    detail: Schema.String,
-    cause: Schema.optional(Schema.Defect()),
-  },
-) {
-  override get message(): string {
-    return `Workflow profile ${this.profileId} is invalid: ${this.detail}`;
-  }
-}
+export { WorkflowConfigError } from "@t3tools/contracts";
 
 export interface WorkflowConfigServiceShape {
+  readonly listProfiles: (input: {
+    readonly projectId: ProjectId;
+  }) => Effect.Effect<ReadonlyArray<WorkflowProfileSummary>, WorkflowConfigError>;
   readonly resolveProfile: (input: {
     readonly projectId: ProjectId;
     readonly profileId: string;
@@ -112,9 +105,10 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  const resolveProfile: WorkflowConfigServiceShape["resolveProfile"] = Effect.fn(
-    "WorkflowConfigService.resolveProfile",
-  )(function* (input) {
+  const resolveRoots = Effect.fn("WorkflowConfigService.resolveRoots")(function* (input: {
+    readonly projectId: ProjectId;
+    readonly profileId: string;
+  }) {
     const project = yield* projects.getById({ projectId: input.projectId }).pipe(
       Effect.mapError(
         (cause) =>
@@ -160,34 +154,50 @@ export const make = Effect.gen(function* () {
         ),
       );
     const globalRoot = path.join(config.stateDir, "workflows");
-    const [globalAgents, repositoryAgents, globalProfiles, repositoryProfiles] = yield* Effect.all([
-      readDefinitions({
-        directory: path.join(globalRoot, "agents"),
-        decode: decodeWorkflowAgentDefinition,
-        profileId: input.profileId,
-      }),
-      readDefinitions({
-        directory: path.join(repositoryRoot, "agents"),
-        decode: decodeWorkflowAgentDefinition,
-        profileId: input.profileId,
-      }),
-      readDefinitions({
-        directory: path.join(globalRoot, "profiles"),
-        decode: decodeWorkflowProfileDefinition,
-        profileId: input.profileId,
-      }),
-      readDefinitions({
-        directory: path.join(repositoryRoot, "profiles"),
-        decode: decodeWorkflowProfileDefinition,
-        profileId: input.profileId,
-      }),
-    ]);
+    return { globalRoot, repositoryRoot, workspaceRoot: project.workspaceRoot };
+  });
 
-    const agents = new Map<string, WorkflowAgentDefinitionType>();
-    for (const agent of [...globalAgents, ...repositoryAgents]) agents.set(agent.id, agent);
+  const readProfiles = Effect.fn("WorkflowConfigService.readProfiles")(function* (input: {
+    readonly globalRoot: string;
+    readonly repositoryRoot: string;
+    readonly profileId: string;
+  }) {
     const profiles = new Map<string, WorkflowProfileDefinitionType>();
-    for (const profile of [...globalProfiles, ...repositoryProfiles])
-      profiles.set(profile.id, profile);
+    for (const root of [input.globalRoot, input.repositoryRoot]) {
+      const definitions = yield* readDefinitions({
+        directory: path.join(root, "profiles"),
+        decode: decodeWorkflowProfileDefinition,
+        profileId: input.profileId,
+      });
+      for (const profile of definitions) profiles.set(profile.id, profile);
+    }
+    return profiles;
+  });
+
+  const listProfiles: WorkflowConfigServiceShape["listProfiles"] = Effect.fn(
+    "WorkflowConfigService.listProfiles",
+  )(function* (input) {
+    const roots = yield* resolveRoots({ ...input, profileId: "*" });
+    const profiles = yield* readProfiles({ ...roots, profileId: "*" });
+    return [...profiles.values()]
+      .map(({ id, name }) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+  });
+
+  const resolveProfile: WorkflowConfigServiceShape["resolveProfile"] = Effect.fn(
+    "WorkflowConfigService.resolveProfile",
+  )(function* (input) {
+    const roots = yield* resolveRoots(input);
+    const profiles = yield* readProfiles({ ...roots, profileId: input.profileId });
+    const agents = new Map<string, WorkflowAgentDefinitionType>();
+    for (const root of [roots.globalRoot, roots.repositoryRoot]) {
+      const definitions = yield* readDefinitions({
+        directory: path.join(root, "agents"),
+        decode: decodeWorkflowAgentDefinition,
+        profileId: input.profileId,
+      });
+      for (const agent of definitions) agents.set(agent.id, agent);
+    }
     const profile = profiles.get(input.profileId);
     if (profile === undefined) {
       return yield* new WorkflowConfigError({
@@ -265,10 +275,10 @@ export const make = Effect.gen(function* () {
           }),
       ),
     );
-    return { profile: resolvedProfile, workspaceRoot: project.workspaceRoot };
+    return { profile: resolvedProfile, workspaceRoot: roots.workspaceRoot };
   });
 
-  return WorkflowConfigService.of({ resolveProfile });
+  return WorkflowConfigService.of({ resolveProfile, listProfiles });
 });
 
 export const layer = Layer.effect(WorkflowConfigService, make);

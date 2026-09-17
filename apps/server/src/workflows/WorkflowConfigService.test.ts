@@ -239,3 +239,73 @@ it.layer(testLayer)("WorkflowConfigService", (it) => {
     }).pipe(Effect.scoped),
   );
 });
+
+it.layer(Layer.fresh(testLayer))("workflow profile discovery", (it) => {
+  it.effect("lists project profiles with repository overrides and no default requirement", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const config = yield* ServerConfig;
+      const workflows = yield* WorkflowConfigService;
+      const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-profiles-" });
+      const otherRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-other-profiles-" });
+      const input = { projectId: ProjectId.make(workspaceRoot) };
+      assert.deepEqual(yield* workflows.listProfiles(input), []);
+
+      yield* fs.writeFileString(
+        path.join(workspaceRoot, "t3.json"),
+        '{ "workflowsDirectory": "config/workflows" }',
+      );
+      const globalProfiles = path.join(config.stateDir, "workflows", "profiles");
+      const repositoryProfiles = path.join(workspaceRoot, "config", "workflows", "profiles");
+      const definition = (id: string, name: string) =>
+        JSON.stringify({
+          version: 1,
+          id,
+          name,
+          planner: "planner",
+          implementer: "implementer",
+          reviewers: ["reviewer"],
+          checks: [{ id: "test", name: "Tests", run: "test-command" }],
+          limits: { maxRevisionCycles: 3, identicalFailureLimit: 2 },
+        });
+      yield* writeYaml(path.join(globalProfiles, "shared.json"), definition("shared", "Global"));
+      yield* writeYaml(path.join(globalProfiles, "quick.yml"), definition("quick", "Quick"));
+      yield* writeYaml(
+        path.join(repositoryProfiles, "shared.yaml"),
+        definition("shared", "Repository"),
+      );
+      yield* writeYaml(
+        path.join(repositoryProfiles, "custom.json"),
+        definition("custom", "Custom"),
+      );
+      yield* writeYaml(path.join(repositoryProfiles, "ignored.txt"), "not a workflow");
+
+      assert.deepEqual(yield* workflows.listProfiles(input), [
+        { id: "custom", name: "Custom" },
+        { id: "quick", name: "Quick" },
+        { id: "shared", name: "Repository" },
+      ]);
+      assert.deepEqual(yield* workflows.listProfiles({ projectId: ProjectId.make(otherRoot) }), [
+        { id: "shared", name: "Global" },
+        { id: "quick", name: "Quick" },
+      ]);
+
+      for (const role of ["planner", "implementer", "reviewer"]) {
+        yield* writeYaml(
+          path.join(workspaceRoot, "config", "workflows", "agents", `${role}.json`),
+          `{"version":1,"id":"${role}","name":"${role}","role":"${role}","instructions":"Do the job."}`,
+        );
+      }
+      const resolved = yield* workflows.resolveProfile({ ...input, profileId: "shared" });
+      assert.equal(resolved.profile.name, "Repository");
+
+      yield* writeYaml(path.join(repositoryProfiles, "broken.yaml"), "version: 1");
+      const result = yield* Effect.result(workflows.listProfiles(input));
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.equal(result.failure.path, path.join(repositoryProfiles, "broken.yaml"));
+      }
+    }).pipe(Effect.scoped),
+  );
+});

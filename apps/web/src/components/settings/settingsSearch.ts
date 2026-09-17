@@ -146,13 +146,6 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["disk storage browser screenshots captures rotated logs cleanup retention"],
   },
   {
-    id: "agent-definitions",
-    title: "Agent definitions",
-    to: "/settings/projects",
-    scope: "project",
-    searchTerms: ["agents subagents eve folders"],
-  },
-  {
     id: "project-defaults",
     title: "Project defaults and overrides",
     to: "/settings/general",

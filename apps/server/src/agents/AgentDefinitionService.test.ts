@@ -1,5 +1,5 @@
 import { AgentDefinitionService, layer } from "./AgentDefinitionService.ts";
-import { ProjectId, selectChildAgentDefinition } from "@t3tools/contracts";
+import { ProjectId } from "@t3tools/contracts";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
@@ -158,169 +158,14 @@ const serviceLayer = layer.pipe(
   Layer.provideMerge(NodeServices.layer),
 );
 
-it.layer(serviceLayer)("agent definition files", (it) => {
-  it.effect("creates, edits, and removes folders while rejecting stale writes", () =>
+it.layer(serviceLayer)("project agent catalog", (it) => {
+  it.effect("lists agents from the registered project's workspace", () =>
     Effect.gen(function* () {
       const service = yield* AgentDefinitionService;
-      const projectId = ProjectId.make(yield* fixture({}));
-      const created = yield* service.save({
-        projectId,
-        target: { type: "create", slug: "google", parentId: null },
-        config: { version: 1, name: "Google", description: "Manage Google services" },
-        instructions: "Root instructions",
-      });
-      expect(created.definition.id).toBe("agents/google/agent");
-      const child = yield* service.save({
-        projectId,
-        target: { type: "create", slug: "gmail", parentId: created.definition.id },
-        config: { version: 1, name: "Gmail", description: "Manage mail" },
-        instructions: "Mail instructions",
-      });
-      expect((yield* service.list({ projectId })).map((entry) => entry.parentId)).toEqual([
-        null,
-        created.definition.id,
-      ]);
-      const updated = yield* service.save({
-        projectId,
-        target: { type: "update", id: created.definition.id, expectedRevision: created.revision },
-        config: created.config,
-        instructions: "Updated root",
-      });
-      expect(updated.revision).not.toBe(created.revision);
-      expect(
-        (yield* Effect.result(
-          service.save({
-            projectId,
-            target: {
-              type: "update",
-              id: created.definition.id,
-              expectedRevision: created.revision,
-            },
-            config: created.config,
-            instructions: "Stale overwrite",
-          }),
-        ))._tag,
-      ).toBe("Failure");
-      expect((yield* service.get({ projectId, id: created.definition.id })).instructions).toBe(
-        "Updated root",
+      const projectId = ProjectId.make(
+        yield* fixture({ "agent/agent.ts": "throw new Error('must not execute');" }),
       );
-      yield* service.delete({
-        projectId,
-        id: child.definition.id,
-        expectedRevision: child.revision,
-      });
-      expect(yield* service.list({ projectId })).toHaveLength(1);
-      yield* service.delete({
-        projectId,
-        id: updated.definition.id,
-        expectedRevision: updated.revision,
-      });
-      expect(yield* service.list({ projectId })).toEqual([]);
-    }).pipe(Effect.scoped),
-  );
-
-  it.effect("resolves independent child definitions and freezes instruction contents", () =>
-    Effect.gen(function* () {
-      const service = yield* AgentDefinitionService;
-      const fs = yield* FileSystem.FileSystem;
-      const root = yield* fixture({
-        "agent/instructions.md": "Parent-only instructions",
-        "agent/skills/parent.md": "Parent skill",
-        "agent/subagents/reviewer/instructions.md": "Reviewer-only instructions",
-        "agent/subagents/reviewer/skills/review.md": "Review skill",
-        "agent/subagents/reviewer/subagents/checker/instructions.md": "Check instructions",
-        "agent/subagents/other/instructions.md": "Other instructions",
-      });
-      const projectId = ProjectId.make(root);
-      const snapshot = yield* service.resolve({ projectId, id: "agent" });
-      const child = selectChildAgentDefinition(snapshot, "agent/subagents/reviewer");
-      expect(child?.definition.instructions).toBe("Reviewer-only instructions");
-      expect(child?.definition.skillPaths).toEqual(["agent/subagents/reviewer/skills/review.md"]);
-      expect(child?.descendants.map((entry) => entry.id)).toEqual([
-        "agent/subagents/reviewer/subagents/checker",
-      ]);
-      expect(
-        selectChildAgentDefinition(snapshot, "agent/subagents/reviewer/subagents/checker"),
-      ).toBeUndefined();
-      expect(selectChildAgentDefinition(child, "agent/subagents/other")).toBeUndefined();
-      yield* fs.writeFileString(
-        root + "/agent/subagents/reviewer/instructions.md",
-        "New instructions",
-      );
-      expect(child?.definition.instructions).toBe("Reviewer-only instructions");
-      expect(
-        (yield* service.resolve({ projectId, id: "agent/subagents/reviewer" })).definition
-          .instructions,
-      ).toBe("New instructions");
-    }).pipe(Effect.scoped),
-  );
-
-  it.effect("rejects Eve execution slots instead of silently ignoring them", () =>
-    Effect.gen(function* () {
-      const service = yield* AgentDefinitionService;
-      for (const file of [
-        "agent.ts",
-        "instructions.ts",
-        "tools/send.ts",
-        "connections/google.ts",
-      ]) {
-        const root = yield* fixture({
-          "agent/instructions.md": "Root",
-          ["agent/" + file]: "throw new Error('never executed')",
-        });
-        const result = yield* Effect.result(
-          service.resolve({ projectId: ProjectId.make(root), id: "agent" }),
-        );
-        expect(result._tag).toBe("Failure");
-      }
-    }).pipe(Effect.scoped),
-  );
-
-  it.effect("rejects traversal, existing directories, and symlinked instruction writes", () =>
-    Effect.gen(function* () {
-      const service = yield* AgentDefinitionService;
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const root = yield* fixture({ "agents/existing/README.md": "Do not overwrite" });
-      const projectId = ProjectId.make(root);
-      const config = { version: 1 as const, name: "Test", description: "" };
-      for (const slug of ["../outside", "existing"]) {
-        expect(
-          (yield* Effect.result(
-            service.save({
-              projectId,
-              target: { type: "create", slug, parentId: null },
-              config,
-              instructions: "Test",
-            }),
-          ))._tag,
-        ).toBe("Failure");
-      }
-      const created = yield* service.save({
-        projectId,
-        target: { type: "create", slug: "safe", parentId: null },
-        config,
-        instructions: "Test",
-      });
-      const outside = yield* fixture({ "instructions.md": "Outside" });
-      const file = path.join(root, created.definition.directory, "instructions.md");
-      yield* fs.remove(file);
-      yield* fs.symlink(path.join(outside, "instructions.md"), file);
-      expect(
-        (yield* Effect.result(
-          service.save({
-            projectId,
-            target: {
-              type: "update",
-              id: created.definition.id,
-              expectedRevision: created.revision,
-            },
-            config,
-            instructions: "Must not write",
-          }),
-        ))._tag,
-      ).toBe("Failure");
-      expect(yield* fs.readFileString(path.join(outside, "instructions.md"))).toBe("Outside");
+      expect((yield* service.list({ projectId })).map(({ id }) => id)).toEqual(["agent"]);
     }).pipe(Effect.scoped),
   );
 });

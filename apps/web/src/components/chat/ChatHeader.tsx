@@ -41,7 +41,6 @@ interface ChatHeaderProps {
   isServerThread: boolean;
   activeProject: EnvironmentProject | null;
   workflowProfileName: string | null;
-  agentName?: string | undefined;
   rightPanelOpen: boolean;
   onNewThreadInProject: () => void;
   onOpenProjectSettings?: (() => void) | undefined;
@@ -75,7 +74,6 @@ export const ChatHeader = memo(function ChatHeader({
   isServerThread,
   activeProject,
   workflowProfileName,
-  agentName,
   rightPanelOpen,
   onNewThreadInProject,
   onOpenProjectSettings,
@@ -337,11 +335,6 @@ export const ChatHeader = memo(function ChatHeader({
           )}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
-      {agentName ? (
-        <Badge variant="outline" className="max-w-48 truncate" title={`Agent · ${agentName}`}>
-          Agent · {agentName}
-        </Badge>
-      ) : null}
       {workflowProfileName !== null ? (
         <Badge
           variant="success"

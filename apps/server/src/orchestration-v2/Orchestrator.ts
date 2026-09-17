@@ -4,8 +4,6 @@ import {
   runRanAfter,
   usageLimitBlockedRun,
 } from "@t3tools/shared/orchestrationV2ThreadError";
-import { selectChildAgentDefinition } from "@t3tools/contracts";
-import { AgentDefinitionService } from "../agents/AgentDefinitionService.ts";
 import { threadPullRequestsOf } from "@t3tools/shared/threadPullRequests";
 import {
   normalizeThreadPullRequestKey,
@@ -848,7 +846,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor;
   const workflowConfigs = yield* Effect.serviceOption(WorkflowConfigService);
-  const agentDefinitions = yield* Effect.serviceOption(AgentDefinitionService);
 
   const mapDispatchError =
     (command: OrchestrationV2ServerCommand) =>
@@ -2232,37 +2229,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 })
                 .pipe(mapDispatchError(command)),
           });
-    if (command.agentDefinitionId !== undefined && command.workflowProfileId !== undefined) {
-      return yield* new OrchestratorDispatchError({
-        commandId: command.commandId,
-        commandType: command.type,
-        cause: "An agent thread cannot also use a verified workflow profile.",
-      });
-    }
-    const agentDefinition =
-      command.agentDefinitionId === undefined
-        ? undefined
-        : yield* Option.match(agentDefinitions, {
-            onNone: () =>
-              Effect.fail(
-                new OrchestratorDispatchError({
-                  commandId: command.commandId,
-                  commandType: command.type,
-                  cause: "Agent definitions are unavailable.",
-                }),
-              ),
-            onSome: (service) =>
-              service
-                .resolve({ projectId: command.projectId, id: command.agentDefinitionId! })
-                .pipe(mapDispatchError(command)),
-          });
     const workflowProfile = workflowConfig?.profile;
     const plannerSelection =
-      agentDefinition?.definition.config.modelSelection ??
       (workflowProfile === undefined
         ? undefined
-        : workflowAgentModelSelection(workflowProfile.planner)) ??
-      command.modelSelection;
+        : workflowAgentModelSelection(workflowProfile.planner)) ?? command.modelSelection;
     const emitEvent = emit(events, command);
     const thread: OrchestrationV2AppThread = {
       createdBy: command.createdBy,
@@ -2277,7 +2248,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       branch: command.branch,
       worktreePath: command.worktreePath,
       activeProviderThreadId: null,
-      ...(agentDefinition === undefined ? {} : { agentDefinition }),
       workflow:
         workflowConfig === undefined
           ? null
@@ -7008,28 +6978,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
 
-      const agentDefinition =
-        command.agentDefinitionId === undefined
-          ? undefined
-          : selectChildAgentDefinition(
-              parentProjection.thread.agentDefinition,
-              command.agentDefinitionId,
-            );
-      if (command.agentDefinitionId !== undefined && agentDefinition === undefined) {
-        return yield* new OrchestratorDispatchError({
-          commandId: command.commandId,
-          commandType: command.type,
-          cause: "The requested agent is not an immediate child of this agent.",
-        });
-      }
-      const modelSelection =
-        agentDefinition?.definition.config.modelSelection ?? command.modelSelection;
-      const targetAdapter = yield* providerAdapters.get(modelSelection.instanceId).pipe(
+      const targetAdapter = yield* providerAdapters.get(command.modelSelection.instanceId).pipe(
         Effect.mapError(
           (cause) =>
             new OrchestratorProviderAdapterError({
               commandId: command.commandId,
-              providerInstanceId: modelSelection.instanceId,
+              providerInstanceId: command.modelSelection.instanceId,
               cause,
             }),
         ),
@@ -7060,14 +7014,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           childThreadId,
           parentNodeId: taskNodeId,
           activeProviderThreadId: null,
-          providerInstanceId: modelSelection.instanceId,
-          modelSelection: modelSelection,
+          providerInstanceId: command.modelSelection.instanceId,
+          modelSelection: command.modelSelection,
           title: taskTitle,
           now,
           createdBy: command.createdBy,
           creationSource: command.creationSource,
         }),
-        ...(agentDefinition === undefined ? {} : { agentDefinition }),
         runtimeMode: command.runtimeMode,
         interactionMode: command.interactionMode,
       };
@@ -7079,13 +7032,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         origin: "app_owned",
         createdBy: command.createdBy,
         driver: targetAdapter.driver,
-        providerInstanceId: modelSelection.instanceId,
+        providerInstanceId: command.modelSelection.instanceId,
         providerThreadId: null,
         childThreadId,
         nativeTaskRef: null,
         prompt: command.task,
         title: command.title ?? null,
-        model: modelSelection.model,
+        model: command.modelSelection.model,
         ...(command.completionWake === undefined ? {} : { completionWake: command.completionWake }),
         status: "running",
         result: null,
@@ -7130,7 +7083,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         subagentId: taskNodeId,
         origin: "app_owned",
         driver: targetAdapter.driver,
-        providerInstanceId: modelSelection.instanceId,
+        providerInstanceId: command.modelSelection.instanceId,
         childThreadId,
         prompt: command.task,
         result: null,
@@ -7141,7 +7094,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         type: "thread.created",
         threadId: childThreadId,
         driver: targetAdapter.driver,
-        providerInstanceId: modelSelection.instanceId,
+        providerInstanceId: command.modelSelection.instanceId,
         occurredAt: now,
         payload: childThread,
       });
@@ -7151,7 +7104,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         runId: parentRun.id,
         nodeId: taskNodeId,
         driver: targetAdapter.driver,
-        providerInstanceId: modelSelection.instanceId,
+        providerInstanceId: command.modelSelection.instanceId,
         occurredAt: now,
         payload: taskNode,
       });
@@ -7161,7 +7114,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         runId: parentRun.id,
         nodeId: taskNodeId,
         driver: targetAdapter.driver,
-        providerInstanceId: modelSelection.instanceId,
+        providerInstanceId: command.modelSelection.instanceId,
         occurredAt: now,
         payload: task,
       });
@@ -7171,7 +7124,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         runId: parentRun.id,
         nodeId: taskNodeId,
         driver: targetAdapter.driver,
-        providerInstanceId: modelSelection.instanceId,
+        providerInstanceId: command.modelSelection.instanceId,
         occurredAt: now,
         payload: taskTurnItem,
       });
@@ -7186,7 +7139,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         messageId: childMessageId,
         text: command.task,
         attachments: [],
-        modelSelection: modelSelection,
+        modelSelection: command.modelSelection,
         dispatchMode: { type: "start_immediately" },
       } satisfies Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>;
       yield* dispatchMessage(childMessageCommand, events, effects);
@@ -7218,7 +7171,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         },
         basePoint: null,
         sourceProviderInstanceId: parentRun.providerInstanceId,
-        targetProviderInstanceId: modelSelection.instanceId,
+        targetProviderInstanceId: command.modelSelection.instanceId,
         targetRunId: childRun.id,
         status: "consumed",
         resolution: null,
@@ -7232,7 +7185,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         type: "context-transfer.created",
         threadId: childThreadId,
         runId: childRun.id,
-        providerInstanceId: modelSelection.instanceId,
+        providerInstanceId: command.modelSelection.instanceId,
         occurredAt: now,
         payload: spawnTransfer,
       });

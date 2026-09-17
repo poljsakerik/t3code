@@ -228,7 +228,6 @@ const orchestratorProvided = orchestratorLayer.pipe(
       runExecutionServiceProvided,
       threadForkServiceLayer,
       workflowConfigServiceProvided,
-      agentDefinitionServiceProvided,
     ),
   ),
 );

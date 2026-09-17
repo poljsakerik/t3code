@@ -311,6 +311,7 @@ const workflowCoordinatorProvided = workflowCoordinatorLive.pipe(
 );
 
 export const OrchestrationV2LayerLive = Layer.mergeAll(
+  workflowConfigServiceProvided,
   orchestratorProvided,
   threadManagementProvided,
   effectWorkerProvided,

@@ -6,6 +6,7 @@ import {
   NonNegativeInt,
   PlanId,
   PositiveInt,
+  ProjectId,
   RunId,
   ThreadId,
   TrimmedNonEmptyString,
@@ -82,6 +83,29 @@ export const WorkflowProfileDefinition = Schema.Struct({
   limits: WorkflowLimits,
 });
 export type WorkflowProfileDefinition = typeof WorkflowProfileDefinition.Type;
+
+export const WorkflowProfileSummary = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+});
+export type WorkflowProfileSummary = typeof WorkflowProfileSummary.Type;
+
+export const WorkflowListProfilesInput = Schema.Struct({ projectId: ProjectId });
+export const WorkflowListProfilesResult = Schema.Array(WorkflowProfileSummary);
+
+export class WorkflowConfigError extends Schema.TaggedError<WorkflowConfigError>()(
+  "WorkflowConfigError",
+  {
+    profileId: Schema.String,
+    path: Schema.optional(Schema.String),
+    detail: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Workflow profile ${this.profileId} is invalid: ${this.detail}`;
+  }
+}
 
 export const ResolvedWorkflowProfile = Schema.Struct({
   version: Schema.Literal(1),

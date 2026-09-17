@@ -76,6 +76,7 @@ export interface ThreadLaunchInput {
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
   readonly workflowProfileId?: string;
+  readonly agentDefinitionId?: string;
   readonly workspaceStrategy: ThreadLaunchWorkspaceStrategy;
   readonly initialMessage?: ThreadLaunchInitialMessage;
   readonly importedNativeThread?: {
@@ -612,6 +613,8 @@ const make = Effect.gen(function* () {
 
   const launch: ThreadLaunchService["Service"]["launch"] = Effect.fn("ThreadLaunchService.launch")(
     function* (input) {
+      if (input.agentDefinitionId !== undefined && input.reuseExistingThread === true)
+        return yield* mapError(input, "create-thread")("Start an agent in a new thread.");
       yield* ProjectCloneTracker.rejectCommandsDuringClone(cloneTracker, {
         type: "thread.create",
         projectId: input.projectId,
@@ -697,6 +700,9 @@ const make = Effect.gen(function* () {
                 ...(input.workflowProfileId === undefined
                   ? {}
                   : { workflowProfileId: input.workflowProfileId }),
+                ...(input.agentDefinitionId === undefined
+                  ? {}
+                  : { agentDefinitionId: input.agentDefinitionId }),
                 branch: initialBranch,
                 worktreePath: initialWorktreePath,
                 ...(input.importedNativeThread === undefined
@@ -748,7 +754,13 @@ const make = Effect.gen(function* () {
               attachments: input.initialMessage.attachments,
               ...(input.initialMessage.context ? { context: input.initialMessage.context } : {}),
               ...(input.generateTitle === true ? { titleSeed: input.title } : {}),
-              modelSelection: input.modelSelection,
+              modelSelection:
+                input.agentDefinitionId === undefined
+                  ? input.modelSelection
+                  : (yield* threads
+                      .getThreadProjection(threadId)
+                      .pipe(Effect.mapError(mapError(input, "dispatch-message", threadId)))).thread
+                      .modelSelection,
               dispatchMode: { type: "defer_start" },
               createdBy: input.createdBy,
               creationSource: input.creationSource,

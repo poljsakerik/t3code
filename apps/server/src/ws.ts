@@ -188,6 +188,7 @@ import { deletePendingAttachment, issueAttachmentUploadUrl } from "./assets/Atta
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
+import { AgentDefinitionService } from "./agents/AgentDefinitionService.ts";
 import { WorkflowConfigService } from "./workflows/WorkflowConfigService.ts";
 import { readWorkflowScript } from "./orchestration/workflowScriptQuery.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
@@ -282,6 +283,9 @@ export function buildThreadLaunchServiceInput(
     ...(input.workflowProfileId === undefined
       ? {}
       : { workflowProfileId: input.workflowProfileId }),
+    ...(input.agentDefinitionId === undefined
+      ? {}
+      : { agentDefinitionId: input.agentDefinitionId }),
     workspaceStrategy: input.workspaceStrategy,
     ...(input.initialMessage === undefined
       ? {}
@@ -1170,6 +1174,7 @@ const makeWsRpcLayer = (
       const repositoryIdentityResolver =
         yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
       const workflowConfig = yield* WorkflowConfigService;
+      const agentDefinitions = yield* AgentDefinitionService;
       const projectService = yield* ProjectService.ProjectService;
       const agentSessionScanner = yield* AgentSessionScanner.AgentSessionScanner;
       const agentSessionImporter = yield* AgentSessionImporter;
@@ -2943,6 +2948,22 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "workspace" },
           ),
+        [WS_METHODS.agentDefinitionsGet]: (input) =>
+          observeRpcEffect(WS_METHODS.agentDefinitionsGet, agentDefinitions.get(input), {
+            "rpc.aggregate": "workspace",
+          }),
+        [WS_METHODS.agentDefinitionsSave]: (input) =>
+          observeRpcEffect(WS_METHODS.agentDefinitionsSave, agentDefinitions.save(input), {
+            "rpc.aggregate": "workspace",
+          }),
+        [WS_METHODS.agentDefinitionsDelete]: (input) =>
+          observeRpcEffect(WS_METHODS.agentDefinitionsDelete, agentDefinitions.delete(input), {
+            "rpc.aggregate": "workspace",
+          }),
+        [WS_METHODS.agentDefinitionsList]: (input) =>
+          observeRpcEffect(WS_METHODS.agentDefinitionsList, agentDefinitions.list(input), {
+            "rpc.aggregate": "workspace",
+          }),
         [WS_METHODS.workflowsListProfiles]: (input) =>
           observeRpcEffect(WS_METHODS.workflowsListProfiles, workflowConfig.listProfiles(input), {
             "rpc.aggregate": "workspace",

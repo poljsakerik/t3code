@@ -1,6 +1,7 @@
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Layer from "effect/Layer";
+import { layer as agentDefinitionServiceLayer } from "../agents/AgentDefinitionService.ts";
 import {
   OrchestrationEventInfrastructureLayerLive,
   OrchestrationLayerLive,
@@ -58,6 +59,9 @@ import { layer as workspacePathsLayer } from "../workspace/WorkspacePaths.ts";
 import * as ProcessRunner from "../processRunner.ts";
 
 const runtimePolicyProvided = runtimePolicyLayerFromProjectRepository.pipe(
+  Layer.provide(ProjectionProjectRepositoryLive),
+);
+const agentDefinitionServiceProvided = agentDefinitionServiceLayer.pipe(
   Layer.provide(ProjectionProjectRepositoryLive),
 );
 const workflowConfigServiceProvided = workflowConfigServiceLayer.pipe(
@@ -212,6 +216,7 @@ const orchestratorProvided = orchestratorLayer.pipe(
       runExecutionServiceProvided,
       threadForkServiceLayer,
       workflowConfigServiceProvided,
+      agentDefinitionServiceProvided,
     ),
   ),
 );
@@ -295,6 +300,7 @@ const workflowCoordinatorProvided = workflowCoordinatorLive.pipe(
 );
 
 export const OrchestrationV2LayerLive = Layer.mergeAll(
+  agentDefinitionServiceProvided,
   workflowConfigServiceProvided,
   orchestratorProvided,
   threadManagementProvided,

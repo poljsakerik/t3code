@@ -1,4 +1,6 @@
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
+import { AgentDefinitionService } from "../agents/AgentDefinitionService.ts";
+import * as FileSystem from "effect/FileSystem";
 import { SourceControlProviderRegistry } from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -363,6 +365,194 @@ const SharedApplicationDataPlaneTestLayer = Layer.merge(
 );
 
 it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
+  it.effect(
+    "persists agent snapshots and delegates only named immediate children with their configured model",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-agent-runtime-" });
+        const projectId = ProjectId.make("agent-runtime-project");
+        const projects = yield* ProjectionProjectRepository;
+        yield* projects.upsert({
+          projectId,
+          title: "Agents",
+          workspaceRoot: root,
+          defaultModelSelection: null,
+          defaultThreadEnvMode: null,
+          autoPull: false,
+          scripts: [],
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          deletedAt: null,
+        });
+        const agents = yield* AgentDefinitionService;
+        const parentDefinition = yield* agents.save({
+          projectId,
+          target: { type: "create", slug: "parent", parentId: null },
+          config: { version: 1, name: "Parent", description: "Coordinate", modelSelection },
+          instructions: "Original parent instructions",
+        });
+        const childDefinition = yield* agents.save({
+          projectId,
+          target: { type: "create", slug: "reviewer", parentId: parentDefinition.definition.id },
+          config: {
+            version: 1,
+            name: "Reviewer",
+            description: "Review",
+            modelSelection: { ...modelSelection, instanceId: alternateInstanceId },
+          },
+          instructions: "Child-only instructions",
+        });
+        const grandchild = yield* agents.save({
+          projectId,
+          target: { type: "create", slug: "checker", parentId: childDefinition.definition.id },
+          config: { version: 1, name: "Checker", description: "Check" },
+          instructions: "Grandchild instructions",
+        });
+        const orchestrator = yield* OrchestratorV2;
+        const threadId = ThreadId.make("agent-runtime-parent");
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("agent-runtime-create"),
+          threadId,
+          projectId,
+          title: "Parent",
+          modelSelection: { ...modelSelection, instanceId: alternateInstanceId },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          agentDefinitionId: parentDefinition.definition.id,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* agents.save({
+          projectId,
+          target: {
+            type: "update",
+            id: parentDefinition.definition.id,
+            expectedRevision: parentDefinition.revision,
+          },
+          config: parentDefinition.config,
+          instructions: "Edited for future threads",
+        });
+        const persisted = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(
+          persisted.thread.agentDefinition?.definition.instructions,
+          "Original parent instructions",
+        );
+        assert.equal(persisted.thread.providerInstanceId, modelSelection.instanceId);
+        const runId = RunId.make("agent-runtime-run");
+        const rootNodeId = NodeId.make("agent-runtime-node");
+        const now = yield* DateTime.now;
+        const sink = yield* EventSinkV2;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("agent-runtime-run-event"),
+              type: "run.created",
+              threadId,
+              runId,
+              occurredAt: now,
+              payload: {
+                id: runId,
+                threadId,
+                ordinal: 1,
+                providerInstanceId: modelSelection.instanceId,
+                modelSelection,
+                providerThreadId: null,
+                userMessageId: MessageId.make("agent-runtime-message"),
+                rootNodeId,
+                activeAttemptId: null,
+                status: "running",
+                queuePosition: null,
+                requestedAt: now,
+                startedAt: now,
+                completedAt: null,
+                checkpointId: null,
+                contextHandoffId: null,
+              },
+            },
+            {
+              id: EventId.make("agent-runtime-node-event"),
+              type: "node.updated",
+              threadId,
+              runId,
+              nodeId: rootNodeId,
+              occurredAt: now,
+              payload: {
+                id: rootNodeId,
+                threadId,
+                runId,
+                parentNodeId: null,
+                rootNodeId,
+                kind: "root_turn",
+                status: "running",
+                countsForRun: true,
+                providerThreadId: null,
+                providerTurnId: null,
+                nativeItemRef: null,
+                runtimeRequestId: null,
+                checkpointScopeId: null,
+                startedAt: now,
+                completedAt: null,
+              },
+            },
+          ],
+        });
+        const command = {
+          type: "delegated_task.request" as const,
+          commandId: CommandId.make("agent-runtime-delegate"),
+          parentThreadId: threadId,
+          parentRunId: runId,
+          parentNodeId: rootNodeId,
+          task: "Review this work",
+          modelSelection,
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+          createdBy: "agent" as const,
+          creationSource: "mcp" as const,
+        };
+        const result = yield* orchestrator.dispatch({
+          ...command,
+          agentDefinitionId: childDefinition.definition.id,
+        });
+        const created = result.storedEvents.find(
+          (stored) => stored.event.type === "thread.created",
+        );
+        assert.isDefined(created);
+        const child = yield* orchestrator.getThreadProjection(created!.event.threadId!);
+        assert.equal(
+          child.thread.agentDefinition?.definition.instructions,
+          "Child-only instructions",
+        );
+        assert.equal(child.thread.providerInstanceId, alternateInstanceId);
+        assert.deepEqual(
+          child.thread.agentDefinition?.descendants.map((entry) => entry.id),
+          [grandchild.definition.id],
+        );
+        const invalid = yield* Effect.result(
+          orchestrator.dispatch({
+            ...command,
+            commandId: CommandId.make("agent-runtime-invalid"),
+            agentDefinitionId: grandchild.definition.id,
+          }),
+        );
+        assert.equal(invalid._tag, "Failure");
+        const generic = yield* orchestrator.dispatch({
+          ...command,
+          commandId: CommandId.make("agent-runtime-generic"),
+        });
+        const genericCreated = generic.storedEvents.find(
+          (stored) => stored.event.type === "thread.created",
+        );
+        const genericChild = yield* orchestrator.getThreadProjection(
+          genericCreated!.event.threadId!,
+        );
+        assert.isNull(genericChild.thread.agentDefinition);
+      }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
   it.effect("creates workflow reviewers as owned subagents", () =>
     Effect.gen(function* () {
       const orchestrator = yield* OrchestratorV2;

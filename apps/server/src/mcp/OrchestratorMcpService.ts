@@ -1,3 +1,4 @@
+import { selectChildAgentDefinition } from "@t3tools/contracts";
 import {
   CommandId,
   type RunId,
@@ -1375,10 +1376,30 @@ const make = Effect.gen(function* () {
             "Delegated tasks require an active run owned by this MCP provider session.",
           );
         }
+        const declaredAgent =
+          input.agentDefinitionId === undefined
+            ? undefined
+            : selectChildAgentDefinition(parent.thread.agentDefinition, input.agentDefinitionId);
+        if (input.agentDefinitionId !== undefined && !declaredAgent)
+          return yield* failure(
+            "orchestration_error",
+            "That agent is not an immediate child of this agent.",
+          );
+        if (declaredAgent?.definition.config.modelSelection && input.target !== undefined)
+          return yield* failure(
+            "orchestration_error",
+            "This named agent already specifies a model. Omit target to use its configuration.",
+          );
         const providers = yield* loadProviders;
         const target = yield* resolveTarget({
           parent,
-          target: input.target,
+          target: declaredAgent?.definition.config.modelSelection
+            ? {
+                providerInstanceId: declaredAgent.definition.config.modelSelection.instanceId,
+                model: declaredAgent.definition.config.modelSelection.model,
+                options: declaredAgent.definition.config.modelSelection.options,
+              }
+            : input.target,
           providers,
         });
         const runtimeMode = yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode);
@@ -1402,6 +1423,9 @@ const make = Effect.gen(function* () {
             parentRunId: parentRun.id,
             parentNodeId: parentRun.rootNodeId,
             task: taskPrompt(input),
+            ...(input.agentDefinitionId === undefined
+              ? {}
+              : { agentDefinitionId: input.agentDefinitionId }),
             ...(input.title === undefined ? {} : { title: input.title }),
             modelSelection: target.modelSelection,
             runtimeMode,

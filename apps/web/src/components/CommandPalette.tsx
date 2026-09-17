@@ -817,6 +817,14 @@ function OpenCommandPaletteDialog(props: {
       }),
     [activeDraftThread, activeThread, defaultProjectRef, handleNewThread],
   );
+  const workflowProfiles = useEnvironmentQuery(
+    contextualProjectRef === null
+      ? null
+      : projectEnvironment.workflowProfiles({
+          environmentId: contextualProjectRef.environmentId,
+          input: { projectId: contextualProjectRef.projectId },
+        }),
+  );
   const projectPickerEntries = useMemo(
     () =>
       buildSidebarProjectPickerEntries({
@@ -1660,20 +1668,44 @@ function OpenCommandPaletteDialog(props: {
       });
 
       if (contextualProjectRef) {
-        actionItems.push({
-          kind: "action",
-          value: "action:new-verified-workflow",
-          searchTerms: ["verified workflow", "plan", "review", "checks", "agents"],
-          title: (
-            <>
-              New verified workflow in <span className="font-semibold">{activeProjectTitle}</span>
-            </>
-          ),
-          icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
-          run: async () => {
-            await handleNewThread(contextualProjectRef, { workflowProfileId: "default" });
-          },
-        });
+        for (const profile of workflowProfiles.data ?? []) {
+          actionItems.push({
+            kind: "action",
+            value: `action:new-verified-workflow:${profile.id}`,
+            searchTerms: [
+              "verified workflow",
+              "plan",
+              "review",
+              "checks",
+              "agents",
+              profile.name,
+              profile.id,
+            ],
+            title: (
+              <>
+                New verified workflow: <span className="font-semibold">{profile.name}</span>
+              </>
+            ),
+            description: activeProjectTitle,
+            icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
+            run: async () => {
+              await handleNewThread(contextualProjectRef, { workflowProfileId: profile.id });
+            },
+          });
+        }
+        if (workflowProfiles.error) {
+          actionItems.push({
+            kind: "action",
+            value: "action:retry-workflow-profiles",
+            searchTerms: ["verified workflow", "profiles"],
+            title: "Retry loading workflow profiles",
+            description: workflowProfiles.error,
+            icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
+            run: async () => {
+              workflowProfiles.refresh();
+            },
+          });
+        }
       }
     }
 

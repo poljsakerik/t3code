@@ -317,7 +317,14 @@ import {
 import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 
+import {
+  WorkflowConfigError,
+  WorkflowListProfilesInput,
+  WorkflowListProfilesResult,
+} from "./workflow.ts";
+
 export const WS_METHODS = {
+  workflowsListProfiles: "workflows.listProfiles",
   // Project registry methods
   projectsList: "projects.list",
   projectsAdd: "projects.add",
@@ -1047,6 +1054,12 @@ const WsProjectsSearchContentsRpc = Rpc.make(WS_METHODS.projectsSearchContents, 
   error: Schema.Union([ProjectSearchContentsError, EnvironmentAuthorizationError]),
 });
 
+const WsWorkflowsListProfilesRpc = Rpc.make(WS_METHODS.workflowsListProfiles, {
+  payload: WorkflowListProfilesInput,
+  success: WorkflowListProfilesResult,
+  error: Schema.Union([WorkflowConfigError, EnvironmentAuthorizationError]),
+});
+
 const WsProjectsListEntriesRpc = Rpc.make(WS_METHODS.projectsListEntries, {
   payload: ProjectListEntriesInput,
   success: ProjectListEntriesResult,
@@ -1669,6 +1682,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectCloneRetryRpc,
   WsSubscribeProjectClonesRpc,
   WsProjectsListEntriesRpc,
+  WsWorkflowsListProfilesRpc,
   WsProjectsReadFileRpc,
   WsProjectsSearchContentsRpc,
   WsProjectsSearchEntriesRpc,

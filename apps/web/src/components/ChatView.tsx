@@ -9771,8 +9771,11 @@ export default function ChatView(props: ChatViewProps) {
             isServerThread={isServerThread}
             activeThreadTitle={activeThread.title}
             activeProject={activeProject ?? null}
-            isVerifiedWorkflow={
-              activeThread.workflow !== null || draftThread?.workflowProfileId !== undefined
+            workflowProfileName={
+              serverProjection?.thread.workflow?.profile?.name ??
+              activeThread.workflow?.profileId ??
+              draftThread?.workflowProfileId ??
+              null
             }
             rightPanelOpen={inlineRightPanelOwnsTitleBar}
             onNewThreadInProject={handleNewThreadInActiveProject}

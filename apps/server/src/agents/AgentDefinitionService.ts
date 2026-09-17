@@ -15,26 +15,25 @@ import { ProjectionProjectRepository } from "../persistence/Services/ProjectionP
 
 const isAgentDefinitionError = Schema.is(AgentDefinitionError);
 
-const agentSlots = new Set([
-  "channels",
-  "connections",
-  "extensions",
-  "hooks",
-  "skills",
-  "lib",
-  "memory",
-  "sandbox",
-  "tools",
-  "schedules",
-  "subagents",
-]);
-const instructionFiles = ["instructions.md", "instructions.ts"];
+import {
+  classifyAgentRootEntry,
+  isDiscoverableAgentRootEntry,
+  matchesSupportedModuleBaseName,
+  type DirectoryEntryType,
+} from "./eve/filesystem.ts";
+
+const entryType = (type: string): DirectoryEntryType =>
+  type === "File" ? "file" : type === "Directory" ? "directory" : "other";
 /** Reads source locations only. Discovering an agent must never execute its TypeScript. */
 export const discoverAgentDefinitions = Effect.fn("discoverAgentDefinitions")(
   function* (workspaceRoot: string) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const root = yield* fs.realPath(workspaceRoot);
+    const projectRoot = yield* fs.realPath(workspaceRoot);
+    const root = path.join(projectRoot, ".t3");
+    if (!(yield* fs.exists(root))) return [];
+    if ((yield* fs.realPath(root)) !== root) return [];
+    if ((yield* fs.stat(root)).type !== "Directory") return [];
     const definitions: Array<AgentDefinition> = [];
     const entries = Effect.fn("AgentDefinitionService.entries")(function* (directory: string) {
       const names = yield* fs
@@ -66,7 +65,7 @@ export const discoverAgentDefinitions = Effect.fn("discoverAgentDefinitions")(
       );
     });
     const relative = (filePath: string) =>
-      path.relative(root, filePath).split(path.sep).join("/") || ".";
+      path.relative(projectRoot, filePath).split(path.sep).join("/") || ".";
     const scan = Effect.fn("AgentDefinitionService.scan")(function* (
       directory: string,
       name: string,
@@ -79,24 +78,39 @@ export const discoverAgentDefinitions = Effect.fn("discoverAgentDefinitions")(
       const directories = new Set(
         children.filter((entry) => entry.type === "Directory").map((entry) => entry.name),
       );
-      const instructionPaths = instructionFiles
-        .filter((file) => files.has(file))
-        .map((file) => relative(path.join(directory, file)));
-      if (directories.has("instructions"))
-        instructionPaths.push(relative(path.join(directory, "instructions")));
-      if (!files.has("agent.ts") && instructionPaths.length === 0) return;
+      const instructionPaths = children
+        .filter((entry) => {
+          const kind = classifyAgentRootEntry(entry.name, entryType(entry.type));
+          return (
+            kind === "instructions-markdown" ||
+            kind === "instructions-module" ||
+            kind === "instructions-directory"
+          );
+        })
+        .map((entry) => relative(path.join(directory, entry.name)));
+      if (
+        !children.some((entry) => isDiscoverableAgentRootEntry(entry.name, entryType(entry.type)))
+      )
+        return;
+      const configuration = [...files].find((file) =>
+        matchesSupportedModuleBaseName(file, "agent"),
+      );
       const id = relative(directory);
       definitions.push({
         id,
         name,
         directory: id,
         parentId,
-        configurationPath: files.has("agent.ts")
-          ? relative(path.join(directory, "agent.ts"))
-          : null,
+        configurationPath: configuration ? relative(path.join(directory, configuration)) : null,
         instructionPaths,
         slots: children
-          .filter((entry) => entry.type === "Directory" && agentSlots.has(entry.name))
+          .filter(
+            (entry) =>
+              entry.type === "Directory" &&
+              classifyAgentRootEntry(entry.name, "directory") !== "unknown" &&
+              classifyAgentRootEntry(entry.name, "directory") !== "ignored-directory" &&
+              classifyAgentRootEntry(entry.name, "directory") !== "instructions-directory",
+          )
           .map((entry) => entry.name),
       });
       if (!directories.has("subagents")) return;
@@ -108,14 +122,11 @@ export const discoverAgentDefinitions = Effect.fn("discoverAgentDefinitions")(
     const rootEntries = yield* entries(root);
     // Eve gives a single root agent precedence over workspace members.
     if (rootEntries.some((entry) => entry.name === "agent" && entry.type === "Directory")) {
-      yield* scan(path.join(root, "agent"), path.basename(root), null);
+      yield* scan(path.join(root, "agent"), path.basename(projectRoot), null);
     } else if (
-      rootEntries.some(
-        (entry) => entry.type === "File" && ["agent.ts", ...instructionFiles].includes(entry.name),
-      ) ||
-      rootEntries.some((entry) => entry.name === "instructions" && entry.type === "Directory")
+      rootEntries.some((entry) => isDiscoverableAgentRootEntry(entry.name, entryType(entry.type)))
     ) {
-      yield* scan(root, path.basename(root), null);
+      yield* scan(root, path.basename(projectRoot), null);
     } else if (rootEntries.some((entry) => entry.name === "agents" && entry.type === "Directory")) {
       for (const member of yield* entries(path.join(root, "agents"))) {
         if (member.type !== "Directory") continue;

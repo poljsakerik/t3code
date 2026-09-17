@@ -1,0 +1,8 @@
+eve
+Copyright 2026 Vercel, Inc. and contributors
+
+This product includes software developed at Vercel, Inc.
+(https://vercel.com/).
+
+Agent-root filesystem classification copied and modified from vercel/eve
+commit 7973fa2d7d10e285737536672cfcfe64ceff37c8. See filesystem.ts for the source and modifications.

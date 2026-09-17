@@ -1,4 +1,3 @@
-import { withAgentDefinitionContext } from "../agents/agentDefinitionContext.ts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   CommandId,
@@ -714,8 +713,7 @@ export const layer: Layer.Layer<
           ),
         message: {
           messageId: message.id,
-          text: withAgentDefinitionContext(
-            projection.thread.agentDefinition,
+          text:
             effectiveHandoffs.length === 0
               ? projectComposerContextForProvider({
                   text: message.text,
@@ -728,7 +726,6 @@ export const layer: Layer.Layer<
                     records: message.context?.records ?? [],
                   }),
                 }),
-          ),
           attachments: message.attachments,
           createdBy: message.createdBy,
           creationSource: message.creationSource,

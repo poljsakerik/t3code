@@ -278,9 +278,6 @@ export function buildThreadLaunchServiceInput(
     ...(input.workflowProfileId === undefined
       ? {}
       : { workflowProfileId: input.workflowProfileId }),
-    ...(input.agentDefinitionId === undefined
-      ? {}
-      : { agentDefinitionId: input.agentDefinitionId }),
     workspaceStrategy: input.workspaceStrategy,
     ...(input.initialMessage === undefined
       ? {}
@@ -2823,18 +2820,6 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "workspace" },
           ),
-        [WS_METHODS.agentDefinitionsGet]: (input) =>
-          observeRpcEffect(WS_METHODS.agentDefinitionsGet, agentDefinitions.get(input), {
-            "rpc.aggregate": "workspace",
-          }),
-        [WS_METHODS.agentDefinitionsSave]: (input) =>
-          observeRpcEffect(WS_METHODS.agentDefinitionsSave, agentDefinitions.save(input), {
-            "rpc.aggregate": "workspace",
-          }),
-        [WS_METHODS.agentDefinitionsDelete]: (input) =>
-          observeRpcEffect(WS_METHODS.agentDefinitionsDelete, agentDefinitions.delete(input), {
-            "rpc.aggregate": "workspace",
-          }),
         [WS_METHODS.agentDefinitionsList]: (input) =>
           observeRpcEffect(WS_METHODS.agentDefinitionsList, agentDefinitions.list(input), {
             "rpc.aggregate": "workspace",

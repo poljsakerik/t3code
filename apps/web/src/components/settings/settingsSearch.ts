@@ -93,13 +93,6 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
  */
 export const SETTINGS_SEARCH_ITEMS = [
   {
-    id: "agent-definitions",
-    title: "Agent definitions",
-    to: "/settings/projects",
-    scope: "project",
-    searchTerms: ["agents subagents eve folders"],
-  },
-  {
     id: "project-defaults",
     title: "Project defaults and overrides",
     to: "/settings/general",

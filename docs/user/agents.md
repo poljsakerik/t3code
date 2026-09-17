@@ -1,9 +1,17 @@
-# Agent folders
+# Agents
 
-Add an Eve workspace as a T3 project to register its agent folders. In **Settings → Project**, select the project or checkout to see its agents. Definitions are discovered from the files in that environment; nothing is copied or converted.
+Open **Agents** from the sidebar and select a project to see its Eve-style agent folders. T3 reads the selected environment's project-local `.t3` directory.
 
-T3 recognizes a single `agent/` directory, a flat agent at the project root, or workspace members under `agents/<name>/agent/` and `agents/<name>/`. An agent is identified by `agent.ts`, `instructions.md`, `instructions.ts`, or an `instructions/` directory. Nested agents live under each agent's `subagents/` directory.
+```text
+.t3/
+  agents/
+    assistant/
+      instructions.md
+      subagents/
+        researcher/
+          instructions.md
+```
 
-A single root takes precedence over workspace members. Members with their own `package.json` belong to separate projects. Symbolic links are not followed.
+Each agent can have an `agent.ts` configuration module and its own nested `subagents/`. Eve's supported JavaScript and TypeScript module extensions are recognized too. Single-agent layouts under `.t3/agent/` and flat definitions directly in `.t3/` are also supported; a single root takes precedence over workspace members.
 
-Edit, add, or remove folders on disk, then refresh the catalog. Registration currently makes agents visible only: T3 does not execute their TypeScript, launch them, or apply their instructions to threads.
+Edit the files on disk and refresh the catalog to see changes. YAML files are not agent entries in this catalog. T3 does not execute agent modules or apply these definitions to threads yet.

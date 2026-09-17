@@ -1,6 +1,7 @@
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Layer from "effect/Layer";
+import { layer as agentDefinitionServiceLayer } from "../agents/AgentDefinitionService.ts";
 import * as OrchestrationCommandReceipts from "../persistence/Layers/OrchestrationCommandReceipts.ts";
 import * as OrchestrationEventStore from "../persistence/Layers/OrchestrationEventStore.ts";
 import { layer as providerSessionRuntimeLayer } from "../persistence/ProviderSessionRuntime.ts";
@@ -66,10 +67,11 @@ export const OrchestrationEventInfrastructureLayerLive = Layer.mergeAll(
 const runtimePolicyProvided = RuntimePolicy.layerFromProjectStore.pipe(
   Layer.provide(ProjectStore.layer),
 );
+const agentDefinitionServiceProvided = agentDefinitionServiceLayer.pipe(
+  Layer.provide(ProjectStore.layer),
+);
 const workflowConfigServiceProvided = workflowConfigServiceLayer.pipe(
-  Layer.provide(
-    Layer.mergeAll(ProjectionProjectRepositoryLive, t3ProjectFileLoaderLayer, workspacePathsLayer),
-  ),
+  Layer.provide(Layer.mergeAll(ProjectStore.layer, t3ProjectFileLoaderLayer, workspacePathsLayer)),
 );
 
 const eventStoreProvided = eventStoreLayer.pipe(
@@ -226,6 +228,7 @@ const orchestratorProvided = orchestratorLayer.pipe(
       runExecutionServiceProvided,
       threadForkServiceLayer,
       workflowConfigServiceProvided,
+      agentDefinitionServiceProvided,
     ),
   ),
 );
@@ -311,6 +314,7 @@ const workflowCoordinatorProvided = workflowCoordinatorLive.pipe(
 );
 
 export const OrchestrationV2LayerLive = Layer.mergeAll(
+  agentDefinitionServiceProvided,
   workflowConfigServiceProvided,
   orchestratorProvided,
   threadManagementProvided,

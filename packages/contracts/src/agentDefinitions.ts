@@ -44,6 +44,44 @@ export const AgentDefinitionsListResult = Schema.Struct({
 });
 export type AgentDefinitionsListResult = typeof AgentDefinitionsListResult.Type;
 
+/** Plain Markdown sources only; loading the editor never evaluates authored modules. */
+export const AgentInstructionDocument = Schema.Struct({
+  path: TrimmedNonEmptyString,
+  content: Schema.NullOr(Schema.String),
+});
+export type AgentInstructionDocument = typeof AgentInstructionDocument.Type;
+
+export const AgentDefinitionGetInput = Schema.Struct({
+  projectId: Schema.optional(ProjectId),
+  agentId: TrimmedNonEmptyString,
+});
+export type AgentDefinitionGetInput = typeof AgentDefinitionGetInput.Type;
+export const AgentDefinitionGetResult = Schema.Struct({
+  agent: AgentDefinition,
+  documents: Schema.Array(AgentInstructionDocument),
+  otherInstructionPaths: Schema.Array(TrimmedNonEmptyString),
+});
+export type AgentDefinitionGetResult = typeof AgentDefinitionGetResult.Type;
+
+export const AgentDefinitionCreateInput = Schema.Struct({
+  projectId: Schema.optional(ProjectId),
+  parentId: Schema.optional(TrimmedNonEmptyString),
+  name: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(80),
+    Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/),
+  ),
+  instructions: Schema.String.check(Schema.isMaxLength(1_000_000)),
+});
+export type AgentDefinitionCreateInput = typeof AgentDefinitionCreateInput.Type;
+
+export const AgentDefinitionUpdateInput = Schema.Struct({
+  ...AgentDefinitionGetInput.fields,
+  path: TrimmedNonEmptyString,
+  content: Schema.String.check(Schema.isMaxLength(1_000_000)),
+  expectedContent: Schema.NullOr(Schema.String.check(Schema.isMaxLength(1_000_000))),
+});
+export type AgentDefinitionUpdateInput = typeof AgentDefinitionUpdateInput.Type;
+
 export class AgentDefinitionError extends Schema.TaggedError<AgentDefinitionError>()(
   "AgentDefinitionError",
   {

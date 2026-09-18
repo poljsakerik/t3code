@@ -60,7 +60,7 @@ const runtimePolicyProvided = runtimePolicyLayerFromProjectRepository.pipe(
   Layer.provide(ProjectionProjectRepositoryLive),
 );
 const agentDefinitionServiceProvided = agentDefinitionServiceLayer.pipe(
-  Layer.provide(ProjectionProjectRepositoryLive),
+  Layer.provide(Layer.merge(ProjectionProjectRepositoryLive, ProcessRunner.layer)),
 );
 const workflowConfigServiceProvided = workflowConfigServiceLayer.pipe(
   Layer.provide(

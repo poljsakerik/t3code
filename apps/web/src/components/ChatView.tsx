@@ -8712,7 +8712,6 @@ export default function ChatView(props: ChatViewProps) {
     }
     if (
       !directAnnotation &&
-      sendInteractionModeEnabled &&
       showPlanFollowUpPrompt &&
       activeProposedPlan &&
       composerImages.length === 0 &&
@@ -9988,7 +9987,7 @@ export default function ChatView(props: ChatViewProps) {
     }
 
     const sendCtx = composerRef.current?.getSendContext();
-    if (!sendCtx?.providerAvailable || !sendCtx.interactionModeEnabled) {
+    if (!sendCtx?.providerAvailable || !showPlanFollowUpPrompt) {
       return false;
     }
     const {
@@ -10125,7 +10124,7 @@ export default function ChatView(props: ChatViewProps) {
     }
 
     const sendCtx = composerRef.current?.getSendContext();
-    if (!sendCtx?.providerAvailable || !sendCtx.interactionModeEnabled) {
+    if (!sendCtx?.providerAvailable || !showPlanFollowUpPrompt) {
       return;
     }
     const {
@@ -10265,6 +10264,7 @@ export default function ChatView(props: ChatViewProps) {
     startThreadTurn,
     environmentId,
     composerRef,
+    showPlanFollowUpPrompt,
   ]);
 
   const getModelDisabledReason = useCallback(

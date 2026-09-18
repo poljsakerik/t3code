@@ -2824,6 +2824,18 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.agentDefinitionsList, agentDefinitions.list(input), {
             "rpc.aggregate": "workspace",
           }),
+        [WS_METHODS.agentDefinitionsGet]: (input) =>
+          observeRpcEffect(WS_METHODS.agentDefinitionsGet, agentDefinitions.get(input), {
+            "rpc.aggregate": "workspace",
+          }),
+        [WS_METHODS.agentDefinitionsCreate]: (input) =>
+          observeRpcEffect(WS_METHODS.agentDefinitionsCreate, agentDefinitions.create(input), {
+            "rpc.aggregate": "workspace",
+          }),
+        [WS_METHODS.agentDefinitionsUpdate]: (input) =>
+          observeRpcEffect(WS_METHODS.agentDefinitionsUpdate, agentDefinitions.update(input), {
+            "rpc.aggregate": "workspace",
+          }),
         [WS_METHODS.workflowsListProfiles]: (input) =>
           observeRpcEffect(WS_METHODS.workflowsListProfiles, workflowConfig.listProfiles(input), {
             "rpc.aggregate": "workspace",

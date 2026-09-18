@@ -388,11 +388,9 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         creationSource: "web",
       });
       const parent = (yield* orchestrator.getThreadProjection(parentId)).thread;
-      const role = (id: string, role: "planner" | "implementer" | "reviewer") => ({
-        version: 1 as const,
+      const agent = (id: string) => ({
         id,
         name: id,
-        role,
         skills: [],
         instructions: "Review carefully",
       });
@@ -403,9 +401,9 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
           version: 1,
           id: "default",
           name: "Default",
-          planner: role("planner", "planner"),
-          implementer: role("implementer", "implementer"),
-          reviewers: [role("second", "reviewer"), role("fresh", "reviewer")],
+          planner: agent("planner"),
+          implementer: agent("implementer"),
+          reviewers: [agent("second"), agent("fresh")],
           checks: [{ id: "test", name: "Tests", run: "true", timeoutMs: 1000 }],
           limits: { maxRevisionCycles: 3, identicalFailureLimit: 2 },
         },

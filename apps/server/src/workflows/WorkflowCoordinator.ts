@@ -11,7 +11,6 @@ import {
   type ThreadWorkflowState,
   type WorkflowCheckResult,
   type WorkflowReviewResult,
-  workflowAgentModelSelection,
 } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as DateTime from "effect/DateTime";
@@ -321,8 +320,6 @@ export const live = Layer.effectDiscard(
         workflow: nextWorkflow,
         key: `revising:${failure.fingerprint}`,
       });
-      const selection =
-        workflowAgentModelSelection(profile.implementer) ?? input.projection.thread.modelSelection;
       yield* threads.dispatch({
         type: "message.dispatch",
         commandId: CommandId.make(
@@ -334,7 +331,7 @@ export const live = Layer.effectDiscard(
         ),
         text: `${profile.implementer.instructions}\n\n${revisionFeedback({ checks: input.checks, reviews: input.reviews })}`,
         attachments: [],
-        modelSelection: selection,
+        modelSelection: input.projection.thread.modelSelection,
         dispatchMode: { type: "start_immediately" },
         messageKind: "workflow_instruction",
         createdBy: "system",
@@ -354,8 +351,6 @@ export const live = Layer.effectDiscard(
         input.reviewer.id,
       );
       const base = `workflow:${encodeURIComponent(input.projection.thread.id)}:${input.workflow.revision}:review:${encodeURIComponent(input.reviewer.id)}`;
-      const selection =
-        workflowAgentModelSelection(input.reviewer) ?? input.projection.thread.modelSelection;
       yield* threads.dispatch({
         type: "message.dispatch",
         commandId: CommandId.make(`command:${base}:start`),
@@ -367,7 +362,7 @@ export const live = Layer.effectDiscard(
           planMarkdown: input.planMarkdown,
         }),
         attachments: [],
-        modelSelection: selection,
+        modelSelection: input.projection.thread.modelSelection,
         workflowSkillAllowlist: input.reviewer.skills,
         dispatchMode: { type: "start_immediately" },
         createdBy: "agent",

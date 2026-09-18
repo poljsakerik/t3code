@@ -1,3 +1,10 @@
+import {
+  AgentSkillInstallInput,
+  AgentSkillRemoveInput,
+  type AgentInstalledSkill,
+} from "@t3tools/contracts";
+import { downloadAgentSkill } from "./AgentSkills.ts";
+import { ProcessRunner } from "../processRunner.ts";
 import * as NodeOS from "node:os";
 import {
   AgentDefinitionError,
@@ -22,6 +29,8 @@ import type { PlatformError } from "effect/PlatformError";
 import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
 
 const isAgentDefinitionError = Schema.is(AgentDefinitionError);
+const decodeSkillInstall = Schema.decodeEffect(AgentSkillInstallInput);
+const decodeSkillRemove = Schema.decodeEffect(AgentSkillRemoveInput);
 const decodeCreateInput = Schema.decodeEffect(AgentDefinitionCreateInput);
 
 import {
@@ -169,6 +178,12 @@ export const discoverAgentDefinitions = Effect.fn("discoverAgentDefinitions")(
 export class AgentDefinitionService extends Context.Service<
   AgentDefinitionService,
   {
+    readonly installSkill: (
+      input: AgentSkillInstallInput,
+    ) => Effect.Effect<AgentDefinitionGetResult, AgentDefinitionError>;
+    readonly removeSkill: (
+      input: AgentSkillRemoveInput,
+    ) => Effect.Effect<AgentDefinitionGetResult, AgentDefinitionError>;
     readonly get: (
       input: AgentDefinitionGetInput,
     ) => Effect.Effect<AgentDefinitionGetResult, AgentDefinitionError>;
@@ -187,6 +202,7 @@ export class AgentDefinitionService extends Context.Service<
 export const layer = Layer.effect(
   AgentDefinitionService,
   Effect.gen(function* () {
+    const runner = yield* ProcessRunner;
     const projects = yield* ProjectionProjectRepository;
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -194,7 +210,7 @@ export const layer = Layer.effect(
     const wrapError = (cause: unknown) =>
       isAgentDefinitionError(cause)
         ? cause
-        : new AgentDefinitionError({ message: "Could not access agent instructions.", cause });
+        : new AgentDefinitionError({ message: "Could not access agent files.", cause });
     const workspace = Effect.fn("AgentDefinitionService.workspace")(function* (
       input: AgentDefinitionsListInput,
     ) {
@@ -284,7 +300,29 @@ export const layer = Layer.effect(
       ) {
         documents.push({ path: `${agent.directory}/instructions.md`, content: null });
       }
-      return { agent, documents, otherInstructionPaths };
+      const installedSkills: AgentInstalledSkill[] = [];
+      const skillsDirectory = path.join(root, agent.directory, "skills");
+      if (yield* fs.exists(skillsDirectory)) {
+        if ((yield* fs.realPath(skillsDirectory)) !== skillsDirectory) {
+          return yield* new AgentDefinitionError({
+            message: "Linked skill folders cannot be managed.",
+          });
+        }
+        for (const name of (yield* fs.readDirectory(skillsDirectory)).toSorted()) {
+          const directory = path.join(skillsDirectory, name);
+          const document = path.join(directory, "SKILL.md");
+          if ((yield* fs.realPath(directory)) !== directory) continue;
+          if ((yield* fs.stat(directory)).type !== "Directory" || !(yield* fs.exists(document)))
+            continue;
+          if (
+            (yield* fs.realPath(document)) !== document ||
+            (yield* fs.stat(document)).type !== "File"
+          )
+            continue;
+          installedSkills.push({ name, path: `${agent.directory}/skills/${name}` });
+        }
+      }
+      return { agent, documents, otherInstructionPaths, installedSkills };
     });
     const list = Effect.fn("AgentDefinitionService.list")(function* (
       input: AgentDefinitionsListInput,
@@ -394,6 +432,65 @@ export const layer = Layer.effect(
       lock.withPermits(1),
       Effect.mapError(wrapError),
     );
-    return AgentDefinitionService.of({ list, get, create, update });
+    const installSkill = Effect.fn("AgentDefinitionService.installSkill")(
+      function* (request: AgentSkillInstallInput) {
+        const input = yield* decodeSkillInstall(request);
+        const root = yield* workspace(input);
+        const agent = yield* findAgent(root, input.agentId);
+        const skillsDirectory = yield* ensureDirectory(root, `${agent.directory}/skills`);
+        if ((yield* fs.readDirectory(skillsDirectory)).length >= 20)
+          return yield* new AgentDefinitionError({
+            message: "An agent can have at most 20 skills. Remove one before adding another.",
+          });
+        const destination = path.join(skillsDirectory, input.name);
+        if ((yield* fs.exists(destination)) || (yield* fs.exists(`${destination}.md`))) {
+          return yield* new AgentDefinitionError({
+            message:
+              "This agent already has a skill with that name. Remove it before installing a replacement.",
+          });
+        }
+        const downloaded = yield* downloadAgentSkill(input).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+          Effect.provideService(ProcessRunner, runner),
+        );
+        // Stage on the destination filesystem so publishing is an atomic rename.
+        const staging = yield* fs.makeTempDirectoryScoped({
+          directory: path.join(root, agent.directory),
+          prefix: ".skill-install-",
+        });
+        const staged = path.join(staging, input.name);
+        yield* fs.copy(downloaded, staged, { overwrite: false });
+        // Re-check after the download, which may take a while.
+        yield* findAgent(root, input.agentId);
+        yield* ensureDirectory(root, `${agent.directory}/skills`);
+        if (yield* fs.exists(destination))
+          return yield* new AgentDefinitionError({
+            message: "This skill was added while the download was running. Refresh the agent.",
+          });
+        yield* fs.rename(staged, destination);
+        return yield* getAt(root, input.agentId);
+      },
+      Effect.scoped,
+      lock.withPermits(1),
+      Effect.mapError(wrapError),
+    );
+    const removeSkill = Effect.fn("AgentDefinitionService.removeSkill")(
+      function* (request: AgentSkillRemoveInput) {
+        const input = yield* decodeSkillRemove(request);
+        const root = yield* workspace(input);
+        const current = yield* getAt(root, input.agentId);
+        const skill = current.installedSkills.find((skill) => skill.name === input.name);
+        if (!skill)
+          return yield* new AgentDefinitionError({
+            message: "This skill is no longer installed on the agent. Refresh and try again.",
+          });
+        yield* fs.remove(path.join(root, skill.path), { recursive: true });
+        return yield* getAt(root, input.agentId);
+      },
+      lock.withPermits(1),
+      Effect.mapError(wrapError),
+    );
+    return AgentDefinitionService.of({ list, get, create, update, installSkill, removeSkill });
   }),
 );

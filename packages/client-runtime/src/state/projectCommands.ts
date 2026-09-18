@@ -55,6 +55,18 @@ export function createProjectEnvironmentAtoms<R, E>(
       JSON.stringify([environmentId, input.projectId]),
   };
   return {
+    searchAgentSkills: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:search-agent-skills",
+      tag: WS_METHODS.agentSkillsSearch,
+    }),
+    installAgentSkill: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:install-agent-skill",
+      tag: WS_METHODS.agentSkillsInstall,
+    }),
+    removeAgentSkill: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:remove-agent-skill",
+      tag: WS_METHODS.agentSkillsRemove,
+    }),
     agentDefinitions: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:projects:agent-definitions",
       tag: WS_METHODS.agentDefinitionsList,

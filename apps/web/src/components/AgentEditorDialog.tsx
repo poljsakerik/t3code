@@ -1,3 +1,4 @@
+import { AgentSkillsEditor } from "./AgentSkillsEditor";
 import { useId, useRef, useState } from "react";
 import type {
   AgentDefinition,
@@ -46,11 +47,13 @@ export function AgentEditorDialog({
         })
       : null,
   );
+  const [tab, setTab] = useState<"instructions" | "skills">("instructions");
+  const [skillsBusy, setSkillsBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [discarding, setDiscarding] = useState(false);
   const close = () => {
-    if (saving) return;
+    if (saving || skillsBusy) return;
     if (dirty) setDiscarding(true);
     else onClose();
   };
@@ -61,7 +64,7 @@ export function AgentEditorDialog({
         if (!open) close();
       }}
     >
-      <DialogPopup className="sm:max-w-2xl" showCloseButton={!saving}>
+      <DialogPopup className="sm:max-w-2xl" showCloseButton={!saving && !skillsBusy}>
         <DialogHeader>
           <DialogTitle>{agent ? `Edit ${agent.name}` : "Create agent"}</DialogTitle>
           <DialogDescription>
@@ -69,52 +72,87 @@ export function AgentEditorDialog({
             {!agent && parent ? ` · Subagent of ${parent.name}` : ""}
           </DialogDescription>
         </DialogHeader>
-        {discarding ? (
-          <div className="mx-6 mb-4 space-y-3 rounded-lg border p-3">
-            <p className="text-sm">Discard your unsaved changes?</p>
-            <div className="flex gap-2">
-              <Button size="sm" variant="outline" onClick={() => setDiscarding(false)}>
-                Keep editing
-              </Button>
-              <Button size="sm" variant="destructive" onClick={onClose}>
-                Discard changes
-              </Button>
-            </div>
+        {agent ? (
+          <div className="flex gap-2 px-6 pb-4" role="group" aria-label="Agent settings">
+            <Button
+              variant={tab === "instructions" ? "secondary" : "ghost"}
+              size="sm"
+              disabled={saving || skillsBusy}
+              onClick={() => setTab("instructions")}
+              aria-pressed={tab === "instructions"}
+            >
+              Instructions
+            </Button>
+            <Button
+              variant={tab === "skills" ? "secondary" : "ghost"}
+              size="sm"
+              disabled={dirty || saving || skillsBusy || detail.data === null}
+              onClick={() => setTab("skills")}
+              aria-pressed={tab === "skills"}
+            >
+              Skills
+            </Button>
           </div>
         ) : null}
-        {agent && (!detail.data || (detail.isPending && !dirty && !saving)) ? (
-          <div className="space-y-3 px-6 pb-6">
-            {detail.error ? (
-              <>
-                <p role="alert" className="text-sm text-destructive-foreground">
-                  {detail.error}
-                </p>
-                <Button variant="outline" onClick={detail.refresh}>
-                  Try again
-                </Button>
-              </>
-            ) : (
-              <p role="status" className="text-sm text-muted-foreground">
-                Loading instructions…
-              </p>
-            )}
-          </div>
-        ) : (
-          <AgentEditorForm
+        {agent && tab === "skills" ? (
+          <AgentSkillsEditor
             environmentId={environmentId}
             {...(projectId === undefined ? {} : { projectId })}
-            agent={agent}
-            parent={parent}
-            documents={detail.data?.documents ?? [{ path: "instructions.md", content: null }]}
-            otherInstructionPaths={detail.data?.otherInstructionPaths ?? []}
-            onDirtyChange={setDirty}
-            onSavingChange={setSaving}
-            onClose={close}
-            onSaved={() => {
-              if (agent) detail.refresh();
-              onSaved();
-            }}
+            agentId={agent.id}
+            installedSkills={detail.data?.installedSkills ?? []}
+            onChanged={detail.refresh}
+            onBusyChange={setSkillsBusy}
           />
+        ) : (
+          <>
+            {discarding ? (
+              <div className="mx-6 mb-4 space-y-3 rounded-lg border p-3">
+                <p className="text-sm">Discard your unsaved changes?</p>
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" onClick={() => setDiscarding(false)}>
+                    Keep editing
+                  </Button>
+                  <Button size="sm" variant="destructive" onClick={onClose}>
+                    Discard changes
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+            {agent && (!detail.data || (detail.isPending && !dirty && !saving)) ? (
+              <div className="space-y-3 px-6 pb-6">
+                {detail.error ? (
+                  <>
+                    <p role="alert" className="text-sm text-destructive-foreground">
+                      {detail.error}
+                    </p>
+                    <Button variant="outline" onClick={detail.refresh}>
+                      Try again
+                    </Button>
+                  </>
+                ) : (
+                  <p role="status" className="text-sm text-muted-foreground">
+                    Loading instructions…
+                  </p>
+                )}
+              </div>
+            ) : (
+              <AgentEditorForm
+                environmentId={environmentId}
+                {...(projectId === undefined ? {} : { projectId })}
+                agent={agent}
+                parent={parent}
+                documents={detail.data?.documents ?? [{ path: "instructions.md", content: null }]}
+                otherInstructionPaths={detail.data?.otherInstructionPaths ?? []}
+                onDirtyChange={setDirty}
+                onSavingChange={setSaving}
+                onClose={close}
+                onSaved={() => {
+                  if (agent) detail.refresh();
+                  onSaved();
+                }}
+              />
+            )}
+          </>
         )}
       </DialogPopup>
     </Dialog>
@@ -218,6 +256,9 @@ function AgentEditorForm({
                 onDirtyChange(event.target.value.length > 0 || content.length > 0);
               }}
             />
+            <p className="text-xs text-muted-foreground">
+              After creating the agent, open its Skills tab to add skills.
+            </p>
             <p id={`${id}-name-hint`} className="text-xs text-muted-foreground">
               Start with a letter or number. Use letters, numbers, hyphens, or underscores.
             </p>

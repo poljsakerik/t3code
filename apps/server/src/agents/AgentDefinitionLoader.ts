@@ -1,3 +1,4 @@
+import { createDiskProjectSource } from "@t3tools/eve/project-source";
 import * as Path from "effect/Path";
 import {
   ProviderInstanceId,
@@ -18,6 +19,7 @@ const decodeConfiguration = Schema.decodeUnknownEffect(AgentConfiguration, {
   onExcessProperty: "error",
 });
 const decodeDefinition = Schema.decodeUnknownEffect(ResolvedAgentDefinition);
+const decodeSkillNames = Schema.decodeEffect(ResolvedAgentDefinition.fields.skills);
 const isAgentDefinitionError = Schema.is(AgentDefinitionError);
 
 /** Translates Eve's source definition into the subset supported by T3's harnesses. */
@@ -54,16 +56,18 @@ export const loadAgentDefinition = Effect.fn("loadAgentDefinition")(
       }
       parts.push(instruction.definition.content);
     }
-    const instructions = parts
+    const baseInstructions = parts
       .filter((part) => part.trim().length > 0)
       .join("\n\n")
       .trim();
-    if (instructions.length === 0) {
+    if (baseInstructions.length === 0) {
       return yield* new AgentDefinitionError({
         path: manifest.agentRoot,
         message: "Agent has no Markdown instructions.",
       });
     }
+    yield* decodeSkillNames(manifest.skills.map((skill) => skill.name));
+    const source = createDiskProjectSource({ boundaryRoot: manifest.agentRoot });
     const skills: string[] = [];
     for (const skill of manifest.skills) {
       if (skill.sourceKind !== "markdown" && skill.sourceKind !== "directory") {
@@ -73,6 +77,32 @@ export const loadAgentDefinition = Effect.fn("loadAgentDefinition")(
             "Agent skills must be Markdown files or directories named for a native harness skill.",
         });
       }
+      if (skill.sourceKind === "directory") {
+        const directory = path.join(manifest.agentRoot, skill.logicalPath);
+        const document = path.join(directory, "SKILL.md");
+        const content = yield* Effect.tryPromise({
+          try: async () =>
+            (await source.stat(document)) === "file" ? source.readTextFile(document) : null,
+          catch: (cause) =>
+            new AgentDefinitionError({
+              message: "Could not read this agent's skill instructions.",
+              path: document,
+              cause,
+            }),
+        });
+        if (content !== null) {
+          if (!content.trim() || content.length > 1_000_000)
+            return yield* new AgentDefinitionError({
+              message: "Skill instructions must contain between 1 and 1,000,000 characters.",
+              path: document,
+            });
+          parts.push(
+            `## Agent skill: ${skill.name}\nApply these instructions when relevant to your task. Resolve this skill's relative file and script paths from ${directory}.\n\n${content}`,
+          );
+          continue;
+        }
+      }
+      // Legacy Markdown entries and empty folders reference native harness skills.
       skills.push(skill.name);
     }
     if (manifest.configModule === undefined) {
@@ -108,7 +138,10 @@ export const loadAgentDefinition = Effect.fn("loadAgentDefinition")(
     return yield* decodeDefinition({
       id: definition.id,
       name: definition.name,
-      instructions,
+      instructions: parts
+        .filter((part) => part.trim().length > 0)
+        .join("\n\n")
+        .trim(),
       skills,
       modelSelection: {
         instanceId: ProviderInstanceId.make(provider === "anthropic" ? "claudeAgent" : "codex"),

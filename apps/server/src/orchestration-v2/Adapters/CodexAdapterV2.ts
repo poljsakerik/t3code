@@ -2,6 +2,7 @@ import {
   mcpToolPresentation,
   type McpToolPresentation,
 } from "../../provider/CodexToolPresentation.ts";
+import * as NodePath from "node:path";
 import {
   makeCodexTurnTokenUsageState,
   getCodexTurnAccumulator,
@@ -1272,24 +1273,37 @@ export function codexThreadRuntimeParams(input: {
 }
 
 export function codexWorkflowSkillConfig(
-  allowlist: ReadonlyArray<string>,
+  workflowSkills: ReadonlyArray<{ readonly name: string; readonly relativePath: string }>,
   skills: ReadonlyArray<Pick<CodexSchema.V2SkillsListResponse__SkillMetadata, "name" | "path">>,
+  cwd: string,
 ): Readonly<Record<string, unknown>> {
-  const available = new Set(skills.map((skill) => skill.name));
-  const missing = allowlist.filter((skill) => !available.has(skill));
-  if (missing.length > 0) {
-    throw new ProviderAdapterProtocolError({
-      driver: CODEX_PROVIDER,
-      detail: `Assigned Codex reviewer skills are unavailable: ${missing.join(", ")}`,
-    });
-  }
-  const selected = new Set(allowlist);
+  const localSkills = workflowSkills.map((skill) => {
+    const skillFile = NodePath.resolve(cwd, skill.relativePath);
+    const relative = NodePath.relative(cwd, skillFile);
+    if (
+      relative.startsWith(`..${NodePath.sep}`) ||
+      relative === ".." ||
+      NodePath.isAbsolute(relative)
+    ) {
+      throw new ProviderAdapterProtocolError({
+        driver: CODEX_PROVIDER,
+        detail: `Assigned Codex reviewer skill escapes the workspace: ${skill.name}`,
+      });
+    }
+    return { name: skill.name, path: NodePath.dirname(skillFile) };
+  });
+  const localPaths = new Set(localSkills.map((skill) => skill.path));
   return {
     skills: {
-      config: skills.map((skill) => ({
-        path: skill.path.replace(/[\\/]SKILL\.md$/i, ""),
-        enabled: selected.has(skill.name),
-      })),
+      config: [
+        ...skills
+          .map((skill) => ({
+            path: skill.path.replace(/[\\/]SKILL\.md$/i, ""),
+            enabled: false,
+          }))
+          .filter((skill) => !localPaths.has(skill.path)),
+        ...localSkills.map((skill) => ({ path: skill.path, enabled: true })),
+      ],
     },
   };
 }
@@ -1603,6 +1617,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
     instanceId: adapterOptions.instanceId,
     driver: CODEX_PROVIDER,
     workflowSkillIsolation: "native",
+    workflowLocalSkillLoading: "native",
     getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
     openSession: (input) =>
@@ -1634,11 +1649,17 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           readonly modelSelection?: { readonly model: string };
           readonly runtimePolicy?: ProviderAdapterV2RuntimePolicy;
         }) {
-          const allowlist = threadInput.runtimePolicy?.workflowSkillAllowlist;
-          if (allowlist === undefined) {
+          const workflowSkills = threadInput.runtimePolicy?.workflowSkills;
+          if (workflowSkills === undefined) {
             return codexThreadRuntimeParams(threadInput);
           }
           const cwd = threadInput.runtimePolicy?.cwd ?? input.runtimePolicy.cwd;
+          if (cwd === null) {
+            return yield* new ProviderAdapterProtocolError({
+              driver: CODEX_PROVIDER,
+              detail: "A workspace is required to load verified workflow skills",
+            });
+          }
           const response = yield* client.request(
             "skills/list",
             cwd === null ? {} : { cwds: [cwd] },
@@ -1647,7 +1668,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             cwd === null ? undefined : response.data.find((entry) => entry.cwd === cwd);
           const skills = matchingEntry?.skills ?? response.data.flatMap((entry) => entry.skills);
           const workflowSkillConfig = yield* Effect.try({
-            try: () => codexWorkflowSkillConfig(allowlist, skills),
+            try: () => codexWorkflowSkillConfig(workflowSkills, skills, cwd),
             catch: (cause) =>
               isProviderAdapterProtocolError(cause)
                 ? cause

@@ -212,7 +212,7 @@ for (const completedAtStartup of [false, true]) {
                   current = command.workflow;
                   yield* Queue.offer(commands, command);
                 } else if (command.type === "message.dispatch" && command.threadId !== parentId) {
-                  assert.deepEqual(command.workflowSkillAllowlist, []);
+                  assert.deepEqual(command.workflowSkills, []);
                   yield* Queue.offer(starts, command.threadId);
                 } else {
                   yield* Queue.offer(commands, command);

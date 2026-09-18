@@ -41,13 +41,11 @@ import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
 
 export function providerRuntimePolicyForRun(
   base: ProviderAdapterV2RuntimePolicy,
-  run: Pick<OrchestrationV2Run, "workflowSkillAllowlist">,
+  run: Pick<OrchestrationV2Run, "workflowSkills">,
 ): ProviderAdapterV2RuntimePolicy {
   return ProviderAdapterV2RuntimePolicy.make({
     ...base,
-    ...(run.workflowSkillAllowlist === undefined
-      ? {}
-      : { workflowSkillAllowlist: [...run.workflowSkillAllowlist] }),
+    ...(run.workflowSkills === undefined ? {} : { workflowSkills: [...run.workflowSkills] }),
   });
 }
 
@@ -65,6 +63,11 @@ export interface ProviderTurnStartServiceV2Shape {
   readonly start: (input: {
     readonly threadId: ThreadId;
     readonly runId: RunId;
+  }) => Effect.Effect<void, ProviderTurnStartError>;
+  readonly fail: (input: {
+    readonly threadId: ThreadId;
+    readonly runId: RunId;
+    readonly error: string;
   }) => Effect.Effect<void, ProviderTurnStartError>;
 }
 
@@ -738,9 +741,115 @@ export const layer: Layer.Layer<
       });
     });
 
+    const fail = Effect.fn("orchestrationV2.providerTurnStart.fail")(function* (input: {
+      readonly threadId: ThreadId;
+      readonly runId: RunId;
+      readonly error: string;
+    }) {
+      const projection = yield* projectionStore.getThreadProjection(input.threadId);
+      const run = projection.runs.find((candidate) => candidate.id === input.runId);
+      if (run === undefined) {
+        return yield* new ProviderTurnStartError({
+          runId: input.runId,
+          cause: `Run ${input.runId} was not found.`,
+        });
+      }
+      if (run.status !== "starting") return;
+      const rootNode = projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
+      const attempt = projection.attempts.find((candidate) => candidate.id === run.activeAttemptId);
+      const providerThread = projection.providerThreads.find(
+        (candidate) => candidate.id === run.providerThreadId,
+      );
+      if (rootNode === undefined || attempt === undefined || providerThread === undefined) {
+        return yield* new ProviderTurnStartError({
+          runId: input.runId,
+          cause: `Run ${input.runId} is missing its execution projection state.`,
+        });
+      }
+      const now = yield* DateTime.now;
+      const item: OrchestrationV2TurnItem = {
+        id: idAllocator.derive.runSignalTurnItem({
+          runId: run.id,
+          signal: "provider-start-failure",
+        }),
+        threadId: projection.thread.id,
+        runId: run.id,
+        nodeId: rootNode.id,
+        providerThreadId: providerThread.id,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal:
+          Math.max(
+            0,
+            ...projection.turnItems
+              .filter((candidate) => candidate.runId === run.id)
+              .map((candidate) => candidate.ordinal),
+          ) + 1,
+        status: "failed",
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+        type: "error",
+        title: "Provider failed to start",
+        failure: makeProviderFailure({ message: input.error, retryable: false }),
+      };
+      const payloads = [
+        { type: "turn-item.updated", payload: item },
+        {
+          type: "run.updated",
+          payload: { ...run, status: "failed", startedAt: now, completedAt: now },
+        },
+        {
+          type: "run-attempt.updated",
+          payload: { ...attempt, status: "failed", startedAt: now, completedAt: now },
+        },
+        {
+          type: "node.updated",
+          payload: { ...rootNode, status: "failed", startedAt: now, completedAt: now },
+        },
+        {
+          type: "provider-thread.updated",
+          payload: {
+            ...providerThread,
+            status: providerThread.nativeThreadRef === null ? "not_loaded" : "idle",
+            updatedAt: now,
+          },
+        },
+      ] as const;
+      const events = yield* Effect.forEach(payloads, (event) =>
+        Effect.gen(function* () {
+          return {
+            ...event,
+            id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+            threadId: projection.thread.id,
+            runId: run.id,
+            nodeId: rootNode.id,
+            providerInstanceId: run.providerInstanceId,
+            occurredAt: now,
+          } satisfies OrchestrationV2DomainEvent;
+        }),
+      );
+      yield* eventSink.writeIfRunCurrent({
+        threadId: projection.thread.id,
+        runId: run.id,
+        activeAttemptId: attempt.id,
+        expectedStatus: "starting",
+        events,
+      });
+    });
+
     return ProviderTurnStartServiceV2.of({
       start: (input) =>
         start(input).pipe(
+          Effect.mapError((cause) =>
+            isProviderTurnStartError(cause)
+              ? cause
+              : new ProviderTurnStartError({ runId: input.runId, cause }),
+          ),
+        ),
+      fail: (input) =>
+        fail(input).pipe(
           Effect.mapError((cause) =>
             isProviderTurnStartError(cause)
               ? cause

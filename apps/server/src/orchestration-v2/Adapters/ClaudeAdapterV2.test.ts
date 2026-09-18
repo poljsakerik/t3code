@@ -110,12 +110,31 @@ describe("Claude reviewer skill isolation", () => {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const idAllocator = yield* IdAllocatorV2;
-        const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
+        const testStateDir = yield* fileSystem.makeTempDirectoryScoped({
           prefix: "t3-claude-v2-reviewer-skills-",
         });
+        const attachmentsDir = path.join(testStateDir, "attachments");
+        yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
+        const workspace = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-claude-v2-reviewer-workspace-",
+        });
+        const skillDirectory = path.join(
+          workspace,
+          ".t3",
+          "agents",
+          "design",
+          "skills",
+          "impeccable",
+        );
+        yield* fileSystem.makeDirectory(skillDirectory, { recursive: true });
+        yield* fileSystem.writeFileString(
+          path.join(skillDirectory, "SKILL.md"),
+          "---\nname: impeccable\ndescription: Review design.\n---\n\nReview design.",
+        );
         const nativeThreadId = "native-thread-claude-reviewer-skills";
         const sdkMessages = yield* Queue.unbounded<SDKMessage>();
         const offeredMessages: Array<SDKUserMessage> = [];
+        let openedInput: ClaudeAgentSdkQueryOpenInput | undefined;
         const adapter = makeClaudeAdapterV2({
           instanceId: CLAUDE_DEFAULT_INSTANCE_ID,
           settings: DEFAULT_CLAUDE_SETTINGS,
@@ -126,14 +145,17 @@ describe("Claude reviewer skill isolation", () => {
           idAllocator,
           queryRunner: {
             allocateSessionId: Effect.succeed(nativeThreadId),
-            open: () =>
-              Effect.succeed({
-                messages: Stream.fromQueue(sdkMessages),
-                offer: (message) =>
-                  Effect.sync(() => offeredMessages.push(message)).pipe(Effect.asVoid),
-                setModel: () => Effect.void,
-                interrupt: Effect.void,
-                close: Queue.shutdown(sdkMessages),
+            open: (input) =>
+              Effect.sync(() => {
+                openedInput = input;
+                return {
+                  messages: Stream.fromQueue(sdkMessages),
+                  offer: (message) =>
+                    Effect.sync(() => offeredMessages.push(message)).pipe(Effect.asVoid),
+                  setModel: () => Effect.void,
+                  interrupt: Effect.void,
+                  close: Queue.shutdown(sdkMessages),
+                };
               }),
             forkSession: () => Effect.die("unused forkSession"),
             assertComplete: Effect.void,
@@ -142,8 +164,13 @@ describe("Claude reviewer skill isolation", () => {
         const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
           runtimeMode: "full-access",
           interactionMode: "plan",
-          cwd: "/workspace",
-          workflowSkillAllowlist: ["impeccable:impeccable"],
+          cwd: workspace,
+          workflowSkills: [
+            {
+              name: "impeccable",
+              relativePath: ".t3/agents/design/skills/impeccable/SKILL.md",
+            },
+          ],
         });
         const threadId = ThreadId.make("thread-claude-reviewer-skills");
         const runtime = yield* adapter.openSession({
@@ -172,6 +199,25 @@ describe("Claude reviewer skill isolation", () => {
         );
 
         assert.lengthOf(offeredMessages, 1);
+        assert.deepEqual(openedInput?.options.skills, [
+          "t3-workflow-native-thread-claude-reviewer-skills:impeccable",
+        ]);
+        assert.deepEqual(openedInput?.options.plugins, [
+          {
+            type: "local",
+            path: openedInput?.options.plugins?.[0]?.path,
+            skipMcpDiscovery: true,
+          },
+        ]);
+        const pluginPath = openedInput?.options.plugins?.[0]?.path;
+        if (pluginPath === undefined) assert.fail("Claude workflow plugin was not staged");
+        assert.equal(path.basename(pluginPath), "t3-workflow-native-thread-claude-reviewer-skills");
+        assert.equal(
+          yield* fileSystem.readFileString(
+            path.join(pluginPath, "skills", "impeccable", "SKILL.md"),
+          ),
+          "---\nname: impeccable\ndescription: Review design.\n---\n\nReview design.",
+        );
       }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
     ),
   );

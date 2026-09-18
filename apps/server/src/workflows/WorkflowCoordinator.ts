@@ -363,7 +363,7 @@ export const live = Layer.effectDiscard(
         }),
         attachments: [],
         modelSelection: input.projection.thread.modelSelection,
-        workflowSkillAllowlist: input.reviewer.skills,
+        workflowSkills: input.reviewer.skills,
         dispatchMode: { type: "start_immediately" },
         createdBy: "agent",
         creationSource: "server",

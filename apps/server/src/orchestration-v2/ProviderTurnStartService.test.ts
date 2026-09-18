@@ -38,7 +38,7 @@ import * as RuntimePolicy from "./RuntimePolicy.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
-it("copies a reviewer's exclusive skill allowlist into the provider runtime policy", () => {
+it("copies a reviewer's exclusive Eve skills into the provider runtime policy", () => {
   const base = ProviderAdapterV2RuntimePolicy.make({
     runtimeMode: "full-access",
     interactionMode: "default",
@@ -47,17 +47,112 @@ it("copies a reviewer's exclusive skill allowlist into the provider runtime poli
 
   expect(
     ProviderTurnStart.providerRuntimePolicyForRun(base, {
-      workflowSkillAllowlist: ["code-review"],
-    }).workflowSkillAllowlist,
-  ).toEqual(["code-review"]);
+      workflowSkills: [
+        { name: "code-review", relativePath: ".t3/agents/reviewer/skills/code-review/SKILL.md" },
+      ],
+    }).workflowSkills,
+  ).toEqual([
+    { name: "code-review", relativePath: ".t3/agents/reviewer/skills/code-review/SKILL.md" },
+  ]);
   expect(
     ProviderTurnStart.providerRuntimePolicyForRun(base, {
-      workflowSkillAllowlist: [],
-    }).workflowSkillAllowlist,
+      workflowSkills: [],
+    }).workflowSkills,
   ).toEqual([]);
-  expect(ProviderTurnStart.providerRuntimePolicyForRun(base, {}).workflowSkillAllowlist).toBe(
-    undefined,
+  expect(ProviderTurnStart.providerRuntimePolicyForRun(base, {}).workflowSkills).toBe(undefined);
+});
+
+it("terminalizes a starting run when provider startup exhausts its retries", async () => {
+  const threadId = ThreadId.make("thread_provider_start_failed");
+  const runId = RunId.make("run_provider_start_failed");
+  const attemptId = RunAttemptId.make("attempt_provider_start_failed");
+  const rootNodeId = NodeId.make("node_provider_start_failed");
+  const providerThreadId = ProviderThreadId.make("provider_thread_provider_start_failed");
+  const providerInstanceId = ProviderInstanceId.make("codex");
+  const now = DateTime.makeUnsafe("2026-09-18T10:00:00.000Z");
+  const projection = {
+    thread: { id: threadId },
+    runs: [
+      {
+        id: runId,
+        status: "starting",
+        rootNodeId,
+        activeAttemptId: attemptId,
+        providerThreadId,
+        providerInstanceId,
+        startedAt: null,
+        completedAt: null,
+      },
+    ],
+    nodes: [{ id: rootNodeId, status: "pending", startedAt: null, completedAt: null }],
+    attempts: [{ id: attemptId, status: "pending", startedAt: null, completedAt: null }],
+    providerThreads: [
+      {
+        id: providerThreadId,
+        status: "not_loaded",
+        nativeThreadRef: null,
+        updatedAt: now,
+      },
+    ],
+    turnItems: [],
+  } as unknown as OrchestrationV2ThreadProjection;
+  const writeIfRunCurrent = vi.fn(() =>
+    Effect.succeed({ committed: true, storedEvents: [] } as never),
   );
+  const testLayer = ProviderTurnStart.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
+        Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
+        IdAllocator.layer,
+        Layer.succeed(FileSystem.FileSystem, {} as never),
+        Layer.mock(GitWorkflow.GitWorkflowService)({}),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getThreadProjection: () => Effect.succeed(projection),
+        }),
+        Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
+        Layer.mock(ProviderAuthService)({}),
+        Layer.mock(RunExecutionService.RunExecutionServiceV2)({}),
+        Layer.mock(RuntimePolicy.RuntimePolicyV2)({}),
+      ),
+    ),
+  );
+
+  await Effect.gen(function* () {
+    yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).fail({
+      threadId,
+      runId,
+      error: "Assigned reviewer skill could not be loaded",
+    });
+  }).pipe(Effect.provide(testLayer), Effect.runPromise);
+
+  expect(writeIfRunCurrent).toHaveBeenCalledOnce();
+  const input = writeIfRunCurrent.mock.calls[0]?.[0];
+  expect(input).toMatchObject({
+    threadId,
+    runId,
+    activeAttemptId: attemptId,
+    expectedStatus: "starting",
+  });
+  const events = input?.events ?? [];
+  expect(events.find((event) => event.type === "run.updated")?.payload).toMatchObject({
+    id: runId,
+    status: "failed",
+  });
+  expect(events.find((event) => event.type === "run-attempt.updated")?.payload).toMatchObject({
+    id: attemptId,
+    status: "failed",
+  });
+  expect(events.find((event) => event.type === "node.updated")?.payload).toMatchObject({
+    id: rootNodeId,
+    status: "failed",
+  });
+  expect(events.find((event) => event.type === "turn-item.updated")?.payload).toMatchObject({
+    type: "error",
+    title: "Provider failed to start",
+    failure: { message: "Assigned reviewer skill could not be loaded", retryable: false },
+  });
 });
 
 it("does not commit running state when inherited background routing cannot be read", async () => {

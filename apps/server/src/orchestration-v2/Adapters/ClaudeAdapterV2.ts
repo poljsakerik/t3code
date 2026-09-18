@@ -1,4 +1,5 @@
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
+import * as NodePath from "node:path";
 import { normalizeClaudeTurnTokenUsage } from "../../provider/ClaudeTurnTokenUsage.ts";
 import {
   type CanUseTool,
@@ -730,6 +731,7 @@ export function makeClaudeQueryOptions(input: {
   readonly allowedTools?: ReadonlyArray<string>;
   readonly disallowedTools?: ReadonlyArray<string>;
   readonly skills?: ReadonlyArray<string>;
+  readonly plugins?: ClaudeQueryOptions["plugins"];
   readonly permissionMode?: PermissionMode;
   readonly canUseTool?: CanUseTool;
   readonly onUserDialog?: ClaudeQueryOptions["onUserDialog"];
@@ -782,6 +784,7 @@ export function makeClaudeQueryOptions(input: {
     ...(input.allowedTools === undefined ? {} : { allowedTools: [...input.allowedTools] }),
     ...(input.disallowedTools === undefined ? {} : { disallowedTools: [...input.disallowedTools] }),
     ...(input.skills === undefined ? {} : { skills: [...input.skills] }),
+    ...(input.plugins === undefined ? {} : { plugins: [...input.plugins] }),
     ...(input.canUseTool === undefined ? {} : { canUseTool: input.canUseTool }),
     ...(input.allowDangerouslySkipPermissions === true
       ? { allowDangerouslySkipPermissions: true }
@@ -2515,6 +2518,120 @@ export function makeClaudeAdapterV2(
     offer: () => Effect.void,
   };
 
+  const copyWorkflowSkillDirectory = Effect.fnUntraced(function* (
+    source: string,
+    destination: string,
+  ): Effect.fn.Return<void, ProviderAdapterProtocolError> {
+    const realSource = yield* fileSystem.realPath(source).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderAdapterProtocolError({
+            driver: CLAUDE_PROVIDER,
+            detail: `Could not resolve Claude reviewer skill content at ${source}`,
+            payload: cause,
+          }),
+      ),
+    );
+    if (realSource !== source) {
+      return yield* new ProviderAdapterProtocolError({
+        driver: CLAUDE_PROVIDER,
+        detail: `Claude reviewer skill content must not contain symbolic links: ${source}`,
+      });
+    }
+    const info = yield* fileSystem.stat(source).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderAdapterProtocolError({
+            driver: CLAUDE_PROVIDER,
+            detail: `Could not inspect Claude reviewer skill content at ${source}`,
+            payload: cause,
+          }),
+      ),
+    );
+    if (info.type === "File") {
+      yield* fileSystem.copyFile(source, destination).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProviderAdapterProtocolError({
+              driver: CLAUDE_PROVIDER,
+              detail: `Could not stage Claude reviewer skill content at ${destination}`,
+              payload: cause,
+            }),
+        ),
+      );
+      return;
+    }
+    if (info.type !== "Directory") {
+      return yield* new ProviderAdapterProtocolError({
+        driver: CLAUDE_PROVIDER,
+        detail: `Unsupported Claude reviewer skill content at ${source}`,
+      });
+    }
+    yield* fileSystem.makeDirectory(destination, { recursive: true });
+    const entries = yield* fileSystem.readDirectory(source);
+    yield* Effect.forEach(
+      entries,
+      (entry) =>
+        copyWorkflowSkillDirectory(path.join(source, entry), path.join(destination, entry)),
+      { concurrency: 8, discard: true },
+    );
+  });
+
+  const prepareWorkflowSkillOptions = Effect.fnUntraced(function* (input: {
+    readonly workflowSkills: ReadonlyArray<{
+      readonly name: string;
+      readonly relativePath: string;
+    }>;
+    readonly cwd: string;
+    readonly nativeThreadId: string;
+    readonly pluginBase: string;
+  }): Effect.fn.Return<
+    Pick<ClaudeQueryOptions, "skills" | "plugins">,
+    ProviderAdapterProtocolError
+  > {
+    if (input.workflowSkills.length === 0) return { skills: [] };
+    const safeThreadId = input.nativeThreadId.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 80);
+    const pluginName = `t3-workflow-${safeThreadId || "reviewer"}`;
+    const pluginRoot = path.join(input.pluginBase, pluginName);
+    yield* fileSystem.makeDirectory(path.join(pluginRoot, ".claude-plugin"), { recursive: true });
+    yield* fileSystem.writeFileString(
+      path.join(pluginRoot, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: pluginName, version: "1.0.0" }),
+    );
+    const realCwd = yield* fileSystem.realPath(input.cwd).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderAdapterProtocolError({
+            driver: CLAUDE_PROVIDER,
+            detail: "Could not resolve the workspace for Claude reviewer skills",
+            payload: cause,
+          }),
+      ),
+    );
+    for (const skill of input.workflowSkills) {
+      const skillFile = NodePath.resolve(realCwd, skill.relativePath);
+      const relative = NodePath.relative(realCwd, skillFile);
+      if (
+        relative.startsWith(`..${NodePath.sep}`) ||
+        relative === ".." ||
+        NodePath.isAbsolute(relative)
+      ) {
+        return yield* new ProviderAdapterProtocolError({
+          driver: CLAUDE_PROVIDER,
+          detail: `Assigned Claude reviewer skill escapes the workspace: ${skill.name}`,
+        });
+      }
+      yield* copyWorkflowSkillDirectory(
+        path.dirname(skillFile),
+        path.join(pluginRoot, "skills", skill.name),
+      );
+    }
+    return {
+      skills: input.workflowSkills.map((skill) => `${pluginName}:${skill.name}`),
+      plugins: [{ type: "local", path: pluginRoot, skipMcpDiscovery: true }],
+    };
+  });
+
   // Re-scan on every send: skills are added and switched off mid-session, and
   // the scan is a few directory reads. A skill switched off via skillOverrides,
   // or reserved for the agent with `user-invocable: false`, is left as prose:
@@ -2541,11 +2658,18 @@ export function makeClaudeAdapterV2(
     instanceId: adapterOptions.instanceId,
     driver: CLAUDE_PROVIDER,
     workflowSkillIsolation: "native",
+    workflowLocalSkillLoading: "native",
     getCapabilities: () => Effect.succeed(ClaudeProviderCapabilitiesV2),
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
     openSession: Effect.fn("ClaudeAdapterV2.openSession")(
       function* (input: ProviderAdapterV2OpenSessionInput) {
         const sessionScope = yield* Effect.scope;
+        const workflowPluginBase =
+          input.runtimePolicy.workflowSkills === undefined
+            ? null
+            : yield* fileSystem.makeTempDirectoryScoped({
+                prefix: "t3-claude-workflow-plugins-",
+              });
         const now = yield* DateTime.now;
         const session = providerSession({
           providerSessionId: input.providerSessionId,
@@ -5338,11 +5462,33 @@ export function makeClaudeAdapterV2(
               ? {}
               : { allowedTools: queryPolicy.allowedTools }),
           });
+          const workflowSkillOptions =
+            turnInput.runtimePolicy.workflowSkills === undefined
+              ? undefined
+              : turnInput.runtimePolicy.cwd === null
+                ? yield* new ProviderAdapterProtocolError({
+                    driver: CLAUDE_PROVIDER,
+                    detail: "A workspace is required to load verified workflow skills",
+                  })
+                : yield* prepareWorkflowSkillOptions({
+                    workflowSkills: turnInput.runtimePolicy.workflowSkills,
+                    cwd: turnInput.runtimePolicy.cwd,
+                    nativeThreadId,
+                    pluginBase:
+                      workflowPluginBase ??
+                      (yield* new ProviderAdapterProtocolError({
+                        driver: CLAUDE_PROVIDER,
+                        detail: "Claude workflow skill staging is unavailable for this session",
+                      })),
+                  });
           const queryPolicyKey = `${claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides)}\nworkflow-skills:${
-            turnInput.runtimePolicy.workflowSkillAllowlist === undefined
+            turnInput.runtimePolicy.workflowSkills === undefined
               ? "provider-defaults"
-              : turnInput.runtimePolicy.workflowSkillAllowlist
-                  .map((skill) => encodeURIComponent(skill))
+              : turnInput.runtimePolicy.workflowSkills
+                  .map(
+                    (skill) =>
+                      `${encodeURIComponent(skill.name)}@${encodeURIComponent(skill.relativePath)}`,
+                  )
                   .join(",")
           }`;
           const compiledSelection = compileClaudeModelSelection(turnInput.modelSelection);
@@ -5395,9 +5541,7 @@ export function makeClaudeAdapterV2(
                 attachmentsDir,
                 settings: adapterOptions.settings,
                 environment: adapterOptions.environment,
-                ...(turnInput.runtimePolicy.workflowSkillAllowlist === undefined
-                  ? {}
-                  : { skills: turnInput.runtimePolicy.workflowSkillAllowlist }),
+                ...(workflowSkillOptions === undefined ? {} : workflowSkillOptions),
                 tools: queryPolicy.tools ?? CLAUDE_CODE_PRESET_TOOLS,
                 ...mcpOverrides,
                 permissionMode: queryPolicy.permissionMode,

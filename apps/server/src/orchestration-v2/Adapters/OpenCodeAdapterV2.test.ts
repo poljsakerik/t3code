@@ -2075,14 +2075,16 @@ describe("OpenCodeAdapterV2", () => {
 
   it("hides and rejects every OpenCode skill outside the reviewer allowlist", () => {
     const rules = openCodePermissionRules(
-      runtimePolicy("full-access", { workflowSkillAllowlist: ["code-review"] }),
+      runtimePolicy("full-access", {
+        workflowSkills: [
+          { name: "code-review", relativePath: ".t3/agents/reviewer/skills/code-review/SKILL.md" },
+        ],
+      }),
     );
     assert.equal(skillAction(rules, "code-review"), "allow");
     assert.equal(skillAction(rules, "deploy"), "deny");
 
-    const noSkills = openCodePermissionRules(
-      runtimePolicy("full-access", { workflowSkillAllowlist: [] }),
-    );
+    const noSkills = openCodePermissionRules(runtimePolicy("full-access", { workflowSkills: [] }));
     assert.equal(skillAction(noSkills, "code-review"), "deny");
   });
 

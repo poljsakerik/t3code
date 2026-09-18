@@ -658,15 +658,15 @@ function withWorkflowSkillIsolation(
   runtimePolicy: ProviderAdapterV2RuntimePolicy,
   rules: PermissionRuleset,
 ): PermissionRuleset {
-  const allowlist = runtimePolicy.workflowSkillAllowlist;
-  return allowlist === undefined
+  const workflowSkills = runtimePolicy.workflowSkills;
+  return workflowSkills === undefined
     ? rules
     : [
         ...rules,
         { permission: "skill", pattern: "*", action: "deny" },
-        ...allowlist.map((skill) => ({
+        ...workflowSkills.map((skill) => ({
           permission: "skill",
-          pattern: skill,
+          pattern: skill.name,
           action: "allow" as const,
         })),
       ];

@@ -2,6 +2,7 @@ import {
   ProjectId,
   ResolvedWorkflowProfile,
   WorkflowConfigError,
+  WorkflowSkillName,
   type WorkflowProfileSummary,
   WorkflowProfileDefinition,
   type ResolvedWorkflowProfile as ResolvedWorkflowProfileType,
@@ -47,7 +48,9 @@ const configFile = /\.(?:ya?ml|json)$/i;
 const defaultRepositoryWorkflowsDirectory = ".t3/workflows";
 const decodeWorkflowProfileDefinition = Schema.decodeUnknownEffect(WorkflowProfileDefinition);
 const decodeResolvedWorkflowProfile = Schema.decodeUnknownEffect(ResolvedWorkflowProfile);
+const decodeWorkflowSkillName = Schema.decodeUnknownEffect(WorkflowSkillName);
 const isWorkflowConfigError = Schema.is(WorkflowConfigError);
+const skillFrontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 
 export const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -258,6 +261,7 @@ export const make = Effect.gen(function* () {
 
   const readAgentSkills = Effect.fn("WorkflowConfigService.readAgentSkills")(function* (input: {
     readonly directory: string;
+    readonly workspaceRoot: string;
     readonly hasSkills: boolean;
     readonly profileId: string;
   }) {
@@ -277,26 +281,76 @@ export const make = Effect.gen(function* () {
     return yield* Effect.forEach(
       names.toSorted(),
       Effect.fnUntraced(function* (name) {
-        const filePath = path.join(directory, name);
+        const skillDirectory = path.join(directory, name);
+        const realDirectory = yield* fs.realPath(skillDirectory).pipe(Effect.option);
+        if (Option.isNone(realDirectory) || realDirectory.value !== skillDirectory) {
+          return yield* new WorkflowConfigError({
+            profileId: input.profileId,
+            path: skillDirectory,
+            detail: "agent skill entries must not be symbolic links",
+          });
+        }
+        if ((yield* fs.stat(skillDirectory)).type !== "Directory") {
+          return yield* new WorkflowConfigError({
+            profileId: input.profileId,
+            path: skillDirectory,
+            detail: "verified workflow skills must be Eve-style directories containing SKILL.md",
+          });
+        }
+        const filePath = path.join(skillDirectory, "SKILL.md");
         const realPath = yield* fs.realPath(filePath).pipe(Effect.option);
         if (Option.isNone(realPath) || realPath.value !== filePath) {
           return yield* new WorkflowConfigError({
             profileId: input.profileId,
             path: filePath,
-            detail: "agent skill entries must not be symbolic links",
+            detail: "agent skill directories must contain a non-symbolic SKILL.md",
           });
         }
-        const info = yield* fs.stat(filePath);
-        if (info.type === "Directory") return name;
-        if (info.type === "File" && name.toLowerCase().endsWith(".md")) {
-          return name.slice(0, -3);
+        const contents = yield* fs.readFileString(filePath).pipe(
+          Effect.mapError(
+            (cause) =>
+              new WorkflowConfigError({
+                profileId: input.profileId,
+                path: filePath,
+                detail: "could not read agent skill definition",
+                cause,
+              }),
+          ),
+        );
+        const frontmatter = skillFrontmatter.exec(contents)?.[1];
+        const decoded =
+          frontmatter === undefined
+            ? undefined
+            : yield* Effect.try({
+                try: () => parse(frontmatter) as unknown,
+                catch: () => undefined,
+              });
+        const declaredName =
+          typeof decoded === "object" && decoded !== null
+            ? Reflect.get(decoded, "name")
+            : undefined;
+        const skillName = yield* decodeWorkflowSkillName(declaredName).pipe(
+          Effect.mapError(
+            (cause) =>
+              new WorkflowConfigError({
+                profileId: input.profileId,
+                path: filePath,
+                detail: "agent skill SKILL.md must declare a valid frontmatter name",
+                cause,
+              }),
+          ),
+        );
+        if (skillName !== name) {
+          return yield* new WorkflowConfigError({
+            profileId: input.profileId,
+            path: filePath,
+            detail: `agent skill frontmatter name ${skillName} must match its directory ${name}`,
+          });
         }
-        return yield* new WorkflowConfigError({
-          profileId: input.profileId,
-          path: filePath,
-          detail:
-            "verified workflow skills must be Markdown files or skill directories named for a native harness skill",
-        });
+        return {
+          name: skillName,
+          relativePath: path.relative(input.workspaceRoot, filePath).split(path.sep).join("/"),
+        };
       }),
     );
   });
@@ -412,13 +466,14 @@ export const make = Effect.gen(function* () {
         }
         const skills = yield* readAgentSkills({
           directory,
+          workspaceRoot: agents.workspaceRoot,
           hasSkills: definition.slots.includes("skills"),
           profileId: input.profileId,
         });
         if (stage !== "reviewer" && skills.length > 0) {
           return yield* new WorkflowConfigError({
             profileId: input.profileId,
-            detail: `agent ${agentId} cannot assign skills because only reviewers support skill allowlists`,
+            detail: `agent ${agentId} cannot assign skills because only reviewers support skill assignments`,
           });
         }
         return {

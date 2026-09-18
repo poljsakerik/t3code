@@ -75,8 +75,16 @@ it.layer(testLayer)("WorkflowConfigService", (it) => {
             "throw new Error('the Eve runtime must not execute');",
           ),
           writeYaml(
-            path.join(workspaceRoot, ".t3", "agents", "reviewer", "skills", "code-review.md"),
-            "The provider harness owns this skill's execution.",
+            path.join(
+              workspaceRoot,
+              ".t3",
+              "agents",
+              "reviewer",
+              "skills",
+              "code-review",
+              "SKILL.md",
+            ),
+            "---\nname: code-review\ndescription: Review code.\n---\n\nReview through the provider harness.",
           ),
           writeYaml(
             path.join(globalRoot, "profiles", "default.yaml"),
@@ -95,7 +103,12 @@ it.layer(testLayer)("WorkflowConfigService", (it) => {
       assert.equal(resolved.profile.planner.instructions, "Clarify the request.");
       assert.equal(resolved.profile.implementer.instructions, "Implement the plan.");
       assert.equal(resolved.profile.reviewers[0]?.name, "reviewer");
-      assert.deepEqual(resolved.profile.reviewers[0]?.skills, ["code-review"]);
+      assert.deepEqual(resolved.profile.reviewers[0]?.skills, [
+        {
+          name: "code-review",
+          relativePath: ".t3/agents/reviewer/skills/code-review/SKILL.md",
+        },
+      ]);
       assert.equal(resolved.profile.checks[0]?.timeoutMs, 600_000);
       assert.equal(resolved.profile.limits.maxRevisionCycles, 3);
     }).pipe(Effect.scoped),
@@ -154,8 +167,16 @@ it.layer(testLayer)("WorkflowConfigService", (it) => {
           writeAgent(workspaceRoot, "implementer", "Implement."),
           writeAgent(workspaceRoot, "reviewer", "Review."),
           writeYaml(
-            path.join(workspaceRoot, ".t3", "agents", "planner", "skills", "product-planning.md"),
-            "Plan products.",
+            path.join(
+              workspaceRoot,
+              ".t3",
+              "agents",
+              "planner",
+              "skills",
+              "product-planning",
+              "SKILL.md",
+            ),
+            "---\nname: product-planning\ndescription: Plan products.\n---\n\nPlan products.",
           ),
           writeYaml(
             path.join(root, "profiles", "invalid-skills.yaml"),
@@ -173,7 +194,7 @@ it.layer(testLayer)("WorkflowConfigService", (it) => {
       );
       assert.equal(result._tag, "Failure");
       if (result._tag === "Failure") {
-        assert.match(result.failure.detail, /only reviewers support skill allowlists/);
+        assert.match(result.failure.detail, /only reviewers support skill assignments/);
       }
     }).pipe(Effect.scoped),
   );

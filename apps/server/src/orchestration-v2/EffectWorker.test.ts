@@ -613,6 +613,63 @@ it.effect("keeps a max-attempt replay-safe failure terminal when fail settlement
   }),
 );
 
+it.effect("terminalizes a provider start before failing its exhausted outbox effect", () =>
+  Effect.gen(function* () {
+    const now = DateTime.formatIso(yield* DateTime.now);
+    const effectId = "effect:provider-start-exhausted";
+    const workerId = "worker-provider-start-exhausted";
+    const claimedEffect: OrchestrationEffectV2 = {
+      id: effectId,
+      commandId: CommandId.make("command:provider-start-exhausted"),
+      threadId: ThreadId.make("thread:provider-start-exhausted"),
+      request: { type: "provider-turn.start", runId: RunId.make("run:provider-start-exhausted") },
+      status: "running",
+      attemptCount: 5,
+      availableAt: now,
+      leaseOwner: workerId,
+      leaseExpiresAt: now,
+      createdAt: now,
+      updatedAt: now,
+      completedAt: null,
+      lastError: null,
+    };
+    const order = yield* Ref.make<ReadonlyArray<string>>([]);
+    const outboxLayer = Layer.mock(EffectOutboxV2)({
+      claimNext: () => Effect.succeed(Option.some(claimedEffect)),
+      get: () => Effect.succeed(Option.some(claimedEffect)),
+      awaitCancellation: () => Effect.never,
+      clearCancellation: () => Effect.void,
+      fail: () => Ref.update(order, (values) => [...values, "outbox-failed"]).pipe(Effect.as(true)),
+    });
+    const executorLayer = Layer.succeed(
+      OrchestrationEffectExecutorV2,
+      OrchestrationEffectExecutorV2.of({
+        execute: () =>
+          Effect.fail(
+            new OrchestrationEffectExecutionError({
+              effectId,
+              effectType: claimedEffect.request.type,
+              cause: "reviewer skill failed to load",
+            }),
+          ),
+        terminalizeFailure: () =>
+          Ref.update(order, (values) => [...values, "run-failed"]).pipe(Effect.asVoid),
+      }),
+    );
+    const workerLayer = effectWorkerLayerWithOptions({ workerId, maxAttempts: 5 }).pipe(
+      Layer.provide(Layer.merge(outboxLayer, executorLayer)),
+    );
+
+    const handled = yield* OrchestrationEffectWorkerV2.pipe(
+      Effect.flatMap((worker) => worker.runOnce),
+      Effect.provide(workerLayer),
+    );
+
+    assert.isTrue(handled);
+    assert.deepEqual(yield* Ref.get(order), ["run-failed", "outbox-failed"]);
+  }),
+);
+
 it.effect("uses durable deadlines, notifications, and a slow liveness poll", () =>
   Effect.gen(function* () {
     const attempts = yield* Ref.make(0);

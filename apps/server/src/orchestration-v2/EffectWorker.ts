@@ -70,6 +70,10 @@ export interface OrchestrationEffectExecutorV2Shape {
   readonly execute: (
     effect: OrchestrationEffectV2,
   ) => Effect.Effect<void, OrchestrationEffectExecutionError>;
+  readonly terminalizeFailure?: (
+    effect: OrchestrationEffectV2,
+    error: string,
+  ) => Effect.Effect<void, OrchestrationEffectExecutionError>;
 }
 
 export class OrchestrationEffectExecutorV2 extends Context.Service<
@@ -399,6 +403,26 @@ export const executorLayer: Layer.Layer<
               );
         }
       },
+      terminalizeFailure: (effect, error) => {
+        if (
+          effect.request.type !== "provider-turn.start" &&
+          effect.request.type !== "provider-turn.restart"
+        ) {
+          return Effect.void;
+        }
+        return providerTurnStart
+          .fail({ threadId: effect.threadId, runId: effect.request.runId, error })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestrationEffectExecutionError({
+                  effectId: effect.id,
+                  effectType: effect.request.type,
+                  cause,
+                }),
+            ),
+          );
+      },
     });
   }),
 );
@@ -623,9 +647,16 @@ export const layerWithOptions = (
                 .succeed({ effectId: effect.id, workerId })
                 .pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))
             : effect.attemptCount >= maxAttempts
-              ? yield* outbox
-                  .fail({ effectId: effect.id, workerId, error })
-                  .pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))
+              ? (effect.request.type !== "provider-turn.start" &&
+                  effect.request.type !== "provider-turn.restart") ||
+                executor.terminalizeFailure === undefined
+                ? yield* outbox
+                    .fail({ effectId: effect.id, workerId, error })
+                    .pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))
+                : yield* Effect.gen(function* () {
+                    yield* executor.terminalizeFailure?.(effect, error);
+                    return yield* outbox.fail({ effectId: effect.id, workerId, error });
+                  }).pipe(Effect.onError((cause) => requeueClaim(effect, cause)))
               : yield* outbox
                   .retry({
                     effectId: effect.id,

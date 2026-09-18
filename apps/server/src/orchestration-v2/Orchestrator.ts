@@ -197,16 +197,21 @@ export function isProposedPlanImplementable(input: {
   return input.workflowStatus === "planned" && input.planStatus === "completed";
 }
 
-function workflowSkillAllowlistsEqual(
-  left: ReadonlyArray<string> | undefined,
-  right: ReadonlyArray<string> | undefined,
+function workflowSkillsEqual(
+  left: ReadonlyArray<{ readonly name: string; readonly relativePath: string }> | undefined,
+  right: ReadonlyArray<{ readonly name: string; readonly relativePath: string }> | undefined,
 ): boolean {
   return (
     left === right ||
     (left !== undefined &&
       right !== undefined &&
       left.length === right.length &&
-      left.every((skill) => right.includes(skill)))
+      left.every((skill) =>
+        right.some(
+          (candidate) =>
+            candidate.name === skill.name && candidate.relativePath === skill.relativePath,
+        ),
+      ))
   );
 }
 
@@ -3751,7 +3756,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         projection = yield* getProjectionWithPendingEvents(command.threadId, events);
       }
       let workflowPromptPrefix = "";
-      const workflowSkillAllowlist = command.workflowSkillAllowlist;
+      const workflowSkills = command.workflowSkills;
       const workflow = projection.thread.workflow ?? null;
       if (workflow !== null && workflow.profile !== undefined) {
         if (workflow.status === "draft") {
@@ -3894,7 +3899,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: "Notifications must be server- or provider-created queued messages.",
         });
       }
-      if (workflowSkillAllowlist !== undefined) {
+      if (workflowSkills !== undefined) {
         const adapter = yield* providerAdapters.get(modelSelection.instanceId).pipe(
           Effect.mapError(
             (cause) =>
@@ -3909,7 +3914,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
             commandType: command.type,
-            cause: `Provider ${adapter.driver} cannot enforce an exclusive workflow skill allowlist.`,
+            cause: `Provider ${adapter.driver} cannot enforce an exclusive workflow skill set.`,
+          });
+        }
+        if (workflowSkills.length > 0 && adapter.workflowLocalSkillLoading !== "native") {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Provider ${adapter.driver} cannot load workspace-local Eve skills.`,
           });
         }
       }
@@ -4059,7 +4071,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         );
         if (
           targetRun !== undefined &&
-          !workflowSkillAllowlistsEqual(targetRun.workflowSkillAllowlist, workflowSkillAllowlist)
+          !workflowSkillsEqual(targetRun.workflowSkills, workflowSkills)
         ) {
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
@@ -4105,10 +4117,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             );
       const workflowSkillPolicyChanged =
         activeProviderThread !== undefined &&
-        !workflowSkillAllowlistsEqual(
-          activeProviderThreadRun?.workflowSkillAllowlist,
-          workflowSkillAllowlist,
-        );
+        !workflowSkillsEqual(activeProviderThreadRun?.workflowSkills, workflowSkills);
       const activeRun = projection.runs.find(isBlockingRun);
       const pendingMergeBackTransfers = pendingMergeBackTransfersForThread(projection);
       const shouldQueue =
@@ -4206,9 +4215,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ordinal,
           providerInstanceId: modelSelection.instanceId,
           modelSelection,
-          ...(workflowSkillAllowlist === undefined
-            ? {}
-            : { workflowSkillAllowlist: [...workflowSkillAllowlist] }),
+          ...(workflowSkills === undefined ? {} : { workflowSkills: [...workflowSkills] }),
           providerThreadId: queueProviderThread.id,
           userMessageId: command.messageId,
           rootNodeId,
@@ -4521,9 +4528,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ordinal,
           providerInstanceId: modelSelection.instanceId,
           modelSelection,
-          ...(workflowSkillAllowlist === undefined
-            ? {}
-            : { workflowSkillAllowlist: [...workflowSkillAllowlist] }),
+          ...(workflowSkills === undefined ? {} : { workflowSkills: [...workflowSkills] }),
           providerThreadId,
           userMessageId: command.messageId,
           rootNodeId,
@@ -4798,7 +4803,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
       const targetProviderThread = isProviderSwitch
-        ? workflowSkillAllowlist !== undefined
+        ? workflowSkills !== undefined
           ? undefined
           : canResumeAcrossInstances
             ? activeProviderThread
@@ -4849,7 +4854,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 providerInstanceId: modelSelection.instanceId,
                 capabilities,
                 sameProvider:
-                  workflowSkillAllowlist === undefined &&
+                  workflowSkills === undefined &&
                   pendingForkTransfer.sourceProviderInstanceId === modelSelection.instanceId,
                 hasStrongNativeSource: sourceProviderThread?.nativeThreadRef?.strength === "strong",
                 fromSpecificTurn: sourceRun !== null,
@@ -5198,9 +5203,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ordinal,
         providerInstanceId: modelSelection.instanceId,
         modelSelection,
-        ...(workflowSkillAllowlist === undefined
-          ? {}
-          : { workflowSkillAllowlist: [...workflowSkillAllowlist] }),
+        ...(workflowSkills === undefined ? {} : { workflowSkills: [...workflowSkills] }),
         providerThreadId: providerThread.id,
         userMessageId: command.messageId,
         rootNodeId,

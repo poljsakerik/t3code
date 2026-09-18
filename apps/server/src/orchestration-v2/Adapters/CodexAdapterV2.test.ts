@@ -557,24 +557,36 @@ describe("CodexAdapterV2 process spawning", () => {
   it("builds an exclusive per-thread Codex reviewer skill configuration", () => {
     assert.deepEqual(
       codexWorkflowSkillConfig(
-        ["review"],
+        [
+          {
+            name: "review",
+            relativePath: ".t3/agents/reviewer/skills/review/SKILL.md",
+          },
+        ],
         [
           { name: "review", path: "/skills/review/SKILL.md" },
           { name: "deploy", path: "/skills/deploy/SKILL.md" },
         ],
+        "/workspace",
       ),
       {
         skills: {
           config: [
-            { path: "/skills/review", enabled: true },
+            { path: "/skills/review", enabled: false },
             { path: "/skills/deploy", enabled: false },
+            { path: "/workspace/.t3/agents/reviewer/skills/review", enabled: true },
           ],
         },
       },
     );
     assert.throws(
-      () => codexWorkflowSkillConfig(["missing"], []),
-      /Assigned Codex reviewer skills are unavailable/,
+      () =>
+        codexWorkflowSkillConfig(
+          [{ name: "escape", relativePath: "../outside/SKILL.md" }],
+          [],
+          "/workspace",
+        ),
+      /escapes the workspace/,
     );
   });
 

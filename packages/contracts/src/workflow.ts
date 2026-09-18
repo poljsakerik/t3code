@@ -31,12 +31,24 @@ export const WorkflowSkillName = TrimmedNonEmptyString.check(
 );
 export type WorkflowSkillName = typeof WorkflowSkillName.Type;
 
+export const WorkflowSkill = Schema.Struct({
+  name: WorkflowSkillName,
+  relativePath: TrimmedNonEmptyString,
+});
+export type WorkflowSkill = typeof WorkflowSkill.Type;
+
 /** Frozen runtime snapshot resolved from an Eve-style agent folder. */
 export const ResolvedWorkflowAgent = Schema.Struct({
   id: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
-  skills: Schema.Array(WorkflowSkillName)
-    .check(Schema.isMaxLength(20), Schema.isUnique())
+  skills: Schema.Array(WorkflowSkill)
+    .check(
+      Schema.isMaxLength(20),
+      Schema.isUnique({
+        equivalence: (left: { readonly name: string }, right: { readonly name: string }) =>
+          left.name === right.name,
+      }),
+    )
     .pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   instructions: TrimmedNonEmptyString,
 });

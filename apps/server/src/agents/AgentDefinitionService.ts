@@ -1,7 +1,9 @@
+import * as NodeOS from "node:os";
 import {
   AgentDefinitionError,
   type AgentDefinition,
   type AgentDefinitionsListInput,
+  type AgentDefinitionsListResult,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -152,7 +154,7 @@ export class AgentDefinitionService extends Context.Service<
   {
     readonly list: (
       input: AgentDefinitionsListInput,
-    ) => Effect.Effect<ReadonlyArray<AgentDefinition>, AgentDefinitionError>;
+    ) => Effect.Effect<AgentDefinitionsListResult, AgentDefinitionError>;
   }
 >()("t3/agents/AgentDefinitionService") {}
 
@@ -164,16 +166,25 @@ export const layer = Layer.effect(
     const path = yield* Path.Path;
     const list = Effect.fn("AgentDefinitionService.list")(
       function* (input: AgentDefinitionsListInput) {
-        const project = yield* projects.getById({ projectId: input.projectId });
-        if (Option.isNone(project) || project.value.deletedAt !== null) {
-          return yield* new AgentDefinitionError({
-            message: `Project ${input.projectId} was not found.`,
-          });
+        const home = yield* fs.realPath(NodeOS.homedir());
+        let workspaceRoot = home;
+        if (input.projectId !== undefined) {
+          const project = yield* projects.getById({ projectId: input.projectId });
+          if (Option.isNone(project) || project.value.deletedAt !== null) {
+            return yield* new AgentDefinitionError({
+              message: `Project ${input.projectId} was not found.`,
+            });
+          }
+          workspaceRoot = yield* fs.realPath(project.value.workspaceRoot);
         }
-        return yield* discoverAgentDefinitions(project.value.workspaceRoot).pipe(
+        const agents = yield* discoverAgentDefinitions(workspaceRoot).pipe(
           Effect.provideService(FileSystem.FileSystem, fs),
           Effect.provideService(Path.Path, path),
         );
+        return {
+          scope: workspaceRoot === home ? ("global" as const) : ("project" as const),
+          agents,
+        };
       },
       Effect.mapError((cause) =>
         isAgentDefinitionError(cause)

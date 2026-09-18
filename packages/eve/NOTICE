@@ -6,3 +6,6 @@ This product includes software developed at Vercel, Inc.
 
 Agent-root filesystem classification copied and modified from vercel/eve
 commit 7973fa2d7d10e285737536672cfcfe64ceff37c8. See filesystem.ts for the source and modifications.
+
+Authored slot candidate collection copied and modified from vercel/eve
+commit 505601b3f448a20aecc133e5d132d70c2ec3ee35. See slots.ts for the source and modifications.

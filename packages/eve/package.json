@@ -4,6 +4,10 @@
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
+    "./slots": {
+      "types": "./src/slots.ts",
+      "import": "./src/slots.ts"
+    },
     "./filesystem": {
       "types": "./src/filesystem.ts",
       "import": "./src/filesystem.ts"

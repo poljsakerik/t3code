@@ -1,5 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { ModelSelection } from "./modelSelection.ts";
+import { AgentSkillName, ResolvedAgentDefinition } from "./agentDefinitions.ts";
 
 import {
   IsoDateTime,
@@ -25,20 +27,13 @@ export const WorkflowStatus = Schema.Literals([
 ]);
 export type WorkflowStatus = typeof WorkflowStatus.Type;
 
-export const WorkflowSkillName = TrimmedNonEmptyString.check(
-  Schema.isMaxLength(128),
-  Schema.isPattern(/^[A-Za-z][A-Za-z0-9:_-]*$/),
-);
+// Keep the workflow wire shape compatible with existing persisted snapshots.
+export const WorkflowSkillName = AgentSkillName;
 export type WorkflowSkillName = typeof WorkflowSkillName.Type;
-
-/** Frozen runtime snapshot resolved from an Eve-style agent folder. */
 export const ResolvedWorkflowAgent = Schema.Struct({
-  id: TrimmedNonEmptyString,
-  name: TrimmedNonEmptyString,
-  skills: Schema.Array(WorkflowSkillName)
-    .check(Schema.isMaxLength(20), Schema.isUnique())
-    .pipe(Schema.withDecodingDefault(Effect.succeed([]))),
-  instructions: TrimmedNonEmptyString,
+  ...ResolvedAgentDefinition.fields,
+  // Older persisted workflows predate agent-owned model selection.
+  modelSelection: Schema.optional(ModelSelection),
 });
 export type ResolvedWorkflowAgent = typeof ResolvedWorkflowAgent.Type;
 

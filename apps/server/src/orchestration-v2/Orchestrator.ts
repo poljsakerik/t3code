@@ -46,7 +46,6 @@ import {
   type OrchestrationV2TurnItem,
   orchestrationV2RunWorkStartedAt,
   ProviderInstanceId,
-  workflowAgentModelSelection,
   type ProviderSessionId,
   RunId,
   ThreadLinkedPullRequest,
@@ -2229,11 +2228,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 })
                 .pipe(mapDispatchError(command)),
           });
-    const workflowProfile = workflowConfig?.profile;
-    const plannerSelection =
-      (workflowProfile === undefined
-        ? undefined
-        : workflowAgentModelSelection(workflowProfile.planner)) ?? command.modelSelection;
+    const plannerSelection = command.modelSelection;
     const emitEvent = emit(events, command);
     const thread: OrchestrationV2AppThread = {
       createdBy: command.createdBy,
@@ -2495,9 +2490,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const reviewer = workflow.profile?.reviewers.find(
         (candidate) => candidate.id === review.reviewerId,
       );
-      const modelSelection =
-        (reviewer === undefined ? undefined : workflowAgentModelSelection(reviewer)) ??
-        projection.thread.modelSelection;
+      const modelSelection = projection.thread.modelSelection;
       const adapter = yield* providerAdapters.get(modelSelection.instanceId).pipe(
         Effect.mapError(
           (cause) =>
@@ -4907,7 +4900,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         projection = yield* getProjectionWithPendingEvents(command.threadId, events);
       }
       let workflowPromptPrefix = "";
-      let workflowModelSelection: ModelSelection | undefined;
       const workflowSkillAllowlist = command.workflowSkillAllowlist;
       const workflow = projection.thread.workflow ?? null;
       if (workflow !== null && workflow.profile !== undefined) {
@@ -4935,7 +4927,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             payload: thread,
           });
           projection = yield* getProjectionWithPendingEvents(command.threadId, events);
-          workflowModelSelection = workflowAgentModelSelection(workflow.profile.planner);
           workflowPromptPrefix = `${workflow.profile.planner.instructions}\n\nThis is the planning phase of a verified workflow. Clarify material choices with A/B/C options and finish with one proposed plan. Do not modify the workspace.\n\nUser request:\n`;
         } else if (
           (workflow.status === "planning" || workflow.status === "planned") &&
@@ -4952,9 +4943,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             terminalReason: null,
             updatedAt: DateTime.formatIso(now),
           };
-          const implementerSelection = workflowAgentModelSelection(workflow.profile.implementer);
-          const selected =
-            implementerSelection ?? command.modelSelection ?? projection.thread.modelSelection;
+          const selected = command.modelSelection ?? projection.thread.modelSelection;
           const thread: OrchestrationV2AppThread = {
             ...projection.thread,
             workflow: nextWorkflow,
@@ -4974,7 +4963,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             payload: thread,
           });
           projection = yield* getProjectionWithPendingEvents(command.threadId, events);
-          workflowModelSelection = implementerSelection;
           workflowPromptPrefix = `${workflow.profile.implementer.instructions}\n\nImplement the approved plan completely. T3 Code will run the configured deterministic checks and independent reviewers after this turn.\n\n`;
         } else if (
           workflow.status === "needs_human" &&
@@ -4992,12 +4980,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             terminalReason: null,
             updatedAt: DateTime.formatIso(now),
           };
-          const workflowAgent = resumesPlanning
-            ? workflow.profile.planner
-            : workflow.profile.implementer;
-          const resumedSelection = workflowAgentModelSelection(workflowAgent);
-          const selected =
-            resumedSelection ?? command.modelSelection ?? projection.thread.modelSelection;
+          const selected = command.modelSelection ?? projection.thread.modelSelection;
           const thread: OrchestrationV2AppThread = {
             ...projection.thread,
             workflow: nextWorkflow,
@@ -5017,14 +5000,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             payload: thread,
           });
           projection = yield* getProjectionWithPendingEvents(command.threadId, events);
-          workflowModelSelection = resumedSelection;
           workflowPromptPrefix = resumesPlanning
             ? `${workflow.profile.planner.instructions}\n\nThe planning phase required human guidance. Use the user's guidance, clarify any remaining material choices with A/B/C options, and finish with one proposed plan. Do not modify the workspace.\n\nUser guidance:\n`
             : `${workflow.profile.implementer.instructions}\n\nThe workflow required human guidance. Apply the user's guidance and finish the implementation; all deterministic checks and reviewers will run again.\n\nUser guidance:\n`;
         }
       }
-      const modelSelection =
-        workflowModelSelection ?? command.modelSelection ?? projection.thread.modelSelection;
+      const modelSelection = command.modelSelection ?? projection.thread.modelSelection;
       let dispatchMode = resolveMessageDispatchIntent(
         projection,
         command.dispatchMode,

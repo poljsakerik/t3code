@@ -11,8 +11,6 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
-import { ModelSelection } from "./modelSelection.ts";
-import { ProviderInstanceId } from "./providerInstance.ts";
 
 export const WorkflowStatus = Schema.Literals([
   "draft",
@@ -27,36 +25,22 @@ export const WorkflowStatus = Schema.Literals([
 ]);
 export type WorkflowStatus = typeof WorkflowStatus.Type;
 
-export const WorkflowAgentRole = Schema.Literals(["planner", "implementer", "reviewer"]);
-export type WorkflowAgentRole = typeof WorkflowAgentRole.Type;
-
 export const WorkflowSkillName = TrimmedNonEmptyString.check(
   Schema.isMaxLength(128),
   Schema.isPattern(/^[A-Za-z][A-Za-z0-9:_-]*$/),
 );
 export type WorkflowSkillName = typeof WorkflowSkillName.Type;
 
-export const WorkflowAgentDefinition = Schema.Struct({
-  version: Schema.Literal(1),
+/** Frozen runtime snapshot resolved from an Eve-style agent folder. */
+export const ResolvedWorkflowAgent = Schema.Struct({
   id: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
-  role: WorkflowAgentRole,
-  providerInstanceId: Schema.optional(ProviderInstanceId),
-  model: Schema.optional(TrimmedNonEmptyString),
   skills: Schema.Array(WorkflowSkillName)
     .check(Schema.isMaxLength(20), Schema.isUnique())
     .pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   instructions: TrimmedNonEmptyString,
 });
-export type WorkflowAgentDefinition = typeof WorkflowAgentDefinition.Type;
-
-export function workflowAgentModelSelection(
-  agent: WorkflowAgentDefinition,
-): ModelSelection | undefined {
-  return agent.providerInstanceId === undefined || agent.model === undefined
-    ? undefined
-    : { instanceId: agent.providerInstanceId, model: agent.model };
-}
+export type ResolvedWorkflowAgent = typeof ResolvedWorkflowAgent.Type;
 
 export const WorkflowCheckDefinition = Schema.Struct({
   id: TrimmedNonEmptyString,
@@ -111,9 +95,9 @@ export const ResolvedWorkflowProfile = Schema.Struct({
   version: Schema.Literal(1),
   id: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
-  planner: WorkflowAgentDefinition,
-  implementer: WorkflowAgentDefinition,
-  reviewers: Schema.Array(WorkflowAgentDefinition).check(Schema.isMinLength(1)),
+  planner: ResolvedWorkflowAgent,
+  implementer: ResolvedWorkflowAgent,
+  reviewers: Schema.Array(ResolvedWorkflowAgent).check(Schema.isMinLength(1)),
   checks: Schema.Array(WorkflowCheckDefinition).check(Schema.isMinLength(1)),
   limits: WorkflowLimits,
 });

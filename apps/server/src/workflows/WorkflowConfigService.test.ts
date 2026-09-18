@@ -51,8 +51,12 @@ function writeYaml(filePath: string, contents: string) {
   });
 }
 
+function writeAgent(workspaceRoot: string, name: string, instructions: string) {
+  return writeYaml(`${workspaceRoot}/.t3/agents/${name}/instructions.md`, instructions);
+}
+
 it.layer(testLayer)("WorkflowConfigService", (it) => {
-  it.effect("resolves a profile and applies repository agent overrides", () =>
+  it.effect("resolves a YAML profile from Eve-style project agent folders", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -60,29 +64,19 @@ it.layer(testLayer)("WorkflowConfigService", (it) => {
       const workflows = yield* WorkflowConfigService;
       const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-workspace-" });
       const globalRoot = path.join(config.stateDir, "workflows");
-      const repositoryWorkflowsRoot = path.join(workspaceRoot, "config", "workflows");
 
       yield* Effect.all(
         [
+          writeAgent(workspaceRoot, "planner", "Clarify the request."),
+          writeAgent(workspaceRoot, "implementer", "Implement the plan."),
+          writeAgent(workspaceRoot, "reviewer", "Review repository conventions."),
           writeYaml(
-            path.join(globalRoot, "agents", "planner.yaml"),
-            "version: 1\nid: planner\nname: Planner\nrole: planner\nproviderInstanceId: claude-work\nmodel: claude-opus-4-1\ninstructions: Clarify the request.\n",
+            path.join(workspaceRoot, ".t3", "agents", "planner", "agent.ts"),
+            "throw new Error('the Eve runtime must not execute');",
           ),
           writeYaml(
-            path.join(globalRoot, "agents", "implementer.yaml"),
-            "version: 1\nid: implementer\nname: Implementer\nrole: implementer\ninstructions: Implement the plan.\n",
-          ),
-          writeYaml(
-            path.join(globalRoot, "agents", "reviewer.yaml"),
-            "version: 1\nid: reviewer\nname: Reviewer\nrole: reviewer\ninstructions: Global review.\n",
-          ),
-          writeYaml(
-            path.join(repositoryWorkflowsRoot, "agents", "reviewer.yaml"),
-            "version: 1\nid: reviewer\nname: Repository reviewer\nrole: reviewer\nproviderInstanceId: codex-review\nmodel: gpt-5.6-sol\nskills: [code-review]\ninstructions: Review repository conventions.\n",
-          ),
-          fs.writeFileString(
-            path.join(workspaceRoot, "t3.json"),
-            '{ "workflowsDirectory": "config/workflows" }',
+            path.join(workspaceRoot, ".t3", "agents", "reviewer", "skills", "code-review.md"),
+            "The provider harness owns this skill's execution.",
           ),
           writeYaml(
             path.join(globalRoot, "profiles", "default.yaml"),
@@ -98,20 +92,16 @@ it.layer(testLayer)("WorkflowConfigService", (it) => {
       });
 
       assert.equal(resolved.workspaceRoot, workspaceRoot);
-      assert.equal(resolved.profile.reviewers[0]?.name, "Repository reviewer");
-      assert.equal(resolved.profile.planner.providerInstanceId, "claude-work");
-      assert.equal(resolved.profile.planner.model, "claude-opus-4-1");
-      assert.equal(resolved.profile.implementer.providerInstanceId, undefined);
-      assert.equal(resolved.profile.implementer.model, undefined);
-      assert.equal(resolved.profile.reviewers[0]?.providerInstanceId, "codex-review");
-      assert.equal(resolved.profile.reviewers[0]?.model, "gpt-5.6-sol");
+      assert.equal(resolved.profile.planner.instructions, "Clarify the request.");
+      assert.equal(resolved.profile.implementer.instructions, "Implement the plan.");
+      assert.equal(resolved.profile.reviewers[0]?.name, "reviewer");
       assert.deepEqual(resolved.profile.reviewers[0]?.skills, ["code-review"]);
       assert.equal(resolved.profile.checks[0]?.timeoutMs, 600_000);
       assert.equal(resolved.profile.limits.maxRevisionCycles, 3);
     }).pipe(Effect.scoped),
   );
 
-  it.effect("requires an agent to select a provider instance and model together", () =>
+  it.effect("rejects authored Eve tools instead of bypassing the provider harness", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -122,17 +112,12 @@ it.layer(testLayer)("WorkflowConfigService", (it) => {
 
       yield* Effect.all(
         [
+          writeAgent(workspaceRoot, "planner", "Plan."),
+          writeAgent(workspaceRoot, "implementer", "Implement."),
+          writeAgent(workspaceRoot, "reviewer", "Review."),
           writeYaml(
-            path.join(root, "agents", "planner.yaml"),
-            "version: 1\nid: planner\nname: Planner\nrole: planner\nproviderInstanceId: codex\ninstructions: Plan.\n",
-          ),
-          writeYaml(
-            path.join(root, "agents", "implementer.yaml"),
-            "version: 1\nid: implementer\nname: Implementer\nrole: implementer\ninstructions: Implement.\n",
-          ),
-          writeYaml(
-            path.join(root, "agents", "reviewer.yaml"),
-            "version: 1\nid: reviewer\nname: Reviewer\nrole: reviewer\ninstructions: Review.\n",
+            path.join(workspaceRoot, ".t3", "agents", "reviewer", "tools", "inspect.ts"),
+            "export default {};",
           ),
           writeYaml(
             path.join(root, "profiles", "invalid-selection.yaml"),
@@ -150,7 +135,7 @@ it.layer(testLayer)("WorkflowConfigService", (it) => {
       );
       assert.equal(result._tag, "Failure");
       if (result._tag === "Failure") {
-        assert.match(result.failure.detail, /must set both providerInstanceId and model/);
+        assert.match(result.failure.detail, /cannot run through the T3 provider harness/);
       }
     }).pipe(Effect.scoped),
   );
@@ -159,24 +144,18 @@ it.layer(testLayer)("WorkflowConfigService", (it) => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const config = yield* ServerConfig;
       const workflows = yield* WorkflowConfigService;
       const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-workspace-" });
-      const root = path.join(config.stateDir, "workflows");
+      const root = path.join((yield* ServerConfig).stateDir, "workflows");
 
       yield* Effect.all(
         [
+          writeAgent(workspaceRoot, "planner", "Plan."),
+          writeAgent(workspaceRoot, "implementer", "Implement."),
+          writeAgent(workspaceRoot, "reviewer", "Review."),
           writeYaml(
-            path.join(root, "agents", "planner.yaml"),
-            "version: 1\nid: planner\nname: Planner\nrole: planner\nskills: [product-planning]\ninstructions: Plan.\n",
-          ),
-          writeYaml(
-            path.join(root, "agents", "implementer.yaml"),
-            "version: 1\nid: implementer\nname: Implementer\nrole: implementer\ninstructions: Implement.\n",
-          ),
-          writeYaml(
-            path.join(root, "agents", "reviewer.yaml"),
-            "version: 1\nid: reviewer\nname: Reviewer\nrole: reviewer\nskills: [code-review]\ninstructions: Review.\n",
+            path.join(workspaceRoot, ".t3", "agents", "planner", "skills", "product-planning.md"),
+            "Plan products.",
           ),
           writeYaml(
             path.join(root, "profiles", "invalid-skills.yaml"),
@@ -203,21 +182,13 @@ it.layer(testLayer)("WorkflowConfigService", (it) => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const config = yield* ServerConfig;
       const workflows = yield* WorkflowConfigService;
       const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-workspace-" });
-      const root = path.join(config.stateDir, "workflows");
+      const root = path.join((yield* ServerConfig).stateDir, "workflows");
 
       yield* Effect.all(
-        [
-          ["planner", "planner"],
-          ["implementer", "implementer"],
-          ["reviewer", "reviewer"],
-        ].map(([id, role]) =>
-          writeYaml(
-            path.join(root, "agents", `${id}.yaml`),
-            `version: 1\nid: ${id}\nname: ${id}\nrole: ${role}\ninstructions: Do the job.\n`,
-          ),
+        ["planner", "implementer", "reviewer"].map((name) =>
+          writeAgent(workspaceRoot, name, "Do the job."),
         ),
         { discard: true },
       );
@@ -292,10 +263,7 @@ it.layer(Layer.fresh(testLayer))("workflow profile discovery", (it) => {
       ]);
 
       for (const role of ["planner", "implementer", "reviewer"]) {
-        yield* writeYaml(
-          path.join(workspaceRoot, "config", "workflows", "agents", `${role}.json`),
-          `{"version":1,"id":"${role}","name":"${role}","role":"${role}","instructions":"Do the job."}`,
-        );
+        yield* writeAgent(workspaceRoot, role, "Do the job.");
       }
       const resolved = yield* workflows.resolveProfile({ ...input, profileId: "shared" });
       assert.equal(resolved.profile.name, "Repository");

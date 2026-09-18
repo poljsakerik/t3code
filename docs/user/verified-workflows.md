@@ -22,17 +22,15 @@ The thread moves to **Needs human** when the revision limit is exhausted, the sa
 
 ## Configuration
 
-Workflow configuration is YAML or JSON and is read by the server that owns the project. Store machine-wide definitions below your T3 home:
+Workflow stages are YAML or JSON and are read by the server that owns the project. Store machine-wide profiles below your T3 home:
 
 ```text
-userdata/workflows/agents/*.{yaml,yml,json}
 userdata/workflows/profiles/*.{yaml,yml,json}
 ```
 
-A repository can override definitions with the same IDs:
+A repository can override profiles with the same IDs:
 
 ```text
-.t3/workflows/agents/*.{yaml,yml,json}
 .t3/workflows/profiles/*.{yaml,yml,json}
 ```
 
@@ -44,49 +42,33 @@ To use another checked-in directory, set its workspace-relative path in `t3.json
 }
 ```
 
-The selected directory must contain the same `agents` and `profiles` subdirectories and must remain inside the project root.
+The selected directory must contain a `profiles` subdirectory and must remain inside the project root.
 
-Agent files are persistent named roles. Omitting `providerInstanceId` and `model` makes the role inherit the thread's current model; set both to pin a role to a configured provider instance and model.
+Profiles reference project-local Eve-style agent folders by folder name (or by their `.t3`-relative catalog ID). Put the agent's prompt in `instructions.md`:
 
-```yaml
-# agents/planner.yaml
-version: 1
-id: planner
-name: Product planner
-role: planner
-providerInstanceId: claude-work
-model: claude-opus-4-1
-instructions: Clarify material choices and produce an implementable plan.
+```text
+.t3/
+  agents/
+    planner/
+      instructions.md
+    implementer/
+      instructions.md
+    correctness/
+      instructions.md
+      skills/
+        code-review.md
+        repository-conventions.md
 ```
 
-`providerInstanceId` is the provider instance shown in **Settings → Providers**, not merely the provider driver name. This means different agents can use different accounts or installations of the same provider. The model must belong to that instance.
+Workflow agents run through T3's configured provider harness and inherit the thread's selected provider instance and model. T3 does not run the Eve model runtime or make direct API calls from `agent.ts`; this preserves provider subscriptions, including Claude Code authentication.
 
-Planner and implementer roles use the provider's normal skill configuration. Reviewer roles accept a `skills` allowlist and receive only those skills in their model-facing catalog. An omitted or empty reviewer list means no skills. Non-empty skill lists are rejected on planner and implementer definitions.
+Planner and implementer roles use the provider's normal skill configuration. For a reviewer, each Markdown file or directory immediately below `skills/` names one native provider skill in its exclusive allowlist. The file contents are not executed by Eve. An omitted or empty directory means no skills. Non-empty skill directories are rejected on planner and implementer agents.
+
+Authored Eve tools, connections, hooks, extensions, sandbox configuration, and other executable capability slots are rejected for workflow agents. The provider harness remains responsible for tools and permissions. Markdown `instructions/` directories are supported; executable instruction modules are not.
 
 Reviewers use a fresh native provider thread with a portable summary of the implementation instead of inheriting a native thread that may already have loaded skills. Codex, Claude, and OpenCode currently expose the native controls needed to enforce this allowlist. Reviewer turns fail before starting on Cursor and Grok because those integrations do not expose an exclusive per-session skill control. T3 Code does not fall back to prompt instructions that leave the full skill catalog in context.
 
 Skill entries use the provider's canonical names. For example, a plugin that exposes one `impeccable` skill with a `critique` mode is assigned as `impeccable:impeccable`, even when its invocation is `/impeccable critique`. Codex fails the reviewer before sending its prompt when an assigned skill is unavailable. Claude passes the configured allowlist directly to its native skill filter without a separate availability preflight.
-
-```yaml
-# agents/implementer.yaml
-version: 1
-id: implementer
-name: Implementer
-role: implementer
-instructions: Implement the approved plan and address every gate failure.
-```
-
-```yaml
-# agents/correctness.yaml
-version: 1
-id: correctness
-name: Correctness reviewer
-role: reviewer
-skills:
-  - code-review
-  - repository-conventions
-instructions: Review correctness, regressions, and missing tests. Do not edit files.
-```
 
 Each configured profile appears in the command palette by name. For example:
 

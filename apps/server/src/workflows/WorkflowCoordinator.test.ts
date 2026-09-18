@@ -25,13 +25,11 @@ import { allWorkflowReviewsApprove, evaluateWorkflowFailure, live } from "./Work
 const encodeReview = Schema.encodeEffect(Schema.fromJsonString(WorkflowReview));
 
 const timestamp = "2026-08-25T12:00:00.000Z";
-const agent = (id: string, role: "planner" | "implementer" | "reviewer") => ({
-  version: 1 as const,
+const agent = (id: string) => ({
   id,
   name: id,
-  role,
   skills: [],
-  instructions: `Act as ${role}.`,
+  instructions: `Act as ${id}.`,
 });
 const workflow: ThreadWorkflowState = {
   profileId: "default",
@@ -40,9 +38,9 @@ const workflow: ThreadWorkflowState = {
     version: 1,
     id: "default",
     name: "Default",
-    planner: agent("planner", "planner"),
-    implementer: agent("implementer", "implementer"),
-    reviewers: [agent("correctness", "reviewer"), agent("maintainability", "reviewer")],
+    planner: agent("planner"),
+    implementer: agent("implementer"),
+    reviewers: [agent("correctness"), agent("maintainability")],
     checks: [{ id: "test", name: "Tests", run: "vp test", timeoutMs: 60_000 }],
     limits: { maxRevisionCycles: 3, identicalFailureLimit: 2 },
   },

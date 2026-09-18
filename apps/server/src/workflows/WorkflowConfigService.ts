@@ -1,12 +1,11 @@
 import {
   ProjectId,
   ResolvedWorkflowProfile,
-  WorkflowAgentDefinition,
   WorkflowConfigError,
   type WorkflowProfileSummary,
   WorkflowProfileDefinition,
   type ResolvedWorkflowProfile as ResolvedWorkflowProfileType,
-  type WorkflowAgentDefinition as WorkflowAgentDefinitionType,
+  type ResolvedWorkflowAgent,
   type WorkflowProfileDefinition as WorkflowProfileDefinitionType,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -18,6 +17,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { parse } from "yaml";
 
+import { discoverAgentDefinitions } from "../agents/AgentDefinitionService.ts";
 import { ServerConfig } from "../config.ts";
 import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
 import { T3ProjectFileLoader } from "../project/T3ProjectFileLoader.ts";
@@ -45,9 +45,9 @@ export class WorkflowConfigService extends Context.Service<
 
 const configFile = /\.(?:ya?ml|json)$/i;
 const defaultRepositoryWorkflowsDirectory = ".t3/workflows";
-const decodeWorkflowAgentDefinition = Schema.decodeUnknownEffect(WorkflowAgentDefinition);
 const decodeWorkflowProfileDefinition = Schema.decodeUnknownEffect(WorkflowProfileDefinition);
 const decodeResolvedWorkflowProfile = Schema.decodeUnknownEffect(ResolvedWorkflowProfile);
+const isWorkflowConfigError = Schema.is(WorkflowConfigError);
 
 export const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -174,6 +174,174 @@ export const make = Effect.gen(function* () {
     return profiles;
   });
 
+  const readAgentInstructions = Effect.fn("WorkflowConfigService.readAgentInstructions")(
+    function* (input: {
+      readonly directory: string;
+      readonly instructionPaths: ReadonlyArray<string>;
+      readonly profileId: string;
+    }) {
+      const parts: Array<string> = [];
+      for (const instructionPath of input.instructionPaths) {
+        const absolute = path.join(input.directory, path.basename(instructionPath));
+        if (instructionPath.toLowerCase().endsWith(".md")) {
+          parts.push(
+            yield* fs.readFileString(absolute).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new WorkflowConfigError({
+                    profileId: input.profileId,
+                    path: instructionPath,
+                    detail: "could not read agent instructions",
+                    cause,
+                  }),
+              ),
+            ),
+          );
+          continue;
+        }
+        if (path.basename(instructionPath) !== "instructions") {
+          return yield* new WorkflowConfigError({
+            profileId: input.profileId,
+            path: instructionPath,
+            detail:
+              "executable agent instructions cannot run in a verified workflow; use Markdown instructions",
+          });
+        }
+        const files = yield* fs.readDirectory(absolute).pipe(
+          Effect.mapError(
+            (cause) =>
+              new WorkflowConfigError({
+                profileId: input.profileId,
+                path: instructionPath,
+                detail: "could not read the agent instructions directory",
+                cause,
+              }),
+          ),
+        );
+        for (const file of files.toSorted()) {
+          if (!file.toLowerCase().endsWith(".md")) {
+            return yield* new WorkflowConfigError({
+              profileId: input.profileId,
+              path: path.join(instructionPath, file),
+              detail:
+                "executable agent instructions cannot run in a verified workflow; use Markdown instructions",
+            });
+          }
+          const filePath = path.join(absolute, file);
+          const realPath = yield* fs.realPath(filePath).pipe(Effect.option);
+          if (Option.isNone(realPath) || realPath.value !== filePath) {
+            return yield* new WorkflowConfigError({
+              profileId: input.profileId,
+              path: path.join(instructionPath, file),
+              detail: "agent instruction paths must not contain symbolic links",
+            });
+          }
+          if ((yield* fs.stat(filePath)).type === "File") {
+            parts.push(yield* fs.readFileString(filePath));
+          }
+        }
+      }
+      const instructions = parts
+        .filter((part) => part.trim().length > 0)
+        .join("\n\n")
+        .trim();
+      if (instructions.length === 0) {
+        return yield* new WorkflowConfigError({
+          profileId: input.profileId,
+          path: input.directory,
+          detail: "agent has no Markdown instructions",
+        });
+      }
+      return instructions;
+    },
+  );
+
+  const readAgentSkills = Effect.fn("WorkflowConfigService.readAgentSkills")(function* (input: {
+    readonly directory: string;
+    readonly hasSkills: boolean;
+    readonly profileId: string;
+  }) {
+    if (!input.hasSkills) return [];
+    const directory = path.join(input.directory, "skills");
+    const names = yield* fs.readDirectory(directory).pipe(
+      Effect.mapError(
+        (cause) =>
+          new WorkflowConfigError({
+            profileId: input.profileId,
+            path: directory,
+            detail: "could not read agent skills",
+            cause,
+          }),
+      ),
+    );
+    return yield* Effect.forEach(
+      names.toSorted(),
+      Effect.fnUntraced(function* (name) {
+        const filePath = path.join(directory, name);
+        const realPath = yield* fs.realPath(filePath).pipe(Effect.option);
+        if (Option.isNone(realPath) || realPath.value !== filePath) {
+          return yield* new WorkflowConfigError({
+            profileId: input.profileId,
+            path: filePath,
+            detail: "agent skill entries must not be symbolic links",
+          });
+        }
+        const info = yield* fs.stat(filePath);
+        if (info.type === "Directory") return name;
+        if (info.type === "File" && name.toLowerCase().endsWith(".md")) {
+          return name.slice(0, -3);
+        }
+        return yield* new WorkflowConfigError({
+          profileId: input.profileId,
+          path: filePath,
+          detail:
+            "verified workflow skills must be Markdown files or skill directories named for a native harness skill",
+        });
+      }),
+    );
+  });
+
+  const readAgents = Effect.fn("WorkflowConfigService.readAgents")(function* (input: {
+    readonly workspaceRoot: string;
+    readonly profileId: string;
+  }) {
+    const workspaceRoot = yield* fs.realPath(input.workspaceRoot).pipe(
+      Effect.mapError(
+        (cause) =>
+          new WorkflowConfigError({
+            profileId: input.profileId,
+            path: input.workspaceRoot,
+            detail: "could not resolve the project workspace",
+            cause,
+          }),
+      ),
+    );
+    const discovered = yield* discoverAgentDefinitions(input.workspaceRoot).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(Path.Path, path),
+      Effect.mapError(
+        (cause) =>
+          new WorkflowConfigError({
+            profileId: input.profileId,
+            path: path.join(input.workspaceRoot, ".t3"),
+            detail: "could not discover Eve-style agent folders",
+            cause,
+          }),
+      ),
+    );
+    const byName = new Map<string, Array<(typeof discovered)[number]>>();
+    for (const definition of discovered) {
+      const definitions = byName.get(definition.name) ?? [];
+      definitions.push(definition);
+      byName.set(definition.name, definitions);
+    }
+    return {
+      workspaceRoot,
+      byId: new Map(discovered.map((definition) => [definition.id, definition])),
+      byName,
+    };
+  });
+
   const listProfiles: WorkflowConfigServiceShape["listProfiles"] = Effect.fn(
     "WorkflowConfigService.listProfiles",
   )(function* (input) {
@@ -189,15 +357,6 @@ export const make = Effect.gen(function* () {
   )(function* (input) {
     const roots = yield* resolveRoots(input);
     const profiles = yield* readProfiles({ ...roots, profileId: input.profileId });
-    const agents = new Map<string, WorkflowAgentDefinitionType>();
-    for (const root of [roots.globalRoot, roots.repositoryRoot]) {
-      const definitions = yield* readDefinitions({
-        directory: path.join(root, "agents"),
-        decode: decodeWorkflowAgentDefinition,
-        profileId: input.profileId,
-      });
-      for (const agent of definitions) agents.set(agent.id, agent);
-    }
     const profile = profiles.get(input.profileId);
     if (profile === undefined) {
       return yield* new WorkflowConfigError({
@@ -205,37 +364,85 @@ export const make = Effect.gen(function* () {
         detail: `no workflow profile with id ${input.profileId} was found`,
       });
     }
+    const agents = yield* readAgents({
+      workspaceRoot: roots.workspaceRoot,
+      profileId: input.profileId,
+    });
 
-    const resolveAgent = (agentId: string, role: WorkflowAgentDefinitionType["role"]) => {
-      const agent = agents.get(agentId);
-      if (agent === undefined || agent.role !== role) {
+    const resolveAgent = (agentId: string, stage: "planner" | "implementer" | "reviewer") => {
+      const exact = agents.byId.get(agentId);
+      const named = agents.byName.get(agentId) ?? [];
+      if (exact === undefined && named.length > 1) {
         return Effect.fail(
           new WorkflowConfigError({
             profileId: input.profileId,
-            detail:
-              agent === undefined
-                ? `agent ${agentId} was not found`
-                : `agent ${agentId} has role ${agent.role}, expected ${role}`,
+            detail: `agent name ${agentId} is ambiguous; use its .t3-relative catalog id`,
           }),
         );
       }
-      if ((agent.providerInstanceId === undefined) !== (agent.model === undefined)) {
+      const definition = exact ?? named[0];
+      if (definition === undefined) {
         return Effect.fail(
           new WorkflowConfigError({
             profileId: input.profileId,
-            detail: `agent ${agentId} must set both providerInstanceId and model, or neither`,
+            detail: `agent ${agentId} was not found in the project's Eve-style .t3 agent folders`,
           }),
         );
       }
-      if (role !== "reviewer" && agent.skills.length > 0) {
-        return Effect.fail(
-          new WorkflowConfigError({
+      return Effect.gen(function* () {
+        const directory = path.join(agents.workspaceRoot, definition.directory);
+        for (const slot of definition.slots) {
+          if (["skills", "subagents"].includes(slot)) continue;
+          const entries = yield* fs
+            .readDirectory(path.join(directory, slot))
+            .pipe(
+              Effect.catchTag("PlatformError", (error) =>
+                error.reason._tag === "NotFound"
+                  ? Effect.succeed([] as Array<string>)
+                  : Effect.fail(error),
+              ),
+            );
+          if (entries.length > 0) {
+            return yield* new WorkflowConfigError({
+              profileId: input.profileId,
+              path: path.join(definition.directory, slot),
+              detail: `agent ${agentId} has an authored ${slot}/ capability, which cannot run through the T3 provider harness`,
+            });
+          }
+        }
+        const skills = yield* readAgentSkills({
+          directory,
+          hasSkills: definition.slots.includes("skills"),
+          profileId: input.profileId,
+        });
+        if (stage !== "reviewer" && skills.length > 0) {
+          return yield* new WorkflowConfigError({
             profileId: input.profileId,
             detail: `agent ${agentId} cannot assign skills because only reviewers support skill allowlists`,
+          });
+        }
+        return {
+          id: agentId,
+          name: definition.name,
+          skills,
+          instructions: yield* readAgentInstructions({
+            directory,
+            instructionPaths: definition.instructionPaths,
+            profileId: input.profileId,
           }),
-        );
-      }
-      return Effect.succeed(agent);
+        } satisfies ResolvedWorkflowAgent;
+      }).pipe(
+        Effect.mapError((cause) =>
+          isWorkflowConfigError(cause)
+            ? cause
+            : new WorkflowConfigError({
+                profileId: input.profileId,
+                path: definition.directory,
+                detail: `could not read agent ${agentId}`,
+                cause,
+              }),
+        ),
+      );
     };
 
     const planner = yield* resolveAgent(profile.planner, "planner");

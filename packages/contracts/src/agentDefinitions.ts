@@ -35,9 +35,14 @@ export const ResolvedAgentDefinition = Schema.Struct({
 });
 export type ResolvedAgentDefinition = typeof ResolvedAgentDefinition.Type;
 
-export const AgentDefinitionsListInput = Schema.Struct({ projectId: ProjectId });
+/** Omit projectId to discover agents in the environment's home directory. */
+export const AgentDefinitionsListInput = Schema.Struct({ projectId: Schema.optional(ProjectId) });
 export type AgentDefinitionsListInput = typeof AgentDefinitionsListInput.Type;
-export const AgentDefinitionsListResult = Schema.Array(AgentDefinition);
+export const AgentDefinitionsListResult = Schema.Struct({
+  scope: Schema.Literals(["global", "project"]),
+  agents: Schema.Array(AgentDefinition),
+});
+export type AgentDefinitionsListResult = typeof AgentDefinitionsListResult.Type;
 
 export class AgentDefinitionError extends Schema.TaggedError<AgentDefinitionError>()(
   "AgentDefinitionError",

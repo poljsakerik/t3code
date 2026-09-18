@@ -10,7 +10,7 @@ import type {
   WorkflowCheckResult,
   WorkflowReviewResult,
 } from "@t3tools/contracts";
-import { PlanId, RunId, ThreadId, WorkflowReview } from "@t3tools/contracts";
+import { ProviderInstanceId, PlanId, RunId, ThreadId, WorkflowReview } from "@t3tools/contracts";
 
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -30,6 +30,10 @@ const agent = (id: string) => ({
   name: id,
   skills: [],
   instructions: `Act as ${id}.`,
+  modelSelection: {
+    instanceId: ProviderInstanceId.make("claudeAgent"),
+    model: "claude-sonnet-4-6",
+  },
 });
 const workflow: ThreadWorkflowState = {
   profileId: "default",
@@ -266,8 +270,13 @@ for (const completedAtStartup of [false, true]) {
             if (verdict === "request_changes") {
               const repair = yield* Queue.take(commands);
               assert.equal(repair.type, "message.dispatch");
-              if (repair.type === "message.dispatch")
+              if (repair.type === "message.dispatch") {
                 assert.include(repair.text, "Repair the regression");
+                assert.deepEqual(
+                  repair.modelSelection,
+                  workflow.profile!.implementer.modelSelection,
+                );
+              }
             }
           }).pipe(Effect.provide(live.pipe(Layer.provide(Layer.mergeAll(threads, processes)))));
         }),

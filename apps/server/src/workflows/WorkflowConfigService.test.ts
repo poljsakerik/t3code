@@ -1,5 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ProjectId } from "@t3tools/contracts";
+import { ProjectId, ProviderInstanceId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -51,8 +51,22 @@ function writeYaml(filePath: string, contents: string) {
   });
 }
 
-function writeAgent(workspaceRoot: string, name: string, instructions: string) {
-  return writeYaml(`${workspaceRoot}/.t3/agents/${name}/instructions.md`, instructions);
+function writeAgent(
+  workspaceRoot: string,
+  name: string,
+  instructions: string,
+  model = "openai/gpt-5.4",
+) {
+  return Effect.all(
+    [
+      writeYaml(`${workspaceRoot}/.t3/agents/${name}/instructions.md`, instructions),
+      writeYaml(
+        `${workspaceRoot}/.t3/agents/${name}/agent.ts`,
+        `export default { model: ${JSON.stringify(model)} };`,
+      ),
+    ],
+    { discard: true },
+  );
 }
 
 it.layer(testLayer)("WorkflowConfigService", (it) => {
@@ -69,10 +83,11 @@ it.layer(testLayer)("WorkflowConfigService", (it) => {
         [
           writeAgent(workspaceRoot, "planner", "Clarify the request."),
           writeAgent(workspaceRoot, "implementer", "Implement the plan."),
-          writeAgent(workspaceRoot, "reviewer", "Review repository conventions."),
-          writeYaml(
-            path.join(workspaceRoot, ".t3", "agents", "planner", "agent.ts"),
-            "throw new Error('the Eve runtime must not execute');",
+          writeAgent(
+            workspaceRoot,
+            "reviewer",
+            "Review repository conventions.",
+            "anthropic/claude-sonnet-4-6",
           ),
           writeYaml(
             path.join(workspaceRoot, ".t3", "agents", "reviewer", "skills", "code-review.md"),
@@ -93,9 +108,18 @@ it.layer(testLayer)("WorkflowConfigService", (it) => {
 
       assert.equal(resolved.workspaceRoot, workspaceRoot);
       assert.equal(resolved.profile.planner.instructions, "Clarify the request.");
+      assert.deepEqual(resolved.profile.planner.modelSelection, {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.4",
+      });
+      assert.equal(resolved.profile.reviewers[0]?.id, ".t3/agents/reviewer");
       assert.equal(resolved.profile.implementer.instructions, "Implement the plan.");
       assert.equal(resolved.profile.reviewers[0]?.name, "reviewer");
       assert.deepEqual(resolved.profile.reviewers[0]?.skills, ["code-review"]);
+      assert.deepEqual(resolved.profile.reviewers[0]?.modelSelection, {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "claude-sonnet-4-6",
+      });
       assert.equal(resolved.profile.checks[0]?.timeoutMs, 600_000);
       assert.equal(resolved.profile.limits.maxRevisionCycles, 3);
     }).pipe(Effect.scoped),
@@ -194,7 +218,7 @@ it.layer(testLayer)("WorkflowConfigService", (it) => {
       );
       yield* writeYaml(
         path.join(root, "profiles", "duplicate.yaml"),
-        "version: 1\nid: duplicate\nname: Duplicate\nplanner: planner\nimplementer: implementer\nreviewers: [reviewer, reviewer]\nchecks:\n  - id: test\n    name: Tests\n    run: test-command\nlimits:\n  maxRevisionCycles: 3\n  identicalFailureLimit: 2\n",
+        "version: 1\nid: duplicate\nname: Duplicate\nplanner: planner\nimplementer: implementer\nreviewers: [reviewer, .t3/agents/reviewer]\nchecks:\n  - id: test\n    name: Tests\n    run: test-command\nlimits:\n  maxRevisionCycles: 3\n  identicalFailureLimit: 2\n",
       );
 
       const result = yield* Effect.result(

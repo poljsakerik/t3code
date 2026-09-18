@@ -331,7 +331,8 @@ export const live = Layer.effectDiscard(
         ),
         text: `${profile.implementer.instructions}\n\n${revisionFeedback({ checks: input.checks, reviews: input.reviews })}`,
         attachments: [],
-        modelSelection: input.projection.thread.modelSelection,
+        modelSelection:
+          profile.implementer.modelSelection ?? input.projection.thread.modelSelection,
         dispatchMode: { type: "start_immediately" },
         messageKind: "workflow_instruction",
         createdBy: "system",
@@ -362,7 +363,7 @@ export const live = Layer.effectDiscard(
           planMarkdown: input.planMarkdown,
         }),
         attachments: [],
-        modelSelection: input.projection.thread.modelSelection,
+        modelSelection: input.reviewer.modelSelection ?? input.projection.thread.modelSelection,
         workflowSkillAllowlist: input.reviewer.skills,
         dispatchMode: { type: "start_immediately" },
         createdBy: "agent",

@@ -1,4 +1,7 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+
+import { ModelSelection } from "./modelSelection.ts";
 
 import { ProjectId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
@@ -13,6 +16,24 @@ export const AgentDefinition = Schema.Struct({
   slots: Schema.Array(TrimmedNonEmptyString),
 });
 export type AgentDefinition = typeof AgentDefinition.Type;
+
+/** Native harness skill names, never executable Eve capabilities. */
+export const AgentSkillName = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(128),
+  Schema.isPattern(/^[A-Za-z][A-Za-z0-9:_-]*$/),
+);
+
+/** Frozen, provider-independent input to T3's agent harnesses. */
+export const ResolvedAgentDefinition = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  skills: Schema.Array(AgentSkillName)
+    .check(Schema.isMaxLength(20), Schema.isUnique())
+    .pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  instructions: TrimmedNonEmptyString,
+  modelSelection: ModelSelection,
+});
+export type ResolvedAgentDefinition = typeof ResolvedAgentDefinition.Type;
 
 export const AgentDefinitionsListInput = Schema.Struct({ projectId: ProjectId });
 export type AgentDefinitionsListInput = typeof AgentDefinitionsListInput.Type;

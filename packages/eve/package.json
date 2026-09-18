@@ -1,0 +1,15 @@
+{
+  "name": "@t3tools/eve",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    "./filesystem": {
+      "types": "./src/filesystem.ts",
+      "import": "./src/filesystem.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}

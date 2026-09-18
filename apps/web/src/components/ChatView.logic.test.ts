@@ -486,14 +486,14 @@ describe("shouldShowPlanFollowUpPrompt", () => {
     expect(shouldShowPlanFollowUpPrompt({ ...base, hasComposerAttachments: true })).toBe(false);
   });
 
-  it("allows approval of a planned workflow with general plan mode disabled", () => {
+  it.each([
+    { planModeEnabled: false, provider: { showInteractionModeToggle: true } },
+    { planModeEnabled: true, provider: { showInteractionModeToggle: false } },
+  ])("allows workflow plan actions when legacy plan controls are disabled: %j", (settings) => {
     const plannedWorkflow = {
       ...base,
-      interactionMode: resolveEffectiveInteractionMode({
-        planModeEnabled: false,
-        composerInteractionMode: null,
-        threadInteractionMode: "plan",
-      }),
+      interactionMode: resolveComposerInteractionMode({ ...settings, interactionMode: "plan" })
+        .interactionMode,
       workflowStatus: "planned" as const,
     };
     expect(shouldShowPlanFollowUpPrompt(plannedWorkflow)).toBe(true);

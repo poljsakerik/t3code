@@ -329,7 +329,14 @@ import {
   WorkflowListProfilesResult,
 } from "./workflow.ts";
 
+import {
+  AgentDefinitionError,
+  AgentDefinitionsListInput,
+  AgentDefinitionsListResult,
+} from "./agentDefinitions.ts";
+
 export const WS_METHODS = {
+  agentDefinitionsList: "agentDefinitions.list",
   workflowsListProfiles: "workflows.listProfiles",
   // Project registry methods
   projectsList: "projects.list",
@@ -1096,6 +1103,12 @@ const WsProjectsSearchContentsRpc = Rpc.make(WS_METHODS.projectsSearchContents, 
   error: Schema.Union([ProjectSearchContentsError, EnvironmentAuthorizationError]),
 });
 
+const WsAgentDefinitionsListRpc = Rpc.make(WS_METHODS.agentDefinitionsList, {
+  payload: AgentDefinitionsListInput,
+  success: AgentDefinitionsListResult,
+  error: Schema.Union([AgentDefinitionError, EnvironmentAuthorizationError]),
+});
+
 const WsWorkflowsListProfilesRpc = Rpc.make(WS_METHODS.workflowsListProfiles, {
   payload: WorkflowListProfilesInput,
   success: WorkflowListProfilesResult,
@@ -1730,6 +1743,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeProjectClonesRpc,
   WsProjectsListEntriesRpc,
   WsWorkflowsListProfilesRpc,
+  WsAgentDefinitionsListRpc,
   WsProjectsReadFileRpc,
   WsProjectsSearchContentsRpc,
   WsProjectsSearchEntriesRpc,

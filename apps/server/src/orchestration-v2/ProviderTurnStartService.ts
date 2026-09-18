@@ -41,11 +41,11 @@ import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
 
 export function providerRuntimePolicyForRun(
   base: ProviderAdapterV2RuntimePolicy,
-  run: Pick<OrchestrationV2Run, "workflowSkills">,
+  run: Pick<OrchestrationV2Run, "agentSkills">,
 ): ProviderAdapterV2RuntimePolicy {
   return ProviderAdapterV2RuntimePolicy.make({
     ...base,
-    ...(run.workflowSkills === undefined ? {} : { workflowSkills: [...run.workflowSkills] }),
+    ...(run.agentSkills === undefined ? {} : { agentSkills: [...run.agentSkills] }),
   });
 }
 

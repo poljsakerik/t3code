@@ -103,7 +103,7 @@ const CLAUDE_TEST_RUNTIME_POLICY = ProviderAdapterV2RuntimePolicy.make({
   cwd: "/workspace",
 });
 
-describe("Claude reviewer skill isolation", () => {
+describe("Claude agent skill isolation", () => {
   it.effect("starts without waiting for Claude's init inventory", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -165,7 +165,7 @@ describe("Claude reviewer skill isolation", () => {
           runtimeMode: "full-access",
           interactionMode: "plan",
           cwd: workspace,
-          workflowSkills: [
+          agentSkills: [
             {
               name: "impeccable",
               relativePath: ".t3/agents/design/skills/impeccable/SKILL.md",
@@ -200,18 +200,18 @@ describe("Claude reviewer skill isolation", () => {
 
         assert.lengthOf(offeredMessages, 1);
         assert.deepEqual(openedInput?.options.skills, [
-          "t3-workflow-native-thread-claude-reviewer-skills:impeccable",
+          "t3-agent-native-thread-claude-reviewer-skills:impeccable",
         ]);
+        const pluginPath = openedInput?.options.plugins?.[0]?.path;
+        if (pluginPath === undefined) assert.fail("Claude agent plugin was not staged");
         assert.deepEqual(openedInput?.options.plugins, [
           {
             type: "local",
-            path: openedInput?.options.plugins?.[0]?.path,
+            path: pluginPath,
             skipMcpDiscovery: true,
           },
         ]);
-        const pluginPath = openedInput?.options.plugins?.[0]?.path;
-        if (pluginPath === undefined) assert.fail("Claude workflow plugin was not staged");
-        assert.equal(path.basename(pluginPath), "t3-workflow-native-thread-claude-reviewer-skills");
+        assert.equal(path.basename(pluginPath), "t3-agent-native-thread-claude-reviewer-skills");
         assert.equal(
           yield* fileSystem.readFileString(
             path.join(pluginPath, "skills", "impeccable", "SKILL.md"),

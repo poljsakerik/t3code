@@ -197,7 +197,7 @@ export function isProposedPlanImplementable(input: {
   return input.workflowStatus === "planned" && input.planStatus === "completed";
 }
 
-function workflowSkillsEqual(
+function agentSkillsEqual(
   left: ReadonlyArray<{ readonly name: string; readonly relativePath: string }> | undefined,
   right: ReadonlyArray<{ readonly name: string; readonly relativePath: string }> | undefined,
 ): boolean {
@@ -3756,7 +3756,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         projection = yield* getProjectionWithPendingEvents(command.threadId, events);
       }
       let workflowPromptPrefix = "";
-      const workflowSkills = command.workflowSkills;
+      const agentSkills = command.agentSkills;
       const workflow = projection.thread.workflow ?? null;
       if (workflow !== null && workflow.profile !== undefined) {
         if (workflow.status === "draft") {
@@ -3899,7 +3899,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: "Notifications must be server- or provider-created queued messages.",
         });
       }
-      if (workflowSkills !== undefined) {
+      if (agentSkills !== undefined) {
         const adapter = yield* providerAdapters.get(modelSelection.instanceId).pipe(
           Effect.mapError(
             (cause) =>
@@ -3910,14 +3910,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               }),
           ),
         );
-        if (adapter.workflowSkillIsolation !== "native") {
+        if (adapter.agentSkillIsolation !== "native") {
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
             commandType: command.type,
-            cause: `Provider ${adapter.driver} cannot enforce an exclusive workflow skill set.`,
+            cause: `Provider ${adapter.driver} cannot enforce an exclusive agent skill set.`,
           });
         }
-        if (workflowSkills.length > 0 && adapter.workflowLocalSkillLoading !== "native") {
+        if (agentSkills.length > 0 && adapter.agentLocalSkillLoading !== "native") {
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
             commandType: command.type,
@@ -4069,15 +4069,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const targetRun = projection.runs.find(
           (candidate) => candidate.id === dispatchMode.targetRunId,
         );
-        if (
-          targetRun !== undefined &&
-          !workflowSkillsEqual(targetRun.workflowSkills, workflowSkills)
-        ) {
+        if (targetRun !== undefined && !agentSkillsEqual(targetRun.agentSkills, agentSkills)) {
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
             commandType: command.type,
             cause:
-              "A workflow skill policy change requires a fresh provider thread and cannot steer or restart an active turn.",
+              "A agent skill policy change requires a fresh provider thread and cannot steer or restart an active turn.",
           });
         }
         yield* dispatchSteerIntoRun({
@@ -4115,9 +4112,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : projection.runs.findLast(
               (candidate) => candidate.providerThreadId === activeProviderThread.id,
             );
-      const workflowSkillPolicyChanged =
+      const agentSkillPolicyChanged =
         activeProviderThread !== undefined &&
-        !workflowSkillsEqual(activeProviderThreadRun?.workflowSkills, workflowSkills);
+        !agentSkillsEqual(activeProviderThreadRun?.agentSkills, agentSkills);
       const activeRun = projection.runs.find(isBlockingRun);
       const pendingMergeBackTransfers = pendingMergeBackTransfersForThread(projection);
       const shouldQueue =
@@ -4126,7 +4123,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           dispatchMode.type === "start_immediately" ||
           dispatchMode.type === "queue_after_active");
       if (shouldQueue) {
-        if (workflowSkillPolicyChanged) {
+        if (agentSkillPolicyChanged) {
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
             commandType: command.type,
@@ -4215,7 +4212,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ordinal,
           providerInstanceId: modelSelection.instanceId,
           modelSelection,
-          ...(workflowSkills === undefined ? {} : { workflowSkills: [...workflowSkills] }),
+          ...(agentSkills === undefined ? {} : { agentSkills: [...agentSkills] }),
           providerThreadId: queueProviderThread.id,
           userMessageId: command.messageId,
           rootNodeId,
@@ -4397,8 +4394,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         activeProviderThread !== undefined &&
         activeProviderThread.providerInstanceId !== modelSelection.instanceId;
       const isProviderSwitch =
-        activeProviderThread !== undefined &&
-        (providerInstanceChanged || workflowSkillPolicyChanged);
+        activeProviderThread !== undefined && (providerInstanceChanged || agentSkillPolicyChanged);
       // Account overlays share native history. Selection commands may already
       // have updated the app thread, so classify against the native thread's owner.
       const canResumeAcrossInstances =
@@ -4528,7 +4524,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ordinal,
           providerInstanceId: modelSelection.instanceId,
           modelSelection,
-          ...(workflowSkills === undefined ? {} : { workflowSkills: [...workflowSkills] }),
+          ...(agentSkills === undefined ? {} : { agentSkills: [...agentSkills] }),
           providerThreadId,
           userMessageId: command.messageId,
           rootNodeId,
@@ -4803,7 +4799,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
       const targetProviderThread = isProviderSwitch
-        ? workflowSkills !== undefined
+        ? agentSkills !== undefined
           ? undefined
           : canResumeAcrossInstances
             ? activeProviderThread
@@ -4854,7 +4850,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 providerInstanceId: modelSelection.instanceId,
                 capabilities,
                 sameProvider:
-                  workflowSkills === undefined &&
+                  agentSkills === undefined &&
                   pendingForkTransfer.sourceProviderInstanceId === modelSelection.instanceId,
                 hasStrongNativeSource: sourceProviderThread?.nativeThreadRef?.strength === "strong",
                 fromSpecificTurn: sourceRun !== null,
@@ -5203,7 +5199,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ordinal,
         providerInstanceId: modelSelection.instanceId,
         modelSelection,
-        ...(workflowSkills === undefined ? {} : { workflowSkills: [...workflowSkills] }),
+        ...(agentSkills === undefined ? {} : { agentSkills: [...agentSkills] }),
         providerThreadId: providerThread.id,
         userMessageId: command.messageId,
         rootNodeId,

@@ -654,17 +654,17 @@ const OPENCODE_RESTRICTED_PERMISSIONS = [
   "doom_loop",
 ] as const;
 
-function withWorkflowSkillIsolation(
+function withAgentSkillIsolation(
   runtimePolicy: ProviderAdapterV2RuntimePolicy,
   rules: PermissionRuleset,
 ): PermissionRuleset {
-  const workflowSkills = runtimePolicy.workflowSkills;
-  return workflowSkills === undefined
+  const agentSkills = runtimePolicy.agentSkills;
+  return agentSkills === undefined
     ? rules
     : [
         ...rules,
         { permission: "skill", pattern: "*", action: "deny" },
-        ...workflowSkills.map((skill) => ({
+        ...agentSkills.map((skill) => ({
           permission: "skill",
           pattern: skill.name,
           action: "allow" as const,
@@ -697,7 +697,7 @@ export function openCodePermissionRules(
     sandboxType === undefined && runtimePolicy.runtimeMode === "full-access";
 
   if (!requiresApproval && (externallySandboxed || dangerFullAccess || implicitFullAccess)) {
-    return withWorkflowSkillIsolation(runtimePolicy, [
+    return withAgentSkillIsolation(runtimePolicy, [
       { permission: "*", pattern: "*", action: "allow" },
     ]);
   }
@@ -770,7 +770,7 @@ export function openCodePermissionRules(
     }
   }
 
-  return withWorkflowSkillIsolation(runtimePolicy, rules);
+  return withAgentSkillIsolation(runtimePolicy, rules);
 }
 
 function permissionRuleEquals(
@@ -1009,7 +1009,7 @@ export function makeOpenCodeAdapterV2(options: OpenCodeAdapterV2Options): Provid
   return ProviderAdapterV2.of({
     instanceId: options.instanceId,
     driver: OPENCODE_PROVIDER,
-    workflowSkillIsolation: "native",
+    agentSkillIsolation: "native",
     getCapabilities: () => Effect.succeed(OpenCodeProviderCapabilitiesV2),
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
     openSession: Effect.fn("OpenCodeAdapterV2.openSession")(

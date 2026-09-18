@@ -1,7 +1,9 @@
 import {
   AgentDefinitionError,
+  AgentSkillName,
   type AgentDefinition,
   type AgentDefinitionsListInput,
+  type ResolvedAgentDefinition,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -11,6 +13,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import type { PlatformError } from "effect/PlatformError";
+import { parse } from "yaml";
 import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
 
 const isAgentDefinitionError = Schema.is(AgentDefinitionError);
@@ -24,6 +27,8 @@ import {
 
 const entryType = (type: string): DirectoryEntryType =>
   type === "File" ? "file" : type === "Directory" ? "directory" : "other";
+const decodeAgentSkillName = Schema.decodeUnknownEffect(AgentSkillName);
+const skillFrontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 /** Reads source locations only. Discovering an agent must never execute its TypeScript. */
 export const discoverAgentDefinitions = Effect.fn("discoverAgentDefinitions")(
   function* (workspaceRoot: string) {
@@ -144,6 +149,148 @@ export const discoverAgentDefinitions = Effect.fn("discoverAgentDefinitions")(
   Effect.mapError(
     (cause) =>
       new AgentDefinitionError({ message: "Could not discover agent definitions.", cause }),
+  ),
+);
+
+/** Loads authored Markdown instructions and Eve skill declarations before provider selection. */
+export const resolveAgentDefinitions = Effect.fn("resolveAgentDefinitions")(
+  function* (workspaceRoot: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const projectRoot = yield* fs.realPath(workspaceRoot);
+    const definitions = yield* discoverAgentDefinitions(projectRoot);
+
+    const readInstructions = Effect.fn("AgentDefinitionService.readInstructions")(function* (
+      definition: AgentDefinition,
+    ) {
+      const directory = path.join(projectRoot, definition.directory);
+      const parts: Array<string> = [];
+      for (const instructionPath of definition.instructionPaths) {
+        const absolute = path.join(projectRoot, instructionPath);
+        if (instructionPath.toLowerCase().endsWith(".md")) {
+          parts.push(yield* fs.readFileString(absolute));
+          continue;
+        }
+        if (path.basename(instructionPath) !== "instructions") {
+          return yield* new AgentDefinitionError({
+            message: "Executable agent instructions are not supported; use Markdown instructions.",
+            path: instructionPath,
+          });
+        }
+        for (const file of (yield* fs.readDirectory(absolute)).toSorted()) {
+          if (!file.toLowerCase().endsWith(".md")) {
+            return yield* new AgentDefinitionError({
+              message:
+                "Executable agent instructions are not supported; use Markdown instructions.",
+              path: path.join(instructionPath, file),
+            });
+          }
+          const filePath = path.join(absolute, file);
+          const realPath = yield* fs.realPath(filePath).pipe(Effect.option);
+          if (Option.isNone(realPath) || realPath.value !== filePath) {
+            return yield* new AgentDefinitionError({
+              message: "Agent instruction paths must not contain symbolic links.",
+              path: path.join(instructionPath, file),
+            });
+          }
+          if ((yield* fs.stat(filePath)).type === "File") {
+            parts.push(yield* fs.readFileString(filePath));
+          }
+        }
+      }
+      const instructions = parts
+        .filter((part) => part.trim().length > 0)
+        .join("\n\n")
+        .trim();
+      if (instructions.length === 0) {
+        return yield* new AgentDefinitionError({
+          message: "Agent has no Markdown instructions.",
+          path: directory,
+        });
+      }
+      return instructions;
+    });
+
+    const readSkills = Effect.fn("AgentDefinitionService.readSkills")(function* (
+      definition: AgentDefinition,
+    ) {
+      if (!definition.slots.includes("skills")) return [];
+      const directory = path.join(projectRoot, definition.directory, "skills");
+      const names = yield* fs.readDirectory(directory);
+      return yield* Effect.forEach(
+        names.toSorted(),
+        Effect.fnUntraced(function* (name) {
+          const skillDirectory = path.join(directory, name);
+          const realDirectory = yield* fs.realPath(skillDirectory).pipe(Effect.option);
+          if (
+            Option.isNone(realDirectory) ||
+            realDirectory.value !== skillDirectory ||
+            (yield* fs.stat(skillDirectory)).type !== "Directory"
+          ) {
+            return yield* new AgentDefinitionError({
+              message: "Agent skills must be non-symbolic Eve-style directories.",
+              path: skillDirectory,
+            });
+          }
+          const filePath = path.join(skillDirectory, "SKILL.md");
+          const realPath = yield* fs.realPath(filePath).pipe(Effect.option);
+          if (Option.isNone(realPath) || realPath.value !== filePath) {
+            return yield* new AgentDefinitionError({
+              message: "Agent skill directories must contain a non-symbolic SKILL.md.",
+              path: filePath,
+            });
+          }
+          const contents = yield* fs.readFileString(filePath);
+          const frontmatter = skillFrontmatter.exec(contents)?.[1];
+          const decoded =
+            frontmatter === undefined
+              ? undefined
+              : yield* Effect.try({
+                  try: () => parse(frontmatter) as unknown,
+                  catch: () => undefined,
+                });
+          const declaredName =
+            typeof decoded === "object" && decoded !== null
+              ? Reflect.get(decoded, "name")
+              : undefined;
+          const skillName = yield* decodeAgentSkillName(declaredName).pipe(
+            Effect.mapError(
+              (cause) =>
+                new AgentDefinitionError({
+                  message: "Agent skill SKILL.md must declare a valid frontmatter name.",
+                  path: filePath,
+                  cause,
+                }),
+            ),
+          );
+          if (skillName !== name) {
+            return yield* new AgentDefinitionError({
+              message: `Agent skill frontmatter name ${skillName} must match its directory ${name}.`,
+              path: filePath,
+            });
+          }
+          return {
+            name: skillName,
+            relativePath: path.relative(projectRoot, filePath).split(path.sep).join("/"),
+          };
+        }),
+      );
+    });
+
+    return yield* Effect.forEach(definitions, (definition) =>
+      Effect.gen(function* () {
+        return {
+          ...definition,
+          instructions: yield* readInstructions(definition),
+          skills: yield* readSkills(definition),
+        } satisfies ResolvedAgentDefinition;
+      }),
+    );
+  },
+  Effect.mapError((cause) =>
+    isAgentDefinitionError(cause)
+      ? cause
+      : new AgentDefinitionError({ message: "Could not resolve agent definitions.", cause }),
   ),
 );
 

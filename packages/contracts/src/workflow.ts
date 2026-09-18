@@ -11,6 +11,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { AgentSkill } from "./agentDefinitions.ts";
 
 export const WorkflowStatus = Schema.Literals([
   "draft",
@@ -25,23 +26,11 @@ export const WorkflowStatus = Schema.Literals([
 ]);
 export type WorkflowStatus = typeof WorkflowStatus.Type;
 
-export const WorkflowSkillName = TrimmedNonEmptyString.check(
-  Schema.isMaxLength(128),
-  Schema.isPattern(/^[A-Za-z][A-Za-z0-9:_-]*$/),
-);
-export type WorkflowSkillName = typeof WorkflowSkillName.Type;
-
-export const WorkflowSkill = Schema.Struct({
-  name: WorkflowSkillName,
-  relativePath: TrimmedNonEmptyString,
-});
-export type WorkflowSkill = typeof WorkflowSkill.Type;
-
 /** Frozen runtime snapshot resolved from an Eve-style agent folder. */
 export const ResolvedWorkflowAgent = Schema.Struct({
   id: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
-  skills: Schema.Array(WorkflowSkill)
+  skills: Schema.Array(AgentSkill)
     .check(
       Schema.isMaxLength(20),
       Schema.makeFilter(

@@ -2518,7 +2518,7 @@ export function makeClaudeAdapterV2(
     offer: () => Effect.void,
   };
 
-  const copyWorkflowSkillDirectory = Effect.fnUntraced(function* (
+  const stageAgentSkillDirectory = Effect.fnUntraced(function* (
     source: string,
     destination: string,
   ): Effect.fn.Return<void, ProviderAdapterProtocolError> {
@@ -2527,7 +2527,7 @@ export function makeClaudeAdapterV2(
         (cause) =>
           new ProviderAdapterProtocolError({
             driver: CLAUDE_PROVIDER,
-            detail: `Could not resolve Claude reviewer skill content at ${source}`,
+            detail: `Could not resolve Claude agent skill content at ${source}`,
             payload: cause,
           }),
       ),
@@ -2535,7 +2535,7 @@ export function makeClaudeAdapterV2(
     if (realSource !== source) {
       return yield* new ProviderAdapterProtocolError({
         driver: CLAUDE_PROVIDER,
-        detail: `Claude reviewer skill content must not contain symbolic links: ${source}`,
+        detail: `Claude agent skill content must not contain symbolic links: ${source}`,
       });
     }
     const info = yield* fileSystem.stat(source).pipe(
@@ -2543,7 +2543,7 @@ export function makeClaudeAdapterV2(
         (cause) =>
           new ProviderAdapterProtocolError({
             driver: CLAUDE_PROVIDER,
-            detail: `Could not inspect Claude reviewer skill content at ${source}`,
+            detail: `Could not inspect Claude agent skill content at ${source}`,
             payload: cause,
           }),
       ),
@@ -2554,7 +2554,7 @@ export function makeClaudeAdapterV2(
           (cause) =>
             new ProviderAdapterProtocolError({
               driver: CLAUDE_PROVIDER,
-              detail: `Could not stage Claude reviewer skill content at ${destination}`,
+              detail: `Could not stage Claude agent skill content at ${destination}`,
               payload: cause,
             }),
         ),
@@ -2564,21 +2564,20 @@ export function makeClaudeAdapterV2(
     if (info.type !== "Directory") {
       return yield* new ProviderAdapterProtocolError({
         driver: CLAUDE_PROVIDER,
-        detail: `Unsupported Claude reviewer skill content at ${source}`,
+        detail: `Unsupported Claude agent skill content at ${source}`,
       });
     }
     yield* fileSystem.makeDirectory(destination, { recursive: true });
     const entries = yield* fileSystem.readDirectory(source);
     yield* Effect.forEach(
       entries,
-      (entry) =>
-        copyWorkflowSkillDirectory(path.join(source, entry), path.join(destination, entry)),
+      (entry) => stageAgentSkillDirectory(path.join(source, entry), path.join(destination, entry)),
       { concurrency: 8, discard: true },
     );
   });
 
-  const prepareWorkflowSkillOptions = Effect.fnUntraced(function* (input: {
-    readonly workflowSkills: ReadonlyArray<{
+  const prepareAgentSkillOptions = Effect.fnUntraced(function* (input: {
+    readonly agentSkills: ReadonlyArray<{
       readonly name: string;
       readonly relativePath: string;
     }>;
@@ -2589,9 +2588,9 @@ export function makeClaudeAdapterV2(
     Pick<ClaudeQueryOptions, "skills" | "plugins">,
     ProviderAdapterProtocolError
   > {
-    if (input.workflowSkills.length === 0) return { skills: [] };
+    if (input.agentSkills.length === 0) return { skills: [] };
     const safeThreadId = input.nativeThreadId.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 80);
-    const pluginName = `t3-workflow-${safeThreadId || "reviewer"}`;
+    const pluginName = `t3-agent-${safeThreadId || "reviewer"}`;
     const pluginRoot = path.join(input.pluginBase, pluginName);
     yield* fileSystem.makeDirectory(path.join(pluginRoot, ".claude-plugin"), { recursive: true });
     yield* fileSystem.writeFileString(
@@ -2603,12 +2602,12 @@ export function makeClaudeAdapterV2(
         (cause) =>
           new ProviderAdapterProtocolError({
             driver: CLAUDE_PROVIDER,
-            detail: "Could not resolve the workspace for Claude reviewer skills",
+            detail: "Could not resolve the workspace for Claude agent skills",
             payload: cause,
           }),
       ),
     );
-    for (const skill of input.workflowSkills) {
+    for (const skill of input.agentSkills) {
       const skillFile = NodePath.resolve(realCwd, skill.relativePath);
       const relative = NodePath.relative(realCwd, skillFile);
       if (
@@ -2618,16 +2617,16 @@ export function makeClaudeAdapterV2(
       ) {
         return yield* new ProviderAdapterProtocolError({
           driver: CLAUDE_PROVIDER,
-          detail: `Assigned Claude reviewer skill escapes the workspace: ${skill.name}`,
+          detail: `Assigned Claude agent skill escapes the workspace: ${skill.name}`,
         });
       }
-      yield* copyWorkflowSkillDirectory(
+      yield* stageAgentSkillDirectory(
         path.dirname(skillFile),
         path.join(pluginRoot, "skills", skill.name),
       );
     }
     return {
-      skills: input.workflowSkills.map((skill) => `${pluginName}:${skill.name}`),
+      skills: input.agentSkills.map((skill) => `${pluginName}:${skill.name}`),
       plugins: [{ type: "local", path: pluginRoot, skipMcpDiscovery: true }],
     };
   });
@@ -2657,18 +2656,18 @@ export function makeClaudeAdapterV2(
   return ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CLAUDE_PROVIDER,
-    workflowSkillIsolation: "native",
-    workflowLocalSkillLoading: "native",
+    agentSkillIsolation: "native",
+    agentLocalSkillLoading: "native",
     getCapabilities: () => Effect.succeed(ClaudeProviderCapabilitiesV2),
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
     openSession: Effect.fn("ClaudeAdapterV2.openSession")(
       function* (input: ProviderAdapterV2OpenSessionInput) {
         const sessionScope = yield* Effect.scope;
-        const workflowPluginBase =
-          input.runtimePolicy.workflowSkills === undefined
+        const agentPluginBase =
+          input.runtimePolicy.agentSkills === undefined
             ? null
             : yield* fileSystem.makeTempDirectoryScoped({
-                prefix: "t3-claude-workflow-plugins-",
+                prefix: "t3-claude-agent-plugins-",
               });
         const now = yield* DateTime.now;
         const session = providerSession({
@@ -5462,29 +5461,29 @@ export function makeClaudeAdapterV2(
               ? {}
               : { allowedTools: queryPolicy.allowedTools }),
           });
-          const workflowSkillOptions =
-            turnInput.runtimePolicy.workflowSkills === undefined
+          const agentSkillOptions =
+            turnInput.runtimePolicy.agentSkills === undefined
               ? undefined
               : turnInput.runtimePolicy.cwd === null
                 ? yield* new ProviderAdapterProtocolError({
                     driver: CLAUDE_PROVIDER,
-                    detail: "A workspace is required to load verified workflow skills",
+                    detail: "A workspace is required to load verified agent skills",
                   })
-                : yield* prepareWorkflowSkillOptions({
-                    workflowSkills: turnInput.runtimePolicy.workflowSkills,
+                : yield* prepareAgentSkillOptions({
+                    agentSkills: turnInput.runtimePolicy.agentSkills,
                     cwd: turnInput.runtimePolicy.cwd,
                     nativeThreadId,
                     pluginBase:
-                      workflowPluginBase ??
+                      agentPluginBase ??
                       (yield* new ProviderAdapterProtocolError({
                         driver: CLAUDE_PROVIDER,
-                        detail: "Claude workflow skill staging is unavailable for this session",
+                        detail: "Claude agent skill staging is unavailable for this session",
                       })),
                   });
-          const queryPolicyKey = `${claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides)}\nworkflow-skills:${
-            turnInput.runtimePolicy.workflowSkills === undefined
+          const queryPolicyKey = `${claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides)}\nagent-skills:${
+            turnInput.runtimePolicy.agentSkills === undefined
               ? "provider-defaults"
-              : turnInput.runtimePolicy.workflowSkills
+              : turnInput.runtimePolicy.agentSkills
                   .map(
                     (skill) =>
                       `${encodeURIComponent(skill.name)}@${encodeURIComponent(skill.relativePath)}`,
@@ -5541,7 +5540,7 @@ export function makeClaudeAdapterV2(
                 attachmentsDir,
                 settings: adapterOptions.settings,
                 environment: adapterOptions.environment,
-                ...(workflowSkillOptions === undefined ? {} : workflowSkillOptions),
+                ...(agentSkillOptions === undefined ? {} : agentSkillOptions),
                 tools: queryPolicy.tools ?? CLAUDE_CODE_PRESET_TOOLS,
                 ...mcpOverrides,
                 permissionMode: queryPolicy.permissionMode,

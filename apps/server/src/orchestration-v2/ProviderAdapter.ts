@@ -51,7 +51,7 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   sandboxPolicy: Schema.optional(Schema.Unknown),
   reasoningEffort: Schema.optional(Schema.String),
   /** Undefined keeps provider defaults; an array is a reviewer's exclusive local skill set. */
-  workflowSkills: Schema.optional(
+  agentSkills: Schema.optional(
     Schema.Array(
       Schema.Struct({
         name: Schema.String,
@@ -556,9 +556,9 @@ export interface ProviderAdapterV2Shape {
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
   /** Present only when the adapter can hide and reject every unlisted native skill. */
-  readonly workflowSkillIsolation?: "native";
+  readonly agentSkillIsolation?: "native";
   /** Present when the adapter can load workspace-local Eve skills for one session. */
-  readonly workflowLocalSkillLoading?: "native";
+  readonly agentLocalSkillLoading?: "native";
   readonly getCapabilities: () => Effect.Effect<
     OrchestrationV2ProviderCapabilities,
     ProviderAdapterV2Error

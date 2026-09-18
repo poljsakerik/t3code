@@ -47,19 +47,19 @@ it("copies a reviewer's exclusive Eve skills into the provider runtime policy", 
 
   expect(
     ProviderTurnStart.providerRuntimePolicyForRun(base, {
-      workflowSkills: [
+      agentSkills: [
         { name: "code-review", relativePath: ".t3/agents/reviewer/skills/code-review/SKILL.md" },
       ],
-    }).workflowSkills,
+    }).agentSkills,
   ).toEqual([
     { name: "code-review", relativePath: ".t3/agents/reviewer/skills/code-review/SKILL.md" },
   ]);
   expect(
     ProviderTurnStart.providerRuntimePolicyForRun(base, {
-      workflowSkills: [],
-    }).workflowSkills,
+      agentSkills: [],
+    }).agentSkills,
   ).toEqual([]);
-  expect(ProviderTurnStart.providerRuntimePolicyForRun(base, {}).workflowSkills).toBe(undefined);
+  expect(ProviderTurnStart.providerRuntimePolicyForRun(base, {}).agentSkills).toBe(undefined);
 });
 
 it("terminalizes a starting run when provider startup exhausts its retries", async () => {
@@ -123,7 +123,7 @@ it("terminalizes a starting run when provider startup exhausts its retries", asy
     yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).fail({
       threadId,
       runId,
-      error: "Assigned reviewer skill could not be loaded",
+      error: "Assigned agent skill could not be loaded",
     });
   }).pipe(Effect.provide(testLayer), Effect.runPromise);
 
@@ -151,7 +151,7 @@ it("terminalizes a starting run when provider startup exhausts its retries", asy
   expect(events.find((event) => event.type === "turn-item.updated")?.payload).toMatchObject({
     type: "error",
     title: "Provider failed to start",
-    failure: { message: "Assigned reviewer skill could not be loaded", retryable: false },
+    failure: { message: "Assigned agent skill could not be loaded", retryable: false },
   });
 });
 

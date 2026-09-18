@@ -6,7 +6,7 @@ import { ResolvedWorkflowAgent } from "./workflow.ts";
 const decodeWorkflowAgent = Schema.decodeUnknownSync(ResolvedWorkflowAgent);
 
 describe("resolved workflow agents", () => {
-  it("defaults omitted reviewer skills to an empty allowlist", () => {
+  it("defaults omitted agent skills to an empty allowlist", () => {
     const agent = decodeWorkflowAgent({
       id: "reviewer",
       name: "Reviewer",
@@ -16,7 +16,7 @@ describe("resolved workflow agents", () => {
     expect(agent.skills).toEqual([]);
   });
 
-  it("decodes reviewer skill assignments", () => {
+  it("decodes agent skill assignments", () => {
     const agent = decodeWorkflowAgent({
       id: "reviewer",
       name: "Reviewer",

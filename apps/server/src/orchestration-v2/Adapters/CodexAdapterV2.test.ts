@@ -55,7 +55,7 @@ import {
   codexFileChangeApprovalPrompt,
   codexProviderTurnTokenUsage,
   codexThreadRuntimeParams,
-  codexWorkflowSkillConfig,
+  codexAgentSkillConfig,
   type CodexAgentMessageDeltaUpdate,
   type CodexAppServerClientFactoryShape,
   makeCodexAdapterV2,
@@ -554,9 +554,9 @@ describe("CodexAdapterV2 runtime policy", () => {
 });
 
 describe("CodexAdapterV2 process spawning", () => {
-  it("builds an exclusive per-thread Codex reviewer skill configuration", () => {
+  it("builds an exclusive per-thread Codex agent skill configuration", () => {
     assert.deepEqual(
-      codexWorkflowSkillConfig(
+      codexAgentSkillConfig(
         [
           {
             name: "review",
@@ -581,7 +581,7 @@ describe("CodexAdapterV2 process spawning", () => {
     );
     assert.throws(
       () =>
-        codexWorkflowSkillConfig(
+        codexAgentSkillConfig(
           [{ name: "escape", relativePath: "../outside/SKILL.md" }],
           [],
           "/workspace",

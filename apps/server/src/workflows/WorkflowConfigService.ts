@@ -2,7 +2,6 @@ import {
   ProjectId,
   ResolvedWorkflowProfile,
   WorkflowConfigError,
-  WorkflowSkillName,
   type WorkflowProfileSummary,
   WorkflowProfileDefinition,
   type ResolvedWorkflowProfile as ResolvedWorkflowProfileType,
@@ -18,7 +17,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { parse } from "yaml";
 
-import { discoverAgentDefinitions } from "../agents/AgentDefinitionService.ts";
+import { resolveAgentDefinitions } from "../agents/AgentDefinitionService.ts";
 import { ServerConfig } from "../config.ts";
 import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
 import { T3ProjectFileLoader } from "../project/T3ProjectFileLoader.ts";
@@ -48,9 +47,7 @@ const configFile = /\.(?:ya?ml|json)$/i;
 const defaultRepositoryWorkflowsDirectory = ".t3/workflows";
 const decodeWorkflowProfileDefinition = Schema.decodeUnknownEffect(WorkflowProfileDefinition);
 const decodeResolvedWorkflowProfile = Schema.decodeUnknownEffect(ResolvedWorkflowProfile);
-const decodeWorkflowSkillName = Schema.decodeUnknownEffect(WorkflowSkillName);
 const isWorkflowConfigError = Schema.is(WorkflowConfigError);
-const skillFrontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 
 export const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -177,184 +174,6 @@ export const make = Effect.gen(function* () {
     return profiles;
   });
 
-  const readAgentInstructions = Effect.fn("WorkflowConfigService.readAgentInstructions")(
-    function* (input: {
-      readonly directory: string;
-      readonly instructionPaths: ReadonlyArray<string>;
-      readonly profileId: string;
-    }) {
-      const parts: Array<string> = [];
-      for (const instructionPath of input.instructionPaths) {
-        const absolute = path.join(input.directory, path.basename(instructionPath));
-        if (instructionPath.toLowerCase().endsWith(".md")) {
-          parts.push(
-            yield* fs.readFileString(absolute).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new WorkflowConfigError({
-                    profileId: input.profileId,
-                    path: instructionPath,
-                    detail: "could not read agent instructions",
-                    cause,
-                  }),
-              ),
-            ),
-          );
-          continue;
-        }
-        if (path.basename(instructionPath) !== "instructions") {
-          return yield* new WorkflowConfigError({
-            profileId: input.profileId,
-            path: instructionPath,
-            detail:
-              "executable agent instructions cannot run in a verified workflow; use Markdown instructions",
-          });
-        }
-        const files = yield* fs.readDirectory(absolute).pipe(
-          Effect.mapError(
-            (cause) =>
-              new WorkflowConfigError({
-                profileId: input.profileId,
-                path: instructionPath,
-                detail: "could not read the agent instructions directory",
-                cause,
-              }),
-          ),
-        );
-        for (const file of files.toSorted()) {
-          if (!file.toLowerCase().endsWith(".md")) {
-            return yield* new WorkflowConfigError({
-              profileId: input.profileId,
-              path: path.join(instructionPath, file),
-              detail:
-                "executable agent instructions cannot run in a verified workflow; use Markdown instructions",
-            });
-          }
-          const filePath = path.join(absolute, file);
-          const realPath = yield* fs.realPath(filePath).pipe(Effect.option);
-          if (Option.isNone(realPath) || realPath.value !== filePath) {
-            return yield* new WorkflowConfigError({
-              profileId: input.profileId,
-              path: path.join(instructionPath, file),
-              detail: "agent instruction paths must not contain symbolic links",
-            });
-          }
-          if ((yield* fs.stat(filePath)).type === "File") {
-            parts.push(yield* fs.readFileString(filePath));
-          }
-        }
-      }
-      const instructions = parts
-        .filter((part) => part.trim().length > 0)
-        .join("\n\n")
-        .trim();
-      if (instructions.length === 0) {
-        return yield* new WorkflowConfigError({
-          profileId: input.profileId,
-          path: input.directory,
-          detail: "agent has no Markdown instructions",
-        });
-      }
-      return instructions;
-    },
-  );
-
-  const readAgentSkills = Effect.fn("WorkflowConfigService.readAgentSkills")(function* (input: {
-    readonly directory: string;
-    readonly workspaceRoot: string;
-    readonly hasSkills: boolean;
-    readonly profileId: string;
-  }) {
-    if (!input.hasSkills) return [];
-    const directory = path.join(input.directory, "skills");
-    const names = yield* fs.readDirectory(directory).pipe(
-      Effect.mapError(
-        (cause) =>
-          new WorkflowConfigError({
-            profileId: input.profileId,
-            path: directory,
-            detail: "could not read agent skills",
-            cause,
-          }),
-      ),
-    );
-    return yield* Effect.forEach(
-      names.toSorted(),
-      Effect.fnUntraced(function* (name) {
-        const skillDirectory = path.join(directory, name);
-        const realDirectory = yield* fs.realPath(skillDirectory).pipe(Effect.option);
-        if (Option.isNone(realDirectory) || realDirectory.value !== skillDirectory) {
-          return yield* new WorkflowConfigError({
-            profileId: input.profileId,
-            path: skillDirectory,
-            detail: "agent skill entries must not be symbolic links",
-          });
-        }
-        if ((yield* fs.stat(skillDirectory)).type !== "Directory") {
-          return yield* new WorkflowConfigError({
-            profileId: input.profileId,
-            path: skillDirectory,
-            detail: "verified workflow skills must be Eve-style directories containing SKILL.md",
-          });
-        }
-        const filePath = path.join(skillDirectory, "SKILL.md");
-        const realPath = yield* fs.realPath(filePath).pipe(Effect.option);
-        if (Option.isNone(realPath) || realPath.value !== filePath) {
-          return yield* new WorkflowConfigError({
-            profileId: input.profileId,
-            path: filePath,
-            detail: "agent skill directories must contain a non-symbolic SKILL.md",
-          });
-        }
-        const contents = yield* fs.readFileString(filePath).pipe(
-          Effect.mapError(
-            (cause) =>
-              new WorkflowConfigError({
-                profileId: input.profileId,
-                path: filePath,
-                detail: "could not read agent skill definition",
-                cause,
-              }),
-          ),
-        );
-        const frontmatter = skillFrontmatter.exec(contents)?.[1];
-        const decoded =
-          frontmatter === undefined
-            ? undefined
-            : yield* Effect.try({
-                try: () => parse(frontmatter) as unknown,
-                catch: () => undefined,
-              });
-        const declaredName =
-          typeof decoded === "object" && decoded !== null
-            ? Reflect.get(decoded, "name")
-            : undefined;
-        const skillName = yield* decodeWorkflowSkillName(declaredName).pipe(
-          Effect.mapError(
-            (cause) =>
-              new WorkflowConfigError({
-                profileId: input.profileId,
-                path: filePath,
-                detail: "agent skill SKILL.md must declare a valid frontmatter name",
-                cause,
-              }),
-          ),
-        );
-        if (skillName !== name) {
-          return yield* new WorkflowConfigError({
-            profileId: input.profileId,
-            path: filePath,
-            detail: `agent skill frontmatter name ${skillName} must match its directory ${name}`,
-          });
-        }
-        return {
-          name: skillName,
-          relativePath: path.relative(input.workspaceRoot, filePath).split(path.sep).join("/"),
-        };
-      }),
-    );
-  });
-
   const readAgents = Effect.fn("WorkflowConfigService.readAgents")(function* (input: {
     readonly workspaceRoot: string;
     readonly profileId: string;
@@ -370,7 +189,7 @@ export const make = Effect.gen(function* () {
           }),
       ),
     );
-    const discovered = yield* discoverAgentDefinitions(input.workspaceRoot).pipe(
+    const discovered = yield* resolveAgentDefinitions(input.workspaceRoot).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.provideService(Path.Path, path),
       Effect.mapError(
@@ -464,12 +283,7 @@ export const make = Effect.gen(function* () {
             });
           }
         }
-        const skills = yield* readAgentSkills({
-          directory,
-          workspaceRoot: agents.workspaceRoot,
-          hasSkills: definition.slots.includes("skills"),
-          profileId: input.profileId,
-        });
+        const skills = definition.skills;
         if (stage !== "reviewer" && skills.length > 0) {
           return yield* new WorkflowConfigError({
             profileId: input.profileId,
@@ -480,11 +294,7 @@ export const make = Effect.gen(function* () {
           id: agentId,
           name: definition.name,
           skills,
-          instructions: yield* readAgentInstructions({
-            directory,
-            instructionPaths: definition.instructionPaths,
-            profileId: input.profileId,
-          }),
+          instructions: definition.instructions,
         } satisfies ResolvedWorkflowAgent;
       }).pipe(
         Effect.mapError((cause) =>

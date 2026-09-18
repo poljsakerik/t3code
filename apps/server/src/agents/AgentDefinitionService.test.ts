@@ -9,7 +9,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
-import { discoverAgentDefinitions } from "./AgentDefinitionService.ts";
+import { discoverAgentDefinitions, resolveAgentDefinitions } from "./AgentDefinitionService.ts";
 
 const fixture = Effect.fn("fixture")(function* (files: Record<string, string>) {
   const fs = yield* FileSystem.FileSystem;
@@ -120,6 +120,29 @@ it.layer(NodeServices.layer)("agent definitions", (it) => {
         "AGENTS.md": "Project instructions are not an agent definition.",
       });
       expect(yield* discoverAgentDefinitions(root)).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("resolves instructions and Eve skills before provider selection", () =>
+    Effect.gen(function* () {
+      const root = yield* fixture({
+        ".t3/agents/design/agent.ts": "export default {};",
+        ".t3/agents/design/instructions.md": "Review every changed surface.",
+        ".t3/agents/design/skills/impeccable/SKILL.md":
+          "---\nname: impeccable\ndescription: Review design.\n---\n",
+      });
+      const definitions = yield* resolveAgentDefinitions(root);
+      expect(definitions).toHaveLength(1);
+      expect(definitions[0]).toMatchObject({
+        id: ".t3/agents/design",
+        instructions: "Review every changed surface.",
+        skills: [
+          {
+            name: "impeccable",
+            relativePath: ".t3/agents/design/skills/impeccable/SKILL.md",
+          },
+        ],
+      });
     }).pipe(Effect.scoped),
   );
 

@@ -649,7 +649,7 @@ it.effect("terminalizes a provider start before failing its exhausted outbox eff
             new OrchestrationEffectExecutionError({
               effectId,
               effectType: claimedEffect.request.type,
-              cause: "reviewer skill failed to load",
+              cause: "agent skill failed to load",
             }),
           ),
         terminalizeFailure: () =>

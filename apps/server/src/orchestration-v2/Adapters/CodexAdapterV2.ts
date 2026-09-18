@@ -1242,7 +1242,7 @@ export function codexThreadRuntimeParams(input: {
   readonly threadId: ThreadId | null;
   readonly modelSelection?: { readonly model: string };
   readonly runtimePolicy?: ProviderAdapterV2RuntimePolicy;
-  readonly workflowSkillConfig?: Readonly<Record<string, unknown>>;
+  readonly agentSkillConfig?: Readonly<Record<string, unknown>>;
 }): {
   readonly cwd?: string;
   readonly model?: string;
@@ -1251,7 +1251,7 @@ export function codexThreadRuntimeParams(input: {
   const mcpSession =
     input.threadId === null ? undefined : McpProviderSession.readMcpProviderSession(input.threadId);
   const config = {
-    ...input.workflowSkillConfig,
+    ...input.agentSkillConfig,
     ...(mcpSession === undefined
       ? {}
       : {
@@ -1272,12 +1272,12 @@ export function codexThreadRuntimeParams(input: {
   };
 }
 
-export function codexWorkflowSkillConfig(
-  workflowSkills: ReadonlyArray<{ readonly name: string; readonly relativePath: string }>,
+export function codexAgentSkillConfig(
+  agentSkills: ReadonlyArray<{ readonly name: string; readonly relativePath: string }>,
   skills: ReadonlyArray<Pick<CodexSchema.V2SkillsListResponse__SkillMetadata, "name" | "path">>,
   cwd: string,
 ): Readonly<Record<string, unknown>> {
-  const localSkills = workflowSkills.map((skill) => {
+  const localSkills = agentSkills.map((skill) => {
     const skillFile = NodePath.resolve(cwd, skill.relativePath);
     const relative = NodePath.relative(cwd, skillFile);
     if (
@@ -1287,7 +1287,7 @@ export function codexWorkflowSkillConfig(
     ) {
       throw new ProviderAdapterProtocolError({
         driver: CODEX_PROVIDER,
-        detail: `Assigned Codex reviewer skill escapes the workspace: ${skill.name}`,
+        detail: `Assigned Codex agent skill escapes the workspace: ${skill.name}`,
       });
     }
     return { name: skill.name, path: NodePath.dirname(skillFile) };
@@ -1616,8 +1616,8 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
   return ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CODEX_PROVIDER,
-    workflowSkillIsolation: "native",
-    workflowLocalSkillLoading: "native",
+    agentSkillIsolation: "native",
+    agentLocalSkillLoading: "native",
     getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
     openSession: (input) =>
@@ -1649,15 +1649,15 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           readonly modelSelection?: { readonly model: string };
           readonly runtimePolicy?: ProviderAdapterV2RuntimePolicy;
         }) {
-          const workflowSkills = threadInput.runtimePolicy?.workflowSkills;
-          if (workflowSkills === undefined) {
+          const agentSkills = threadInput.runtimePolicy?.agentSkills;
+          if (agentSkills === undefined) {
             return codexThreadRuntimeParams(threadInput);
           }
           const cwd = threadInput.runtimePolicy?.cwd ?? input.runtimePolicy.cwd;
           if (cwd === null) {
             return yield* new ProviderAdapterProtocolError({
               driver: CODEX_PROVIDER,
-              detail: "A workspace is required to load verified workflow skills",
+              detail: "A workspace is required to load verified agent skills",
             });
           }
           const response = yield* client.request(
@@ -1667,20 +1667,20 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           const matchingEntry =
             cwd === null ? undefined : response.data.find((entry) => entry.cwd === cwd);
           const skills = matchingEntry?.skills ?? response.data.flatMap((entry) => entry.skills);
-          const workflowSkillConfig = yield* Effect.try({
-            try: () => codexWorkflowSkillConfig(workflowSkills, skills, cwd),
+          const agentSkillConfig = yield* Effect.try({
+            try: () => codexAgentSkillConfig(agentSkills, skills, cwd),
             catch: (cause) =>
               isProviderAdapterProtocolError(cause)
                 ? cause
                 : new ProviderAdapterProtocolError({
                     driver: CODEX_PROVIDER,
-                    detail: "Failed to build the Codex reviewer skill configuration",
+                    detail: "Failed to build the Codex agent skill configuration",
                     payload: cause,
                   }),
           });
           return codexThreadRuntimeParams({
             ...threadInput,
-            workflowSkillConfig,
+            agentSkillConfig,
           });
         });
         const now = yield* DateTime.now;

@@ -30,6 +30,7 @@ import {
   TurnItemId,
 } from "./baseSchemas.ts";
 import { ChatAttachment } from "./chatAttachment.ts";
+import { AgentSkill } from "./agentDefinitions.ts";
 import {
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetFullThreadDiffResult,
@@ -70,7 +71,6 @@ import {
   WorkflowCheckDefinition,
   WorkflowCheckResult,
   WorkflowReviewResult,
-  WorkflowSkill,
   WorkflowStatus,
 } from "./workflow.ts";
 
@@ -458,7 +458,7 @@ export const OrchestrationV2Run = Schema.Struct({
   ordinal: PositiveInt,
   providerInstanceId: ProviderInstanceId,
   modelSelection: ModelSelection,
-  workflowSkills: Schema.optional(Schema.Array(WorkflowSkill)),
+  agentSkills: Schema.optional(Schema.Array(AgentSkill)),
   providerThreadId: Schema.NullOr(ProviderThreadId),
   userMessageId: MessageId,
   rootNodeId: Schema.NullOr(NodeId),
@@ -2482,7 +2482,7 @@ export const OrchestrationV2Command = Schema.Union([
     titleSeed: Schema.optional(TrimmedNonEmptyString),
     modelSelection: Schema.optional(ModelSelection),
     /** Server-owned native skill assignments for verified-workflow reviewers. */
-    workflowSkills: Schema.optional(Schema.Array(WorkflowSkill)),
+    agentSkills: Schema.optional(Schema.Array(AgentSkill)),
     sourcePlanRef: Schema.optional(Schema.Struct({ threadId: ThreadId, planId: PlanId })),
     restartContinuationOfRunId: Schema.optional(RunId),
     /** Resolve untargeted delivery against the server's serialized thread state. */

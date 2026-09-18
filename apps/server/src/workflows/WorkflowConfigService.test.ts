@@ -70,6 +70,40 @@ function writeAgent(
 }
 
 it.layer(testLayer)("WorkflowConfigService", (it) => {
+  it.effect(
+    "includes attached skill instructions for every role without sharing them between agents",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const config = yield* ServerConfig;
+        const workflows = yield* WorkflowConfigService;
+        const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-workspace-" });
+        for (const name of ["planner", "implementer", "reviewer"]) {
+          yield* writeAgent(workspaceRoot, name, `${name} instructions.`);
+          yield* writeYaml(
+            `${workspaceRoot}/.t3/agents/${name}/skills/specialty/SKILL.md`,
+            `${name} skill content.`,
+          );
+        }
+        yield* writeYaml(
+          `${config.stateDir}/workflows/profiles/attached.yaml`,
+          "version: 1\nid: attached\nname: Attached\nplanner: planner\nimplementer: implementer\nreviewers: [reviewer]\nchecks:\n  - id: test\n    name: Test\n    run: test-command\nlimits:\n  maxRevisionCycles: 3\n  identicalFailureLimit: 2\n",
+        );
+        const { profile } = yield* workflows.resolveProfile({
+          projectId: ProjectId.make(workspaceRoot),
+          profileId: "attached",
+        });
+        for (const agent of [profile.planner, profile.implementer, ...profile.reviewers]) {
+          assert.include(agent.instructions, `${agent.name} skill content.`);
+          assert.deepEqual(agent.skills, []);
+          for (const other of ["planner", "implementer", "reviewer"].filter(
+            (name) => name !== agent.name,
+          ))
+            assert.notInclude(agent.instructions, `${other} skill content.`);
+        }
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("resolves a YAML profile from Eve-style project agent folders", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

@@ -317,7 +317,7 @@ function AgentCard({
           aria-label={`Edit ${agent.name}`}
         >
           <Pencil aria-hidden className="size-3.5" />
-          Edit instructions
+          Edit agent
         </Button>
         {agent.slots.length > 0 ? (
           <div className="flex flex-wrap gap-1.5">

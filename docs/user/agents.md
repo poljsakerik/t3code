@@ -1,6 +1,6 @@
 # Agents
 
-Open **Agents** from the sidebar and select a project to see its Eve-style agent folders. T3 reads the selected environment's project-local `.t3` directory.
+Open **Agents** from the sidebar to browse Eve agents grouped by project. Agents in each environment's home-directory `.t3` folder appear under **Global**, even when the home directory is not registered as a project.
 
 ```text
 .t3/

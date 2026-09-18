@@ -1,3 +1,5 @@
+import * as NodeOS from "node:os";
+import { afterEach, vi } from "vite-plus/test";
 import { AgentDefinitionService, layer } from "./AgentDefinitionService.ts";
 import { ProjectId } from "@t3tools/contracts";
 import * as Layer from "effect/Layer";
@@ -10,6 +12,13 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
 import { discoverAgentDefinitions } from "./AgentDefinitionService.ts";
+
+vi.mock("node:os", async (importOriginal) => {
+  const os = await importOriginal<typeof NodeOS>();
+  return { ...os, homedir: vi.fn(os.homedir) };
+});
+
+afterEach(() => vi.mocked(NodeOS.homedir).mockReset());
 
 const fixture = Effect.fn("fixture")(function* (files: Record<string, string>) {
   const fs = yield* FileSystem.FileSystem;
@@ -180,18 +189,20 @@ const serviceLayer = layer.pipe(
     Layer.mock(ProjectionProjectRepository)({
       getById: ({ projectId }) =>
         Effect.succeed(
-          Option.some({
-            projectId,
-            title: "Test",
-            workspaceRoot: projectId,
-            defaultModelSelection: null,
-            defaultThreadEnvMode: null,
-            autoPull: false,
-            scripts: [],
-            createdAt: "2026-01-01T00:00:00.000Z",
-            updatedAt: "2026-01-01T00:00:00.000Z",
-            deletedAt: null,
-          }),
+          projectId === "missing"
+            ? Option.none()
+            : Option.some({
+                projectId,
+                title: "Test",
+                workspaceRoot: projectId,
+                defaultModelSelection: null,
+                defaultThreadEnvMode: null,
+                autoPull: false,
+                scripts: [],
+                createdAt: "2026-01-01T00:00:00.000Z",
+                updatedAt: "2026-01-01T00:00:00.000Z",
+                deletedAt: null,
+              }),
         ),
     }),
   ),
@@ -205,7 +216,70 @@ it.layer(serviceLayer)("project agent catalog", (it) => {
       const projectId = ProjectId.make(
         yield* fixture({ ".t3/agent/agent.ts": "throw new Error('must not execute');" }),
       );
-      expect((yield* service.list({ projectId })).map(({ id }) => id)).toEqual([".t3/agent"]);
+      const result = yield* service.list({ projectId });
+      expect(result.scope).toBe("project");
+      expect(result.agents.map(({ id }) => id)).toEqual([".t3/agent"]);
     }).pipe(Effect.scoped),
+  );
+
+  it.effect("lists global agents without a registered home project", () =>
+    Effect.gen(function* () {
+      const service = yield* AgentDefinitionService;
+      const home = yield* fixture({
+        ".t3/agents/assistant/instructions.md": "Global assistant.",
+        ".t3/agents/assistant/subagents/reviewer/instructions.md": "Review work.",
+      });
+      vi.mocked(NodeOS.homedir).mockReturnValue(home);
+      const result = yield* service.list({});
+      expect(result.scope).toBe("global");
+      expect(result.agents.map(({ id }) => id)).toEqual([
+        ".t3/agents/assistant",
+        ".t3/agents/assistant/subagents/reviewer",
+      ]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("identifies a registered home project as global, including directory aliases", () =>
+    Effect.gen(function* () {
+      const service = yield* AgentDefinitionService;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fixture({ ".t3/agent/instructions.md": "Global assistant." });
+      const workspace = yield* fixture({});
+      const alias = path.join(workspace, "home");
+      yield* fs.symlink(home, alias);
+      vi.mocked(NodeOS.homedir).mockReturnValue(home);
+      const global = yield* service.list({});
+      expect(yield* service.list({ projectId: ProjectId.make(alias) })).toEqual(global);
+      expect(global.scope).toBe("global");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps project agents separate from global agents", () =>
+    Effect.gen(function* () {
+      const service = yield* AgentDefinitionService;
+      const home = yield* fixture({ ".t3/agents/global/instructions.md": "Global." });
+      const project = yield* fixture({ ".t3/agents/local/instructions.md": "Local." });
+      vi.mocked(NodeOS.homedir).mockReturnValue(home);
+      const result = yield* service.list({ projectId: ProjectId.make(project) });
+      expect(result.scope).toBe("project");
+      expect(result.agents.map(({ name }) => name)).toEqual(["local"]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("returns an empty global group when the home directory has no agents", () =>
+    Effect.gen(function* () {
+      const service = yield* AgentDefinitionService;
+      vi.mocked(NodeOS.homedir).mockReturnValue(yield* fixture({}));
+      expect(yield* service.list({})).toEqual({ scope: "global", agents: [] });
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("does not fall back to global agents for an unknown project", () =>
+    Effect.gen(function* () {
+      const service = yield* AgentDefinitionService;
+      const error = yield* service.list({ projectId: ProjectId.make("missing") }).pipe(Effect.flip);
+      expect(error.message).toBe("Project missing was not found.");
+    }),
   );
 });

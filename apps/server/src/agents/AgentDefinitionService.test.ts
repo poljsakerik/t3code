@@ -282,4 +282,230 @@ it.layer(serviceLayer)("project agent catalog", (it) => {
       expect(error.message).toBe("Project missing was not found.");
     }),
   );
+  it.effect("creates an instructions-only project agent and loads it for editing", () =>
+    Effect.gen(function* () {
+      const service = yield* AgentDefinitionService;
+      const root = yield* fixture({});
+      const projectId = ProjectId.make(root);
+      const agent = yield* service.create({
+        projectId,
+        name: "reviewer",
+        instructions: "# Review\n\nFind bugs.\n",
+      });
+      expect(agent).toMatchObject({
+        id: ".t3/agents/reviewer",
+        name: "reviewer",
+        configurationPath: null,
+      });
+      expect((yield* service.list({ projectId })).agents).toEqual([agent]);
+      expect((yield* service.get({ projectId, agentId: agent.id })).documents).toEqual([
+        { path: ".t3/agents/reviewer/instructions.md", content: "# Review\n\nFind bugs.\n" },
+      ]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("creates global agents in the environment home", () =>
+    Effect.gen(function* () {
+      const service = yield* AgentDefinitionService;
+      vi.mocked(NodeOS.homedir).mockReturnValue(yield* fixture({}));
+      const agent = yield* service.create({ name: "assistant", instructions: "Help out." });
+      expect((yield* service.list({})).agents).toEqual([agent]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps new agents discoverable under a single root", () =>
+    Effect.gen(function* () {
+      const service = yield* AgentDefinitionService;
+      for (const directory of [".t3", ".t3/agent"]) {
+        const projectId = ProjectId.make(
+          yield* fixture({ [`${directory}/instructions.md`]: "Root." }),
+        );
+        const agent = yield* service.create({
+          projectId,
+          name: "reviewer",
+          instructions: "Review.",
+        });
+        expect(agent.parentId).toBe(directory);
+        expect(agent.id).toBe(`${directory}/subagents/reviewer`);
+        expect((yield* service.list({ projectId })).agents).toHaveLength(2);
+      }
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "rejects duplicate names, invalid names, and empty instructions without replacing files",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* AgentDefinitionService;
+        const projectId = ProjectId.make(
+          yield* fixture({ ".t3/agents/reviewer/instructions.md": "Original." }),
+        );
+        for (const name of ["reviewer", "../outside", "a/b"]) {
+          yield* service
+            .create({ projectId, name, instructions: "Replacement." })
+            .pipe(Effect.flip);
+        }
+        yield* service.create({ projectId, name: "empty", instructions: "  " }).pipe(Effect.flip);
+        expect(
+          (yield* service.get({ projectId, agentId: ".t3/agents/reviewer" })).documents[0]?.content,
+        ).toBe("Original.");
+        expect((yield* service.list({ projectId })).agents).toHaveLength(1);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "edits named instructions while preserving configuration, skills, and other sources",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* AgentDefinitionService;
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fixture({
+          ".t3/agent/agent.ts": "throw new Error('never execute');",
+          ".t3/agent/instructions.md": "Root instructions.",
+          ".t3/agent/instructions/review.md": "Review.",
+          ".t3/agent/instructions/dynamic.ts": "throw new Error('never execute');",
+          ".t3/agent/skills/review/SKILL.md": "Skill.",
+        });
+        const projectId = ProjectId.make(root);
+        const input = { projectId, agentId: ".t3/agent" };
+        const before = yield* service.get(input);
+        expect(before.documents).toHaveLength(2);
+        expect(before.otherInstructionPaths).toEqual([".t3/agent/instructions/dynamic.ts"]);
+        yield* service.update({
+          ...input,
+          path: ".t3/agent/instructions/review.md",
+          expectedContent: "Review.",
+          content: "Review carefully.\n",
+        });
+        expect((yield* service.get(input)).documents).toContainEqual({
+          path: ".t3/agent/instructions/review.md",
+          content: "Review carefully.\n",
+        });
+        expect(yield* fs.readFileString(`${root}/.t3/agent/agent.ts`)).toBe(
+          "throw new Error('never execute');",
+        );
+        expect(yield* fs.readFileString(`${root}/.t3/agent/instructions.md`)).toBe(
+          "Root instructions.",
+        );
+        expect(yield* fs.readFileString(`${root}/.t3/agent/skills/review/SKILL.md`)).toBe("Skill.");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("rejects stale saves and paths outside the agent's instruction sources", () =>
+    Effect.gen(function* () {
+      const service = yield* AgentDefinitionService;
+      const projectId = ProjectId.make(
+        yield* fixture({ ".t3/agent/instructions.md": "Original." }),
+      );
+      const input = {
+        projectId,
+        agentId: ".t3/agent",
+        path: ".t3/agent/instructions.md",
+        expectedContent: "Original.",
+      };
+      yield* service.update({ ...input, content: "Updated elsewhere." });
+      const error = yield* service.update({ ...input, content: "Stale edit." }).pipe(Effect.flip);
+      expect(error.message).toContain("changed since");
+      yield* service
+        .update({ ...input, path: "../outside.md", content: "Outside." })
+        .pipe(Effect.flip);
+      expect((yield* service.get(input)).documents[0]?.content).toBe("Updated elsewhere.");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("adds missing instructions and allows clearing existing instructions", () =>
+    Effect.gen(function* () {
+      const service = yield* AgentDefinitionService;
+      const projectId = ProjectId.make(
+        yield* fixture({ ".t3/agent/agent.ts": "export default {};" }),
+      );
+      const input = { projectId, agentId: ".t3/agent", path: ".t3/agent/instructions.md" };
+      expect((yield* service.get(input)).documents[0]?.content).toBeNull();
+      yield* service.update({ ...input, expectedContent: null, content: "Added." });
+      yield* service.update({ ...input, expectedContent: "Added.", content: "" });
+      expect((yield* service.get(input)).documents[0]?.content).toBe("");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "edits legacy system instructions and leaves executable-only instructions untouched",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* AgentDefinitionService;
+        const projectId = ProjectId.make(
+          yield* fixture({
+            ".t3/agents/legacy/system.md": "Legacy.",
+            ".t3/agents/dynamic/instructions.ts": "throw new Error('never execute');",
+          }),
+        );
+        expect((yield* service.get({ projectId, agentId: ".t3/agents/legacy" })).documents).toEqual(
+          [{ path: ".t3/agents/legacy/system.md", content: "Legacy." }],
+        );
+        const dynamic = yield* service.get({ projectId, agentId: ".t3/agents/dynamic" });
+        expect(dynamic.documents).toEqual([]);
+        expect(dynamic.otherInstructionPaths).toEqual([".t3/agents/dynamic/instructions.ts"]);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("refuses writes through linked agent containers or instruction sources", () =>
+    Effect.gen(function* () {
+      const service = yield* AgentDefinitionService;
+      const fs = yield* FileSystem.FileSystem;
+      const outside = yield* fixture({ "instructions.md": "Outside." });
+      const root = yield* fixture({ ".t3/agent/agent.ts": "export default {};" });
+      const projectId = ProjectId.make(root);
+      yield* fs.symlink(outside, `${root}/.t3/agent/subagents`);
+      yield* service
+        .create({ projectId, name: "linked", instructions: "Do not write." })
+        .pipe(Effect.flip);
+      yield* fs.symlink(`${outside}/instructions.md`, `${root}/.t3/agent/instructions.md`);
+      yield* service
+        .update({
+          projectId,
+          agentId: ".t3/agent",
+          path: ".t3/agent/instructions.md",
+          expectedContent: null,
+          content: "Do not write.",
+        })
+        .pipe(Effect.flip);
+      expect(yield* fs.readFileString(`${outside}/instructions.md`)).toBe("Outside.");
+      expect(yield* fs.exists(`${outside}/linked`)).toBe(false);
+    }).pipe(Effect.scoped),
+  );
+  it.effect("creates discoverable agents when a single-agent folder is still empty", () =>
+    Effect.gen(function* () {
+      const service = yield* AgentDefinitionService;
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fixture({});
+      yield* fs.makeDirectory(`${root}/.t3/agent`, { recursive: true });
+      const projectId = ProjectId.make(root);
+      const created = yield* service.create({ projectId, name: "first", instructions: "Help." });
+      expect(created.id).toBe(".t3/agent/subagents/first");
+      expect((yield* service.list({ projectId })).agents).toContainEqual(created);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("serializes concurrent saves so only one editor can replace the loaded version", () =>
+    Effect.gen(function* () {
+      const service = yield* AgentDefinitionService;
+      const projectId = ProjectId.make(
+        yield* fixture({ ".t3/agent/instructions.md": "Original." }),
+      );
+      const input = {
+        projectId,
+        agentId: ".t3/agent",
+        path: ".t3/agent/instructions.md",
+        expectedContent: "Original.",
+      };
+      const results = yield* Effect.forEach(
+        ["First edit.", "Second edit."],
+        (content) => service.update({ ...input, content }).pipe(Effect.exit),
+        { concurrency: "unbounded" },
+      );
+      expect(results.map((result) => result._tag).toSorted()).toEqual(["Failure", "Success"]);
+      expect(["First edit.", "Second edit."]).toContain(
+        (yield* service.get(input)).documents[0]?.content,
+      );
+    }).pipe(Effect.scoped),
+  );
 });

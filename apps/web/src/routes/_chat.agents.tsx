@@ -1,16 +1,25 @@
+import { useAtomRefresh } from "@effect/atom-react";
 import { createFileRoute } from "@tanstack/react-router";
-import { Bot, FileText, Folder, GitBranch, Globe, RefreshCw } from "lucide-react";
-import { useId } from "react";
+import { Bot, FileText, Folder, GitBranch, Globe, Pencil, Plus, RefreshCw } from "lucide-react";
+import { useId, useState } from "react";
 import type { AgentDefinition, EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { useProjects } from "../state/entities";
 import { useEnvironments } from "../state/environments";
 import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
+import { AgentEditorDialog } from "../components/AgentEditorDialog";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../components/ui/tooltip";
 
 export const Route = createFileRoute("/_chat/agents")({ component: AgentsPage });
+
+interface AgentScope {
+  environmentId: EnvironmentId;
+  projectId?: ProjectId;
+  label: string;
+}
 
 function AgentsPage() {
   const projects = useProjects();
@@ -19,12 +28,55 @@ function AgentsPage() {
     environments.map((environment) => [environment.environmentId, environment.label]),
   );
   const showEnvironment = environments.length > 1;
+  const [createScope, setCreateScope] = useState<AgentScope | null>(null);
+  const scopes: AgentScope[] = [
+    ...environments.map((environment) => ({
+      environmentId: environment.environmentId,
+      label: showEnvironment ? `Global · ${environment.label}` : "Global",
+    })),
+    ...projects.map((project) => ({
+      environmentId: project.environmentId,
+      projectId: project.id,
+      label: showEnvironment
+        ? `${project.title} · ${environmentLabels.get(project.environmentId) ?? project.environmentId}`
+        : project.title,
+    })),
+  ];
 
   return (
     <main className="h-full overflow-y-auto p-4 sm:p-6 lg:p-8">
       <div className="mx-auto w-full max-w-5xl space-y-8">
         <header className="space-y-2">
-          <h1 className="text-2xl font-semibold tracking-tight">Agents</h1>
+          <div className="flex items-center justify-between gap-3">
+            <h1 className="text-2xl font-semibold tracking-tight">Agents</h1>
+            {scopes.length > 0 ? (
+              <Menu>
+                <MenuTrigger render={<Button size="sm" />}>
+                  <Plus aria-hidden className="size-3.5" />
+                  Create agent
+                </MenuTrigger>
+                <MenuPopup
+                  align="end"
+                  aria-label="Create agent in"
+                  className="max-h-80 overflow-y-auto"
+                >
+                  {scopes.map((scope) => (
+                    <MenuItem
+                      key={JSON.stringify([scope.environmentId, scope.projectId])}
+                      onClick={() => setCreateScope(scope)}
+                    >
+                      {scope.projectId === undefined ? (
+                        <Globe aria-hidden />
+                      ) : (
+                        <Folder aria-hidden />
+                      )}
+                      {scope.label}
+                    </MenuItem>
+                  ))}
+                </MenuPopup>
+              </Menu>
+            ) : null}
+          </div>
           <p className="text-sm text-muted-foreground">
             Your Eve agents, organized by project. Agents in your home directory appear under
             Global.
@@ -53,6 +105,9 @@ function AgentsPage() {
             }
           />
         ))}
+        {createScope ? (
+          <CreateAgentDialog scope={createScope} onClose={() => setCreateScope(null)} />
+        ) : null}
         {environments.length === 0 && projects.length === 0 ? (
           <p className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">
             Connect to an environment to see its agents.
@@ -60,6 +115,39 @@ function AgentsPage() {
         ) : null}
       </div>
     </main>
+  );
+}
+
+function CreateAgentDialog({ scope, onClose }: { scope: AgentScope; onClose: () => void }) {
+  const catalog = useEnvironmentQuery(
+    projectEnvironment.agentDefinitions({
+      environmentId: scope.environmentId,
+      input: scope.projectId === undefined ? {} : { projectId: scope.projectId },
+    }),
+  );
+  const refreshGlobal = useAtomRefresh(
+    projectEnvironment.agentDefinitions({
+      environmentId: scope.environmentId,
+      input: {},
+    }),
+  );
+  return (
+    <AgentEditorDialog
+      environmentId={scope.environmentId}
+      {...(scope.projectId === undefined ? {} : { projectId: scope.projectId })}
+      agent={null}
+      parent={
+        catalog.data?.agents.find((agent) => agent.id === ".t3" || agent.id === ".t3/agent") ?? null
+      }
+      scopeLabel={scope.label}
+      onClose={onClose}
+      onSaved={() => {
+        catalog.refresh();
+        // A project registered at home is displayed by the Global catalog.
+        if (scope.projectId !== undefined && catalog.data?.scope === "global") refreshGlobal();
+        onClose();
+      }}
+    />
   );
 }
 
@@ -77,6 +165,7 @@ function AgentCatalog({
   environmentLabel: string | null;
 }) {
   const headingId = useId();
+  const [editor, setEditor] = useState<{ agent: AgentDefinition | null } | null>(null);
   const catalog = useEnvironmentQuery(
     projectEnvironment.agentDefinitions({
       environmentId,
@@ -88,6 +177,7 @@ function AgentCatalog({
 
   const agents = catalog.data?.agents ?? [];
   if (catalog.isSuccess && agents.length === 0) return null;
+  const singleRoot = agents.find((agent) => agent.id === ".t3" || agent.id === ".t3/agent") ?? null;
 
   const agentNames = new Map(agents.map((agent) => [agent.id, agent.name]));
   const Icon = projectId === undefined ? Globe : Folder;
@@ -123,6 +213,15 @@ function AgentCatalog({
         </div>
         <Button
           size="sm"
+          variant="outline"
+          disabled={!catalog.isSuccess}
+          onClick={() => setEditor({ agent: null })}
+        >
+          <Plus aria-hidden className="size-3.5" />
+          Create agent
+        </Button>
+        <Button
+          size="sm"
           variant="ghost"
           onClick={catalog.refresh}
           disabled={catalog.isPending}
@@ -154,6 +253,7 @@ function AgentCatalog({
             <AgentCard
               key={agent.id}
               agent={agent}
+              onEdit={() => setEditor({ agent })}
               parentName={
                 agent.parentId ? (agentNames.get(agent.parentId) ?? agent.parentId) : null
               }
@@ -161,11 +261,33 @@ function AgentCatalog({
           ))}
         </ul>
       ) : null}
+      {editor ? (
+        <AgentEditorDialog
+          environmentId={environmentId}
+          {...(projectId === undefined ? {} : { projectId })}
+          agent={editor.agent}
+          parent={singleRoot}
+          scopeLabel={environmentLabel ? `${title} · ${environmentLabel}` : title}
+          onClose={() => setEditor(null)}
+          onSaved={() => {
+            setEditor(null);
+            catalog.refresh();
+          }}
+        />
+      ) : null}
     </section>
   );
 }
 
-function AgentCard({ agent, parentName }: { agent: AgentDefinition; parentName: string | null }) {
+function AgentCard({
+  agent,
+  parentName,
+  onEdit,
+}: {
+  agent: AgentDefinition;
+  parentName: string | null;
+  onEdit: () => void;
+}) {
   return (
     <li className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-border/70 bg-card shadow-xs">
       <div className="flex flex-1 flex-col gap-4 p-4">
@@ -173,7 +295,7 @@ function AgentCard({ agent, parentName }: { agent: AgentDefinition; parentName: 
           <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
             <Bot aria-hidden className="size-5" />
           </div>
-          <div className="min-w-0 space-y-1">
+          <div className="min-w-0 flex-1 space-y-1">
             <h3 className="break-words text-sm font-semibold">{agent.name}</h3>
             <p className="flex items-center gap-1 text-xs text-muted-foreground">
               {parentName ? (
@@ -187,6 +309,16 @@ function AgentCard({ agent, parentName }: { agent: AgentDefinition; parentName: 
             </p>
           </div>
         </div>
+        <Button
+          size="sm"
+          variant="outline"
+          className="self-start"
+          onClick={onEdit}
+          aria-label={`Edit ${agent.name}`}
+        >
+          <Pencil aria-hidden className="size-3.5" />
+          Edit instructions
+        </Button>
         {agent.slots.length > 0 ? (
           <div className="flex flex-wrap gap-1.5">
             {agent.slots.map((slot) => (

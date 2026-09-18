@@ -4,6 +4,11 @@ import {
   type AgentDefinition,
   type AgentDefinitionsListInput,
   type AgentDefinitionsListResult,
+  type AgentDefinitionGetInput,
+  type AgentDefinitionGetResult,
+  AgentDefinitionCreateInput,
+  type AgentDefinitionUpdateInput,
+  type AgentInstructionDocument,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -12,10 +17,12 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import type { PlatformError } from "effect/PlatformError";
 import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
 
 const isAgentDefinitionError = Schema.is(AgentDefinitionError);
+const decodeCreateInput = Schema.decodeEffect(AgentDefinitionCreateInput);
 
 import {
   classifyAgentRootEntry,
@@ -90,6 +97,16 @@ export const discoverAgentDefinitions = Effect.fn("discoverAgentDefinitions")(
           );
         })
         .map((entry) => relative(path.join(directory, entry.name)));
+      if (instructionPaths.length === 0) {
+        instructionPaths.push(
+          ...children
+            .filter((entry) => {
+              const kind = classifyAgentRootEntry(entry.name, entryType(entry.type));
+              return kind === "system-markdown" || kind === "system-module";
+            })
+            .map((entry) => relative(path.join(directory, entry.name))),
+        );
+      }
       if (
         !children.some((entry) => isDiscoverableAgentRootEntry(entry.name, entryType(entry.type)))
       )
@@ -152,6 +169,15 @@ export const discoverAgentDefinitions = Effect.fn("discoverAgentDefinitions")(
 export class AgentDefinitionService extends Context.Service<
   AgentDefinitionService,
   {
+    readonly get: (
+      input: AgentDefinitionGetInput,
+    ) => Effect.Effect<AgentDefinitionGetResult, AgentDefinitionError>;
+    readonly create: (
+      input: AgentDefinitionCreateInput,
+    ) => Effect.Effect<AgentDefinition, AgentDefinitionError>;
+    readonly update: (
+      input: AgentDefinitionUpdateInput,
+    ) => Effect.Effect<AgentDefinition, AgentDefinitionError>;
     readonly list: (
       input: AgentDefinitionsListInput,
     ) => Effect.Effect<AgentDefinitionsListResult, AgentDefinitionError>;
@@ -164,34 +190,210 @@ export const layer = Layer.effect(
     const projects = yield* ProjectionProjectRepository;
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const list = Effect.fn("AgentDefinitionService.list")(
-      function* (input: AgentDefinitionsListInput) {
-        const home = yield* fs.realPath(NodeOS.homedir());
-        let workspaceRoot = home;
-        if (input.projectId !== undefined) {
-          const project = yield* projects.getById({ projectId: input.projectId });
-          if (Option.isNone(project) || project.value.deletedAt !== null) {
-            return yield* new AgentDefinitionError({
-              message: `Project ${input.projectId} was not found.`,
-            });
-          }
-          workspaceRoot = yield* fs.realPath(project.value.workspaceRoot);
+    const lock = yield* Semaphore.make(1);
+    const wrapError = (cause: unknown) =>
+      isAgentDefinitionError(cause)
+        ? cause
+        : new AgentDefinitionError({ message: "Could not access agent instructions.", cause });
+    const workspace = Effect.fn("AgentDefinitionService.workspace")(function* (
+      input: AgentDefinitionsListInput,
+    ) {
+      const home = yield* fs.realPath(NodeOS.homedir());
+      if (input.projectId === undefined) return home;
+      const project = yield* projects.getById({ projectId: input.projectId });
+      if (Option.isNone(project) || project.value.deletedAt !== null) {
+        return yield* new AgentDefinitionError({
+          message: `Project ${input.projectId} was not found.`,
+        });
+      }
+      return yield* fs.realPath(project.value.workspaceRoot);
+    });
+    const discover = (root: string) =>
+      discoverAgentDefinitions(root).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(Path.Path, path),
+      );
+    const findAgent = Effect.fn("AgentDefinitionService.findAgent")(function* (
+      root: string,
+      id: string,
+    ) {
+      const agent = (yield* discover(root)).find((agent) => agent.id === id);
+      if (!agent)
+        return yield* new AgentDefinitionError({
+          message: "Agent was not found. Refresh the catalog and try again.",
+        });
+      return agent;
+    });
+    const readDocument = Effect.fn("AgentDefinitionService.readDocument")(function* (file: string) {
+      if ((yield* fs.realPath(file)) !== file || (yield* fs.stat(file)).type !== "File") {
+        return yield* new AgentDefinitionError({
+          message: "Linked instruction sources cannot be edited.",
+          path: file,
+        });
+      }
+      if ((yield* fs.stat(file)).size > 4_000_000) {
+        return yield* new AgentDefinitionError({
+          message: "Instruction files must contain at most 1,000,000 characters.",
+          path: file,
+        });
+      }
+      const content = yield* fs.readFileString(file);
+      if (content.length > 1_000_000) {
+        return yield* new AgentDefinitionError({
+          message: "Instruction files must contain at most 1,000,000 characters.",
+          path: file,
+        });
+      }
+      return content;
+    });
+    const getAt = Effect.fn("AgentDefinitionService.getAt")(function* (
+      root: string,
+      agentId: string,
+    ) {
+      const agent = yield* findAgent(root, agentId);
+      const documents: AgentInstructionDocument[] = [];
+      const otherInstructionPaths: string[] = [];
+      const visit = Effect.fn("AgentDefinitionService.visitInstructions")(function* (
+        relative: string,
+        allowDirectory = true,
+      ): Effect.fn.Return<void, AgentDefinitionError | PlatformError> {
+        const file = path.join(root, relative);
+        if ((yield* fs.realPath(file)) !== file) {
+          otherInstructionPaths.push(relative);
+          return;
         }
-        const agents = yield* discoverAgentDefinitions(workspaceRoot).pipe(
-          Effect.provideService(FileSystem.FileSystem, fs),
-          Effect.provideService(Path.Path, path),
-        );
-        return {
-          scope: workspaceRoot === home ? ("global" as const) : ("project" as const),
-          agents,
-        };
+        const stat = yield* fs.stat(file);
+        if (stat.type === "Directory" && allowDirectory) {
+          for (const name of (yield* fs.readDirectory(file)).toSorted()) {
+            yield* visit(`${relative}/${name}`, false);
+          }
+        } else if (stat.type === "File" && relative.toLowerCase().endsWith(".md")) {
+          documents.push({ path: relative, content: yield* readDocument(file) });
+        } else {
+          otherInstructionPaths.push(relative);
+        }
+      });
+      for (const source of agent.instructionPaths) yield* visit(source);
+      if (
+        documents.length === 0 &&
+        !agent.instructionPaths.some(
+          (source) =>
+            matchesSupportedModuleBaseName(path.basename(source), "instructions") ||
+            matchesSupportedModuleBaseName(path.basename(source), "system"),
+        )
+      ) {
+        documents.push({ path: `${agent.directory}/instructions.md`, content: null });
+      }
+      return { agent, documents, otherInstructionPaths };
+    });
+    const list = Effect.fn("AgentDefinitionService.list")(function* (
+      input: AgentDefinitionsListInput,
+    ) {
+      const root = yield* workspace(input);
+      return {
+        scope:
+          root === (yield* fs.realPath(NodeOS.homedir()))
+            ? ("global" as const)
+            : ("project" as const),
+        agents: yield* discover(root),
+      };
+    }, Effect.mapError(wrapError));
+    const get = Effect.fn("AgentDefinitionService.get")(function* (input: AgentDefinitionGetInput) {
+      return yield* getAt(yield* workspace(input), input.agentId);
+    }, Effect.mapError(wrapError));
+    // Check every existing ancestor before creating directories, including the .t3 root.
+    const ensureDirectory = Effect.fn("AgentDefinitionService.ensureDirectory")(function* (
+      root: string,
+      relative: string,
+    ) {
+      let directory = root;
+      for (const segment of relative.split("/")) {
+        directory = path.join(directory, segment);
+        if (!(yield* fs.exists(directory))) yield* fs.makeDirectory(directory);
+        if (
+          (yield* fs.realPath(directory)) !== directory ||
+          (yield* fs.stat(directory)).type !== "Directory"
+        ) {
+          return yield* new AgentDefinitionError({
+            message: "Linked agent folders cannot be edited.",
+            path: relative,
+          });
+        }
+      }
+      return directory;
+    });
+    const create = Effect.fn("AgentDefinitionService.create")(
+      function* (request: AgentDefinitionCreateInput) {
+        const input = yield* decodeCreateInput(request);
+        if (!input.instructions.trim())
+          return yield* new AgentDefinitionError({ message: "Add instructions for this agent." });
+        const root = yield* workspace(input);
+        const agents = yield* discover(root);
+        const singleRoot = agents.find((agent) => agent.id === ".t3" || agent.id === ".t3/agent");
+        const parentId = input.parentId ?? singleRoot?.id;
+        const parent = parentId === undefined ? undefined : yield* findAgent(root, parentId);
+        // An empty single-agent folder still takes precedence in Eve discovery.
+        const emptyRoot = !parent && (yield* fs.exists(path.join(root, ".t3/agent")));
+        const container = parent
+          ? `${parent.directory}/subagents`
+          : emptyRoot
+            ? ".t3/agent/subagents"
+            : ".t3/agents";
+        const directory = `${container}/${input.name}`;
+        yield* ensureDirectory(root, container);
+        if (yield* fs.exists(path.join(root, directory))) {
+          return yield* new AgentDefinitionError({
+            message: "An agent with this name already exists.",
+          });
+        }
+        yield* fs.makeDirectory(path.join(root, directory));
+        yield* fs
+          .writeFileString(path.join(root, directory, "instructions.md"), input.instructions, {
+            flag: "wx",
+          })
+          .pipe(
+            Effect.onError(() =>
+              fs.remove(path.join(root, directory), { recursive: true }).pipe(Effect.ignore),
+            ),
+          );
+        return yield* findAgent(root, directory);
       },
-      Effect.mapError((cause) =>
-        isAgentDefinitionError(cause)
-          ? cause
-          : new AgentDefinitionError({ message: "Could not list agent folders.", cause }),
-      ),
+      lock.withPermits(1),
+      Effect.mapError(wrapError),
     );
-    return AgentDefinitionService.of({ list });
+    const update = Effect.fn("AgentDefinitionService.update")(
+      function* (input: AgentDefinitionUpdateInput) {
+        const root = yield* workspace(input);
+        const current = yield* getAt(root, input.agentId);
+        const document = current.documents.find((document) => document.path === input.path);
+        if (!document)
+          return yield* new AgentDefinitionError({
+            message: "Only this agent's Markdown instruction sources can be edited.",
+          });
+        if (document.content !== input.expectedContent) {
+          return yield* new AgentDefinitionError({
+            message:
+              "These instructions changed since you opened the editor. Reopen the editor to load the latest version before saving.",
+          });
+        }
+        const file = path.join(root, document.path);
+        if (document.content === null) {
+          yield* fs.writeFileString(file, input.content, { flag: "wx" });
+        } else {
+          const temporary = yield* fs.makeTempDirectoryScoped({
+            directory: path.dirname(file),
+            prefix: ".t3-instructions-",
+          });
+          const staged = path.join(temporary, "instructions.md");
+          yield* fs.writeFileString(staged, input.content);
+          yield* fs.rename(staged, file);
+        }
+        return yield* findAgent(root, input.agentId);
+      },
+      Effect.scoped,
+      lock.withPermits(1),
+      Effect.mapError(wrapError),
+    );
+    return AgentDefinitionService.of({ list, get, create, update });
   }),
 );

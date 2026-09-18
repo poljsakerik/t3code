@@ -344,12 +344,20 @@ import {
 
 import {
   AgentDefinitionError,
+  AgentDefinition,
+  AgentDefinitionGetInput,
+  AgentDefinitionGetResult,
+  AgentDefinitionCreateInput,
+  AgentDefinitionUpdateInput,
   AgentDefinitionsListInput,
   AgentDefinitionsListResult,
 } from "./agentDefinitions.ts";
 
 export const WS_METHODS = {
   agentDefinitionsList: "agentDefinitions.list",
+  agentDefinitionsGet: "agentDefinitions.get",
+  agentDefinitionsCreate: "agentDefinitions.create",
+  agentDefinitionsUpdate: "agentDefinitions.update",
   workflowsListProfiles: "workflows.listProfiles",
   // Project registry methods
   projectsList: "projects.list",
@@ -1154,6 +1162,22 @@ const WsAgentDefinitionsListRpc = Rpc.make(WS_METHODS.agentDefinitionsList, {
   error: Schema.Union([AgentDefinitionError, EnvironmentAuthorizationError]),
 });
 
+const WsAgentDefinitionsGetRpc = Rpc.make(WS_METHODS.agentDefinitionsGet, {
+  payload: AgentDefinitionGetInput,
+  success: AgentDefinitionGetResult,
+  error: Schema.Union([AgentDefinitionError, EnvironmentAuthorizationError]),
+});
+const WsAgentDefinitionsCreateRpc = Rpc.make(WS_METHODS.agentDefinitionsCreate, {
+  payload: AgentDefinitionCreateInput,
+  success: AgentDefinition,
+  error: Schema.Union([AgentDefinitionError, EnvironmentAuthorizationError]),
+});
+const WsAgentDefinitionsUpdateRpc = Rpc.make(WS_METHODS.agentDefinitionsUpdate, {
+  payload: AgentDefinitionUpdateInput,
+  success: AgentDefinition,
+  error: Schema.Union([AgentDefinitionError, EnvironmentAuthorizationError]),
+});
+
 const WsWorkflowsListProfilesRpc = Rpc.make(WS_METHODS.workflowsListProfiles, {
   payload: WorkflowListProfilesInput,
   success: WorkflowListProfilesResult,
@@ -1823,6 +1847,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsListEntriesRpc,
   WsWorkflowsListProfilesRpc,
   WsAgentDefinitionsListRpc,
+  WsAgentDefinitionsGetRpc,
+  WsAgentDefinitionsCreateRpc,
+  WsAgentDefinitionsUpdateRpc,
   WsProjectsReadFileRpc,
   WsProjectsSearchContentsRpc,
   WsProjectsSearchEntriesRpc,

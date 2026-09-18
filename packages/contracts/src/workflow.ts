@@ -44,10 +44,9 @@ export const ResolvedWorkflowAgent = Schema.Struct({
   skills: Schema.Array(WorkflowSkill)
     .check(
       Schema.isMaxLength(20),
-      Schema.isUnique({
-        equivalence: (left: { readonly name: string }, right: { readonly name: string }) =>
-          left.name === right.name,
-      }),
+      Schema.makeFilter(
+        (skills) => new Set(skills.map((skill) => skill.name)).size === skills.length,
+      ),
     )
     .pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   instructions: TrimmedNonEmptyString,

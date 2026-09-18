@@ -20,19 +20,42 @@ describe("resolved workflow agents", () => {
     const agent = decodeWorkflowAgent({
       id: "reviewer",
       name: "Reviewer",
-      skills: ["code-review", "vendor:security"],
+      skills: [
+        {
+          name: "code-review",
+          relativePath: ".t3/agents/reviewer/skills/code-review/SKILL.md",
+        },
+        {
+          name: "vendor:security",
+          relativePath: ".t3/agents/reviewer/skills/security/SKILL.md",
+        },
+      ],
       instructions: "Review the implementation.",
     });
 
-    expect(agent.skills).toEqual(["code-review", "vendor:security"]);
+    expect(agent.skills).toEqual([
+      {
+        name: "code-review",
+        relativePath: ".t3/agents/reviewer/skills/code-review/SKILL.md",
+      },
+      {
+        name: "vendor:security",
+        relativePath: ".t3/agents/reviewer/skills/security/SKILL.md",
+      },
+    ]);
   });
 
-  it("rejects invalid or duplicate skill names", () => {
+  it("rejects invalid or duplicate skill definitions", () => {
     expect(() =>
       decodeWorkflowAgent({
         id: "reviewer",
         name: "Reviewer",
-        skills: ["not a token"],
+        skills: [
+          {
+            name: "not a token",
+            relativePath: ".t3/agents/reviewer/skills/invalid/SKILL.md",
+          },
+        ],
         instructions: "Review the implementation.",
       }),
     ).toThrow();
@@ -40,7 +63,16 @@ describe("resolved workflow agents", () => {
       decodeWorkflowAgent({
         id: "reviewer",
         name: "Reviewer",
-        skills: ["code-review", "code-review"],
+        skills: [
+          {
+            name: "code-review",
+            relativePath: ".t3/agents/reviewer/skills/code-review/SKILL.md",
+          },
+          {
+            name: "code-review",
+            relativePath: ".t3/agents/reviewer/skills/duplicate/SKILL.md",
+          },
+        ],
         instructions: "Review the implementation.",
       }),
     ).toThrow();

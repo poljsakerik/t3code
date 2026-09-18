@@ -15,7 +15,9 @@ Open **Agents** from the sidebar to browse Eve agents grouped by project. Agents
 
 Each runnable agent has an `agent.ts` configuration module and its own nested `subagents/`. Eve's supported JavaScript and TypeScript module extensions are recognized too. Single-agent layouts under `.t3/agent/` and flat definitions directly in `.t3/` are also supported; a single root takes precedence over workspace members.
 
-Edit the files on disk and refresh the catalog to see changes. YAML files are not agent entries in this catalog. Catalog discovery does not execute agent modules. Starting a verified workflow loads the referenced agents' configuration and Markdown instructions, then runs them through T3's provider harnesses. Ordinary threads do not apply agent definitions yet.
+Choose **Create agent** and select Global or a project to name an agent and add Markdown instructions. Groups appear in the catalog once they contain agents. Choose **Edit instructions** on an existing agent to update its Markdown sources. In single-agent layouts, new agents are created as subagents of the root agent. New agents contain instructions only; add an `agent.ts` model configuration before using them in a workflow. Skills and executable instruction modules are still managed on disk.
+
+You can also edit the files on disk and refresh the catalog to see changes. YAML files are not agent entries in this catalog. Catalog discovery does not execute agent modules. Starting a verified workflow loads the referenced agents' configuration and Markdown instructions, then runs them through T3's provider harnesses. Ordinary threads do not apply agent definitions yet.
 
 Each agent chooses its provider and model in `agent.ts`:
 

@@ -60,6 +60,19 @@ export function createProjectEnvironmentAtoms<R, E>(
       tag: WS_METHODS.agentDefinitionsList,
       staleTimeMs: 0,
     }),
+    agentDefinition: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:projects:agent-definition",
+      tag: WS_METHODS.agentDefinitionsGet,
+      staleTimeMs: 0,
+    }),
+    createAgentDefinition: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:create-agent-definition",
+      tag: WS_METHODS.agentDefinitionsCreate,
+    }),
+    updateAgentDefinition: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:update-agent-definition",
+      tag: WS_METHODS.agentDefinitionsUpdate,
+    }),
     workflowProfiles: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:projects:workflow-profiles",
       tag: WS_METHODS.workflowsListProfiles,

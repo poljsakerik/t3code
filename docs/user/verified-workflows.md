@@ -44,23 +44,36 @@ To use another checked-in directory, set its workspace-relative path in `t3.json
 
 The selected directory must contain a `profiles` subdirectory and must remain inside the project root.
 
-Profiles reference project-local Eve-style agent folders by folder name (or by their `.t3`-relative catalog ID). Put the agent's prompt in `instructions.md`:
+Profiles reference project-local Eve-style agent folders by folder name (or by their `.t3`-relative catalog ID). Put each agent's provider and model in `agent.ts` and its prompt in `instructions.md`:
 
 ```text
 .t3/
   agents/
     planner/
+      agent.ts
       instructions.md
     implementer/
+      agent.ts
       instructions.md
     correctness/
+      agent.ts
       instructions.md
       skills/
         code-review.md
         repository-conventions.md
 ```
 
-Workflow agents run through T3's configured provider harness and inherit the thread's selected provider instance and model. T3 does not run the Eve model runtime or make direct API calls from `agent.ts`; this preserves provider subscriptions, including Claude Code authentication.
+Each `agent.ts` exports an Eve-style configuration:
+
+```ts
+export default {
+  model: "anthropic/claude-sonnet-4-6",
+};
+```
+
+Use `openai/<model>` for Codex or `anthropic/<model>` for Claude Code. Agents always use their configured provider and model, including follow-ups and revisions; the thread's model selection does not override them. Different workflow stages can use different providers. T3 uses the environment's default provider instances and existing harness authentication, including Claude subscriptions. It does not run Eve's model runtime.
+
+Configuration modules support `model` and an optional `description`. Eve API model objects and runtime capability settings are rejected. An Eve `defineAgent(...)` export works when Eve is installed in the project. T3 evaluates configuration when creating a workflow and snapshots the resolved definitions, so edits apply to new workflows. Existing saved workflows without agent model selections retain their previous behavior.
 
 Planner and implementer roles use the provider's normal skill configuration. For a reviewer, each Markdown file or directory immediately below `skills/` names one native provider skill in its exclusive allowlist. The file contents are not executed by Eve. An omitted or empty directory means no skills. Non-empty skill directories are rejected on planner and implementer agents.
 
@@ -97,4 +110,4 @@ limits:
   identicalFailureLimit: 2
 ```
 
-Checks run as shell commands in the thread workspace, in listed order. Repository workflow configuration is trusted code: only use it for repositories whose contents you trust.
+Checks run as shell commands in the thread workspace, in listed order. Repository workflow and agent configuration is trusted code: only use it for repositories whose contents you trust.

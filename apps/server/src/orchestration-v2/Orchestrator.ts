@@ -2319,7 +2319,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const reviewer = workflow.profile?.reviewers.find(
         (candidate) => candidate.id === review.reviewerId,
       );
-      const modelSelection = projection.thread.modelSelection;
+      const modelSelection = reviewer?.modelSelection ?? projection.thread.modelSelection;
       const adapter = yield* providerAdapters.get(modelSelection.instanceId).pipe(
         Effect.mapError(
           (cause) =>
@@ -4559,8 +4559,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         projection = yield* getProjectionWithPendingEvents(command.threadId, events);
       }
       let workflowPromptPrefix = "";
-      const workflowSkillAllowlist = command.workflowSkillAllowlist;
       const workflow = projection.thread.workflow ?? null;
+      const parentThreadId = projection.thread.lineage.parentThreadId;
+      const parentWorkflow =
+        projection.thread.lineage.relationshipToParent === "subagent" && parentThreadId !== null
+          ? (yield* projectionStore.getThread(parentThreadId).pipe(mapDispatchError(command)))
+              .workflow
+          : null;
+      const reviewerId = parentWorkflow?.reviews.find(
+        (review) => review.reviewerThreadId === command.threadId,
+      )?.reviewerId;
+      const reviewer = parentWorkflow?.profile?.reviewers.find((agent) => agent.id === reviewerId);
+      const workflowSkillAllowlist = reviewer?.skills ?? command.workflowSkillAllowlist;
+      const workflowAgent =
+        reviewer ??
+        (workflow?.profile === undefined
+          ? undefined
+          : workflow.approvedPlanId === null && command.sourcePlanRef === undefined
+            ? workflow.profile.planner
+            : workflow.profile.implementer);
+      const modelSelection =
+        workflowAgent?.modelSelection ?? command.modelSelection ?? projection.thread.modelSelection;
       if (workflow !== null && workflow.profile !== undefined) {
         if (workflow.status === "draft") {
           const now = yield* DateTime.now;
@@ -4573,6 +4592,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ...projection.thread,
             workflow: nextWorkflow,
             interactionMode: "plan",
+            providerInstanceId: modelSelection.instanceId,
+            modelSelection,
             updatedAt: now,
           };
           yield* emit(
@@ -4602,7 +4623,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             terminalReason: null,
             updatedAt: DateTime.formatIso(now),
           };
-          const selected = command.modelSelection ?? projection.thread.modelSelection;
+          const selected = modelSelection;
           const thread: OrchestrationV2AppThread = {
             ...projection.thread,
             workflow: nextWorkflow,
@@ -4639,7 +4660,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             terminalReason: null,
             updatedAt: DateTime.formatIso(now),
           };
-          const selected = command.modelSelection ?? projection.thread.modelSelection;
+          const selected = modelSelection;
           const thread: OrchestrationV2AppThread = {
             ...projection.thread,
             workflow: nextWorkflow,
@@ -4664,7 +4685,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             : `${workflow.profile.implementer.instructions}\n\nThe workflow required human guidance. Apply the user's guidance and finish the implementation; all deterministic checks and reviewers will run again.\n\nUser guidance:\n`;
         }
       }
-      const modelSelection = command.modelSelection ?? projection.thread.modelSelection;
       let dispatchMode = resolveMessageDispatchIntent(
         projection,
         command.dispatchMode,

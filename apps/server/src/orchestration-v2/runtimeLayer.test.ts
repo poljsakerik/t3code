@@ -16,6 +16,7 @@ import {
   TurnItemId,
   type ThreadWorkflowState,
   type ModelSelection,
+  PlanId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -147,14 +148,34 @@ const alternateProviderInstance = {
   },
 } satisfies ProviderInstance;
 
+const claudeModelSelection = {
+  instanceId: ProviderInstanceId.make("claudeAgent"),
+  model: "claude-sonnet-4-6",
+};
+const claudeProviderInstance = {
+  ...providerInstance,
+  instanceId: claudeModelSelection.instanceId,
+  driverKind: ProviderDriverKind.make("claudeAgent"),
+  orchestrationAdapter: {
+    ...orchestrationAdapter,
+    instanceId: claudeModelSelection.instanceId,
+    driver: ProviderDriverKind.make("claudeAgent"),
+    workflowSkillIsolation: "native" as const,
+  },
+} satisfies ProviderInstance;
+
 const TestProviderInstanceRegistry = Layer.succeed(ProviderInstanceRegistry, {
   getInstance: (instanceId) =>
     Effect.succeed(
-      [providerInstance, alternateProviderInstance].find(
+      [providerInstance, alternateProviderInstance, claudeProviderInstance].find(
         (instance) => instanceId === instance.instanceId,
       ),
     ),
-  listInstances: Effect.succeed([providerInstance, alternateProviderInstance]),
+  listInstances: Effect.succeed([
+    providerInstance,
+    alternateProviderInstance,
+    claudeProviderInstance,
+  ]),
   listUnavailable: Effect.succeed([]),
   streamChanges: Stream.empty,
   subscribeChanges: Effect.never,
@@ -403,7 +424,10 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
           name: "Default",
           planner: agent("planner"),
           implementer: agent("implementer"),
-          reviewers: [agent("second"), agent("fresh")],
+          reviewers: [
+            agent("second"),
+            { ...agent("fresh"), modelSelection: claudeModelSelection, skills: ["code-review"] },
+          ],
           checks: [{ id: "test", name: "Tests", run: "true", timeoutMs: 1000 }],
           limits: { maxRevisionCycles: 3, identicalFailureLimit: 2 },
         },
@@ -516,8 +540,28 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
       const fresh = yield* orchestrator.getThreadProjection(freshId);
       assert.isNull(fresh.thread.activeProviderThreadId);
       assert.equal(fresh.thread.interactionMode, "plan");
+      assert.deepEqual(fresh.thread.modelSelection, claudeModelSelection);
+      const freshTask = updated.subagents.find((task) => task.childThreadId === freshId)!;
+      assert.equal(freshTask.driver, "claudeAgent");
+      assert.equal(freshTask.model, claudeModelSelection.model);
       assert.isEmpty(fresh.messages);
       assert.isEmpty(fresh.runs);
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("workflow-reviewer-fixed-model"),
+        threadId: freshId,
+        messageId: MessageId.make("workflow-reviewer-fixed-model"),
+        text: "Review the implementation.",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "agent",
+        creationSource: "server",
+      });
+      const reviewerRun = (yield* orchestrator.getThreadProjection(freshId)).runs[0]!;
+      assert.deepEqual(reviewerRun.modelSelection, claudeModelSelection);
+      assert.deepEqual(reviewerRun.workflowSkillAllowlist, ["code-review"]);
+
       assert.lengthOf(
         result.storedEvents.filter((stored) => stored.event.type === "thread.created"),
         2,
@@ -540,6 +584,99 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
       );
     }),
   );
+
+  for (const [status, hasPlan] of [
+    ["draft", false],
+    ["planning", false],
+    ["planned", false],
+    ["implementing", true],
+    ["revising", true],
+    ["needs_human", false],
+    ["needs_human", true],
+  ] as const) {
+    it.effect(
+      `runs the configured agent during ${status} (${hasPlan ? "implementation" : "planning"})`,
+      () =>
+        Effect.gen(function* () {
+          const orchestrator = yield* OrchestratorV2;
+          const sink = yield* EventSinkV2;
+          const now = yield* DateTime.now;
+          const threadId = ThreadId.make(`fixed-agent-${status}-${hasPlan}`);
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`create-${threadId}`),
+            threadId,
+            projectId: ProjectId.make("fixed-agent-project"),
+            title: "Fixed agent",
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: "/workspace",
+            createdBy: "user",
+            creationSource: "web",
+          });
+          const thread = (yield* orchestrator.getThreadProjection(threadId)).thread;
+          const implementerSelection = { ...modelSelection, model: "gpt-5.4-agent" };
+          const agent = { id: "agent", name: "Agent", instructions: "Do the job.", skills: [] };
+          const workflow: ThreadWorkflowState = {
+            profileId: "fixed",
+            workspaceRoot: "/workspace",
+            profile: {
+              version: 1,
+              id: "fixed",
+              name: "Fixed",
+              planner: { ...agent, modelSelection: claudeModelSelection },
+              implementer: { ...agent, modelSelection: implementerSelection },
+              reviewers: [agent],
+              checks: [{ id: "check", name: "Check", run: "true", timeoutMs: 1000 }],
+              limits: { maxRevisionCycles: 3, identicalFailureLimit: 2 },
+            },
+            status,
+            revision: 0,
+            revisionCycles: 0,
+            consecutiveFailureCount: 0,
+            lastFailureFingerprint: null,
+            approvedPlanId: hasPlan ? PlanId.make("approved") : null,
+            candidateRunId: null,
+            workspaceDigest: null,
+            checks: [],
+            reviews: [],
+            terminalReason: null,
+            updatedAt: DateTime.formatIso(now),
+          };
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make(`seed-${threadId}`),
+                type: "thread.workflow-updated",
+                threadId,
+                occurredAt: now,
+                payload: { ...thread, workflow },
+              },
+            ],
+          });
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(`dispatch-${threadId}`),
+            threadId,
+            messageId: MessageId.make(`message-${threadId}`),
+            text: "Continue.",
+            attachments: [],
+            modelSelection: { instanceId: alternateInstanceId, model: "wrong-model" },
+            dispatchMode: { type: "start_immediately" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+          const projection = yield* orchestrator.getThreadProjection(threadId);
+          assert.deepEqual(
+            projection.runs[0]?.modelSelection,
+            hasPlan ? implementerSelection : claudeModelSelection,
+          );
+          assert.isUndefined(projection.runs[0]?.workflowSkillAllowlist);
+        }),
+    );
+  }
 
   it.effect("emits model updates separately from provider switches", () =>
     Effect.gen(function* () {

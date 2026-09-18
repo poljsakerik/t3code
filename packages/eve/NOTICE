@@ -9,3 +9,9 @@ commit 7973fa2d7d10e285737536672cfcfe64ceff37c8. See filesystem.ts for the sourc
 
 Authored slot candidate collection copied and modified from vercel/eve
 commit 505601b3f448a20aecc133e5d132d70c2ec3ee35. See slots.ts for the source and modifications.
+
+ProjectSource and explicit-root agent/instruction discovery adapted from vercel/eve
+commit 505601b3f448a20aecc133e5d132d70c2ec3ee35. See project-source.ts, grammar.ts,
+and discover-agent.ts for source links and modifications. Runtime compilation,
+extension resolution, and provider execution are not included. load-module.ts
+uses Node's native module loader instead of Eve's application bundler.

@@ -1,3 +1,4 @@
+import { searchAgentSkills } from "./agents/AgentSkills.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -3074,6 +3075,9 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "workspace" },
           ),
+        [WS_METHODS.agentSkillsSearch]: (input) => searchAgentSkills(input),
+        [WS_METHODS.agentSkillsInstall]: (input) => agentDefinitions.installSkill(input),
+        [WS_METHODS.agentSkillsRemove]: (input) => agentDefinitions.removeSkill(input),
         [WS_METHODS.agentDefinitionsList]: (input) =>
           observeRpcEffect(WS_METHODS.agentDefinitionsList, agentDefinitions.list(input), {
             "rpc.aggregate": "workspace",

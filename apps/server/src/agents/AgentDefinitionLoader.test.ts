@@ -48,6 +48,28 @@ it.layer(NodeServices.layer)("AgentDefinitionLoader", (it) => {
     );
   }
 
+  it.effect("loads only the owning agent's packaged skills and freezes their instructions", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const { root, definition } = yield* fixture({
+        "agent.ts": 'export default { model: "openai/gpt-5.4" };',
+        "instructions.md": "Review.",
+        "skills/impeccable/SKILL.md": "Use references/layout.md for design guidance.",
+        "skills/impeccable/references/layout.md": "Reference.",
+        "skills/impeccable/scripts/tool.ts": "throw new Error('must not execute');",
+        "subagents/other/skills/private/SKILL.md": "Other agent's skill.",
+      });
+      const resolved = yield* loadAgentDefinition(root, definition);
+      assert.deepEqual(resolved.skills, []);
+      assert.include(resolved.instructions, "Use references/layout.md");
+      assert.include(resolved.instructions, `${definition.directory}/skills/impeccable`);
+      assert.notInclude(resolved.instructions, "Other agent's skill.");
+      yield* fs.remove(`${root}/${definition.directory}/skills/impeccable`, { recursive: true });
+      assert.equal((yield* loadAgentDefinition(root, definition)).instructions, "Review.");
+      assert.include(resolved.instructions, "Use references/layout.md");
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("reloads edited configuration while leaving a resolved snapshot unchanged", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

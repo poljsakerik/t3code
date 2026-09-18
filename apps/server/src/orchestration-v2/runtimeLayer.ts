@@ -68,7 +68,7 @@ const runtimePolicyProvided = RuntimePolicy.layerFromProjectStore.pipe(
   Layer.provide(ProjectStore.layer),
 );
 const agentDefinitionServiceProvided = agentDefinitionServiceLayer.pipe(
-  Layer.provide(ProjectStore.layer),
+  Layer.provide(Layer.merge(ProjectStore.layer, ProcessRunner.layer)),
 );
 const workflowConfigServiceProvided = workflowConfigServiceLayer.pipe(
   Layer.provide(Layer.mergeAll(ProjectStore.layer, t3ProjectFileLoaderLayer, workspacePathsLayer)),

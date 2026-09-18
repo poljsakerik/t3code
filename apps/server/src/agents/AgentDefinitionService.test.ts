@@ -1,3 +1,5 @@
+import { ChildProcessSpawner } from "effect/unstable/process";
+import { ProcessRunner, ProcessSpawnError } from "../processRunner.ts";
 import * as NodeOS from "node:os";
 import { afterEach, vi } from "vite-plus/test";
 import { AgentDefinitionService, layer } from "./AgentDefinitionService.ts";
@@ -184,7 +186,64 @@ it.layer(NodeServices.layer)("agent definitions", (it) => {
   );
 });
 
+const installer = Layer.effect(
+  ProcessRunner,
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    return ProcessRunner.of({
+      run: (input) =>
+        Effect.gen(function* () {
+          if (input.args.includes("broken/repo"))
+            return {
+              stdout: "",
+              stderr: "download failed",
+              code: ChildProcessSpawner.ExitCode(1),
+              timedOut: false,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              stdoutInvalidUtf8: false,
+              stderrInvalidUtf8: false,
+            };
+          expect(input.cwd).not.toContain(".t3/agents");
+          expect(input.args).not.toContain("--global");
+          const directory = path.join(input.cwd!, ".agents/skills/impeccable");
+          yield* fs.makeDirectory(path.join(directory, "references"), { recursive: true });
+          yield* fs.writeFileString(path.join(directory, "SKILL.md"), "Design thoughtfully.");
+          yield* fs.writeFileString(
+            path.join(directory, "references/layout.md"),
+            "Layout guidance.",
+          );
+          if (input.args.includes("linked/repo"))
+            yield* fs.symlink(path.join(directory, "SKILL.md"), path.join(directory, "linked.md"));
+          return {
+            stdout: "",
+            stderr: "",
+            code: ChildProcessSpawner.ExitCode(0),
+            timedOut: false,
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            stdoutInvalidUtf8: false,
+            stderrInvalidUtf8: false,
+          };
+        }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProcessSpawnError({
+                command: input.command,
+                argumentCount: input.args.length,
+                resolvedCommand: input.command,
+                resolvedArgumentCount: input.args.length,
+                cause,
+              }),
+          ),
+        ),
+    });
+  }),
+);
+
 const serviceLayer = layer.pipe(
+  Layer.provide(installer),
   Layer.provide(
     Layer.mock(ProjectionProjectRepository)({
       getById: ({ projectId }) =>
@@ -210,6 +269,89 @@ const serviceLayer = layer.pipe(
 );
 
 it.layer(serviceLayer)("project agent catalog", (it) => {
+  it.effect("installs complete skill files only on the selected agent and removes them", () =>
+    Effect.gen(function* () {
+      const service = yield* AgentDefinitionService;
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fixture({
+        ".t3/agents/designer/instructions.md": "Design.",
+        ".t3/agents/reviewer/instructions.md": "Review.",
+      });
+      const input = {
+        projectId: ProjectId.make(root),
+        agentId: ".t3/agents/designer",
+        source: "pbakaus/impeccable",
+        name: "impeccable",
+      };
+      const installed = yield* service.installSkill(input);
+      expect(installed.installedSkills).toEqual([
+        { name: "impeccable", path: ".t3/agents/designer/skills/impeccable" },
+      ]);
+      expect(
+        yield* fs.readFileString(
+          `${root}/.t3/agents/designer/skills/impeccable/references/layout.md`,
+        ),
+      ).toBe("Layout guidance.");
+      expect(
+        (yield* service.get({ ...input, agentId: ".t3/agents/reviewer" })).installedSkills,
+      ).toEqual([]);
+      expect(yield* fs.exists(`${root}/.agents`)).toBe(false);
+      expect(yield* fs.exists(`${root}/.claude`)).toBe(false);
+      expect((yield* Effect.result(service.installSkill(input)))._tag).toBe("Failure");
+      expect(
+        yield* fs.readFileString(`${root}/.t3/agents/designer/skills/impeccable/SKILL.md`),
+      ).toBe("Design thoughtfully.");
+      const removed = yield* service.removeSkill(input);
+      expect(removed.installedSkills).toEqual([]);
+      expect(yield* fs.exists(`${root}/.t3/agents/designer/skills/impeccable`)).toBe(false);
+      expect(yield* fs.readFileString(`${root}/.t3/agents/designer/instructions.md`)).toBe(
+        "Design.",
+      );
+      expect((yield* service.installSkill(input)).installedSkills).toHaveLength(1);
+    }).pipe(Effect.scoped),
+  );
+
+  for (const source of ["broken/repo", "linked/repo", "--unsafe/repo", "../repo"]) {
+    it.effect(`does not publish a partial skill from ${source}`, () =>
+      Effect.gen(function* () {
+        const service = yield* AgentDefinitionService;
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fixture({ ".t3/agents/designer/instructions.md": "Design." });
+        const result = yield* Effect.result(
+          service.installSkill({
+            projectId: ProjectId.make(root),
+            agentId: ".t3/agents/designer",
+            source,
+            name: "impeccable",
+          }),
+        );
+        expect(result._tag).toBe("Failure");
+        expect(yield* fs.exists(`${root}/.t3/agents/designer/skills/impeccable`)).toBe(false);
+      }).pipe(Effect.scoped),
+    );
+  }
+
+  it.effect("rejects a linked skills folder without changing its target", () =>
+    Effect.gen(function* () {
+      const service = yield* AgentDefinitionService;
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fixture({ ".t3/agents/designer/instructions.md": "Design." });
+      const outside = yield* fixture({ "keep.md": "Keep." });
+      yield* fs.symlink(outside, `${root}/.t3/agents/designer/skills`);
+      expect(
+        (yield* Effect.result(
+          service.installSkill({
+            projectId: ProjectId.make(root),
+            agentId: ".t3/agents/designer",
+            source: "pbakaus/impeccable",
+            name: "impeccable",
+          }),
+        ))._tag,
+      ).toBe("Failure");
+      expect(yield* fs.readDirectory(outside)).toEqual(["keep.md"]);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("lists agents from the registered project's workspace", () =>
     Effect.gen(function* () {
       const service = yield* AgentDefinitionService;

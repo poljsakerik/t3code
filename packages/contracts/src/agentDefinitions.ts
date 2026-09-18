@@ -56,10 +56,53 @@ export const AgentDefinitionGetInput = Schema.Struct({
   agentId: TrimmedNonEmptyString,
 });
 export type AgentDefinitionGetInput = typeof AgentDefinitionGetInput.Type;
+/** A skill package owned by this agent, not installed into a provider's shared catalog. */
+export const AgentInstalledSkill = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  path: TrimmedNonEmptyString,
+});
+export type AgentInstalledSkill = typeof AgentInstalledSkill.Type;
+
+const SkillPackageName = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(128),
+  Schema.isPattern(/^[a-zA-Z][a-zA-Z0-9_-]*$/),
+);
+export const AgentSkillInstallInput = Schema.Struct({
+  ...AgentDefinitionGetInput.fields,
+  source: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(200),
+    Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9_-]*\/[a-zA-Z0-9][a-zA-Z0-9_.-]*$/),
+  ),
+  name: SkillPackageName,
+});
+export type AgentSkillInstallInput = typeof AgentSkillInstallInput.Type;
+export const AgentSkillRemoveInput = Schema.Struct({
+  ...AgentDefinitionGetInput.fields,
+  name: SkillPackageName,
+});
+export type AgentSkillRemoveInput = typeof AgentSkillRemoveInput.Type;
+export const AgentSkillSearchInput = Schema.Struct({
+  query: TrimmedNonEmptyString.check(Schema.isMinLength(2), Schema.isMaxLength(100)),
+});
+export type AgentSkillSearchInput = typeof AgentSkillSearchInput.Type;
+export const AgentSkillSearchResult = Schema.Struct({
+  skills: Schema.Array(
+    Schema.Struct({
+      name: SkillPackageName,
+      source: AgentSkillInstallInput.fields.source,
+      installs: Schema.Finite,
+    }),
+  ),
+});
+export type AgentSkillSearchResult = typeof AgentSkillSearchResult.Type;
+
 export const AgentDefinitionGetResult = Schema.Struct({
   agent: AgentDefinition,
   documents: Schema.Array(AgentInstructionDocument),
   otherInstructionPaths: Schema.Array(TrimmedNonEmptyString),
+  installedSkills: Schema.Array(AgentInstalledSkill).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
 });
 export type AgentDefinitionGetResult = typeof AgentDefinitionGetResult.Type;
 

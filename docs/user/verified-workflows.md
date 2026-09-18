@@ -75,7 +75,9 @@ Use `openai/<model>` for Codex or `anthropic/<model>` for Claude Code. Agents al
 
 Configuration modules support `model` and an optional `description`. Eve API model objects and runtime capability settings are rejected. An Eve `defineAgent(...)` export works when Eve is installed in the project. T3 evaluates configuration when creating a workflow and snapshots the resolved definitions, so edits apply to new workflows. Existing saved workflows without agent model selections retain their previous behavior.
 
-Planner and implementer roles use the provider's normal skill configuration. For a reviewer, each Markdown file or directory immediately below `skills/` names one native provider skill in its exclusive allowlist. The file contents are not executed by Eve. An omitted or empty directory means no skills. Non-empty skill directories are rejected on planner and implementer agents.
+Skills added through **Agents → Edit agent → Skills**, or placed in `skills/<name>/SKILL.md`, belong to that agent. Their instructions are included when a new workflow is created, and their supporting files remain available in the skill folder. All workflow roles can use these attached skills.
+
+Legacy Markdown entries directly under `skills/`, and skill folders without a `SKILL.md`, name native provider skills. These references are supported only for reviewers, where they form an exclusive allowlist. An omitted or empty list disables native provider skills for that reviewer. Planner and implementer roles retain the provider's normal native skill configuration.
 
 Authored Eve tools, connections, hooks, extensions, sandbox configuration, and other executable capability slots are rejected for workflow agents. The provider harness remains responsible for tools and permissions. Markdown `instructions/` directories are supported; executable instruction modules are not.
 

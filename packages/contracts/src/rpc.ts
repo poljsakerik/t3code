@@ -1,5 +1,11 @@
 import { OrchestrationDispatchCommandError } from "./orchestrationDispatch.ts";
 import {
+  AgentSkillInstallInput,
+  AgentSkillRemoveInput,
+  AgentSkillSearchInput,
+  AgentSkillSearchResult,
+} from "./agentDefinitions.ts";
+import {
   ChatGptReconnectProfileInput,
   ChatGptReconnectProfile,
   ChatGptImportProfileInput,
@@ -354,6 +360,9 @@ import {
 } from "./agentDefinitions.ts";
 
 export const WS_METHODS = {
+  agentSkillsSearch: "agentSkills.search",
+  agentSkillsInstall: "agentSkills.install",
+  agentSkillsRemove: "agentSkills.remove",
   agentDefinitionsList: "agentDefinitions.list",
   agentDefinitionsGet: "agentDefinitions.get",
   agentDefinitionsCreate: "agentDefinitions.create",
@@ -1156,6 +1165,22 @@ const WsProjectsSearchContentsRpc = Rpc.make(WS_METHODS.projectsSearchContents, 
   error: Schema.Union([ProjectSearchContentsError, EnvironmentAuthorizationError]),
 });
 
+const WsAgentSkillsSearchRpc = Rpc.make(WS_METHODS.agentSkillsSearch, {
+  payload: AgentSkillSearchInput,
+  success: AgentSkillSearchResult,
+  error: Schema.Union([AgentDefinitionError, EnvironmentAuthorizationError]),
+});
+const WsAgentSkillsInstallRpc = Rpc.make(WS_METHODS.agentSkillsInstall, {
+  payload: AgentSkillInstallInput,
+  success: AgentDefinitionGetResult,
+  error: Schema.Union([AgentDefinitionError, EnvironmentAuthorizationError]),
+});
+const WsAgentSkillsRemoveRpc = Rpc.make(WS_METHODS.agentSkillsRemove, {
+  payload: AgentSkillRemoveInput,
+  success: AgentDefinitionGetResult,
+  error: Schema.Union([AgentDefinitionError, EnvironmentAuthorizationError]),
+});
+
 const WsAgentDefinitionsListRpc = Rpc.make(WS_METHODS.agentDefinitionsList, {
   payload: AgentDefinitionsListInput,
   success: AgentDefinitionsListResult,
@@ -1846,6 +1871,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeProjectClonesRpc,
   WsProjectsListEntriesRpc,
   WsWorkflowsListProfilesRpc,
+  WsAgentSkillsSearchRpc,
+  WsAgentSkillsInstallRpc,
+  WsAgentSkillsRemoveRpc,
   WsAgentDefinitionsListRpc,
   WsAgentDefinitionsGetRpc,
   WsAgentDefinitionsCreateRpc,

@@ -425,6 +425,7 @@ import {
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   agentControlledBrowserCloseConfirmation,
   branchMismatchKey,
+  canSubmitPlanFollowUp,
   buildExpiredTerminalContextToastCopy,
   buildLocalDraftThread,
   collectUserMessageBlobPreviewUrls,
@@ -8030,7 +8031,10 @@ export default function ChatView(props: ChatViewProps) {
     }
     if (
       !directAnnotation &&
-      sendInteractionModeEnabled &&
+      canSubmitPlanFollowUp({
+        interactionModeEnabled: sendInteractionModeEnabled,
+        workflowStatus: serverProjection?.thread.workflow?.status ?? null,
+      }) &&
       showPlanFollowUpPrompt &&
       activeProposedPlan &&
       composerImages.length === 0 &&
@@ -8840,7 +8844,13 @@ export default function ChatView(props: ChatViewProps) {
     }
 
     const sendCtx = composerRef.current?.getSendContext();
-    if (!sendCtx?.providerAvailable || !sendCtx.interactionModeEnabled) {
+    if (
+      !sendCtx?.providerAvailable ||
+      !canSubmitPlanFollowUp({
+        interactionModeEnabled: sendCtx.interactionModeEnabled,
+        workflowStatus: serverProjection?.thread.workflow?.status ?? null,
+      })
+    ) {
       return false;
     }
     const {
@@ -8978,7 +8988,13 @@ export default function ChatView(props: ChatViewProps) {
     }
 
     const sendCtx = composerRef.current?.getSendContext();
-    if (!sendCtx?.providerAvailable || !sendCtx.interactionModeEnabled) {
+    if (
+      !sendCtx?.providerAvailable ||
+      !canSubmitPlanFollowUp({
+        interactionModeEnabled: sendCtx.interactionModeEnabled,
+        workflowStatus: serverProjection?.thread.workflow?.status ?? null,
+      })
+    ) {
       return;
     }
     const {
@@ -9114,6 +9130,7 @@ export default function ChatView(props: ChatViewProps) {
     isServerThread,
     navigate,
     resetLocalDispatch,
+    serverProjection?.thread.workflow?.status,
     defaultRuntimeMode,
     startThreadTurn,
     environmentId,

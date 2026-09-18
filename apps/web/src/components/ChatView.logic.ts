@@ -1011,6 +1011,13 @@ export function shouldShowPlanFollowUpPrompt(input: {
   );
 }
 
+export function canSubmitPlanFollowUp(input: {
+  interactionModeEnabled: boolean;
+  workflowStatus?: WorkflowStatus | null;
+}): boolean {
+  return input.interactionModeEnabled || input.workflowStatus === "planned";
+}
+
 // Session-scoped (module-level so it survives ChatView remounts, e.g. route
 // changes). Durable cross-device dismissal is planned as a server-side ack.
 const sessionDismissedBranchMismatchKeys = new Set<string>();

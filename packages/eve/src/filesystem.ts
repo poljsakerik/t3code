@@ -1,7 +1,7 @@
 /**
  * Copied from vercel/eve, packages/eve/src/discover/filesystem.ts
  * https://github.com/vercel/eve/blob/7973fa2d7d10e285737536672cfcfe64ceff37c8/packages/eve/src/discover/filesystem.ts
- * Copyright 2026 Vercel, Inc. and contributors. Apache-2.0 (see LICENSE and NOTICE).
+ * Copyright 2026 Vercel, Inc. and contributors. Apache-2.0 (see ../LICENSE and ../NOTICE).
  * Modified for T3: retained only agent-root classification and module-name helpers;
  * exported the module-name matcher for catalog metadata. No modules are executed.
  */

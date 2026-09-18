@@ -5,7 +5,7 @@
       "license": "Apache-2.0",
       "name": "eve (filesystem discovery helpers)",
       "sourceUrl": "https://github.com/vercel/eve/blob/7973fa2d7d10e285737536672cfcfe64ceff37c8/packages/eve/src/discover/filesystem.ts",
-      "noticeFiles": ["apps/server/src/agents/eve/NOTICE", "apps/server/src/agents/eve/LICENSE"]
+      "noticeFiles": ["packages/eve/NOTICE", "packages/eve/LICENSE"]
     },
     {
       "bundles": ["assets", "desktop", "web"],

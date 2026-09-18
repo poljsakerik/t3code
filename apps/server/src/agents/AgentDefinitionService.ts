@@ -20,7 +20,7 @@ import {
   isDiscoverableAgentRootEntry,
   matchesSupportedModuleBaseName,
   type DirectoryEntryType,
-} from "./eve/filesystem.ts";
+} from "@t3tools/eve/filesystem";
 
 const entryType = (type: string): DirectoryEntryType =>
   type === "File" ? "file" : type === "Directory" ? "directory" : "other";

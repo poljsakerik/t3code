@@ -4,12 +4,32 @@
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
+    "./slots": {
+      "types": "./src/slots.ts",
+      "import": "./src/slots.ts"
+    },
     "./filesystem": {
       "types": "./src/filesystem.ts",
       "import": "./src/filesystem.ts"
+    },
+    "./discover": {
+      "types": "./src/discover-agent.ts",
+      "import": "./src/discover-agent.ts"
+    },
+    "./project-source": {
+      "types": "./src/project-source.ts",
+      "import": "./src/project-source.ts"
+    },
+    "./load-module": {
+      "types": "./src/load-module.ts",
+      "import": "./src/load-module.ts"
     }
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "vite-plus": "catalog:"
   }
 }

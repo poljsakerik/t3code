@@ -265,7 +265,6 @@ export const make = Effect.gen(function* () {
       }
       return Effect.gen(function* () {
         const agent = yield* loadAgentDefinition(agents.workspaceRoot, definition).pipe(
-          Effect.provideService(FileSystem.FileSystem, fs),
           Effect.provideService(Path.Path, path),
           Effect.mapError(
             (cause) =>

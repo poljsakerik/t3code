@@ -1,5 +1,6 @@
 import { findRecordedWorktreeSetup, resolveVisibleWorktreeSetup } from "./ChatView.logic";
 import {
+  canSubmitPlanFollowUp,
   recallCheckoutIsRepo,
   rememberCheckoutIsRepo,
   threadShellHasStarted,
@@ -630,6 +631,20 @@ describe("shouldShowPlanFollowUpPrompt", () => {
     expect(shouldShowPlanFollowUpPrompt({ ...base, interactionMode: "default" })).toBe(false);
     expect(shouldShowPlanFollowUpPrompt({ ...base, latestTurnSettled: false })).toBe(false);
     expect(shouldShowPlanFollowUpPrompt({ ...base, hasActionableProposedPlan: false })).toBe(false);
+  });
+});
+
+describe("canSubmitPlanFollowUp", () => {
+  it("keeps planned workflow actions usable when general plan mode is disabled", () => {
+    expect(
+      canSubmitPlanFollowUp({ interactionModeEnabled: false, workflowStatus: "planned" }),
+    ).toBe(true);
+    expect(
+      canSubmitPlanFollowUp({ interactionModeEnabled: false, workflowStatus: "planning" }),
+    ).toBe(false);
+    expect(canSubmitPlanFollowUp({ interactionModeEnabled: true, workflowStatus: null })).toBe(
+      true,
+    );
   });
 });
 

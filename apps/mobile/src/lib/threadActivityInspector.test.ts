@@ -334,6 +334,16 @@ describe("buildThreadActivityInspector", () => {
       sourceThreadId,
     );
 
+    const reviewModel = buildThreadActivityInspector(
+      activityFor({ ...item, reviewOnly: true, configuredChecks: [], checks: [] }),
+      EMPTY_V2_ITEM_SUPPORT,
+      sourceThreadId,
+    );
+    expect(reviewModel.fields).toContainEqual({ label: "Round", value: "1" });
+    expect(reviewModel.blocks).toContainEqual(
+      expect.objectContaining({ label: "blocking · Missing guard" }),
+    );
+
     expect(model.fields).toEqual(
       expect.arrayContaining([
         { label: "Profile", value: "Default workflow" },

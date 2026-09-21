@@ -6,7 +6,10 @@ import {
 } from "@t3tools/shared/threadPullRequests";
 import {
   type ChatAttachment,
+  reviewableRun,
   CommandId,
+  TurnItemId,
+  type WorkflowReviewResult,
   MessageId,
   type ModelSelection,
   OrchestrationV2Command,
@@ -84,6 +87,8 @@ import {
 } from "./SubagentProjection.ts";
 import { ThreadForkServiceV2 } from "./ThreadForkService.ts";
 import { planThreadDeletion } from "./ThreadDeletion.ts";
+import { collectReviewerResult, reviewerPrompt } from "../workflows/Reviewer.ts";
+import { AgentDefinitionService } from "../agents/AgentDefinitionService.ts";
 import { WorkflowConfigService } from "../workflows/WorkflowConfigService.ts";
 import {
   verificationStateOfWorkflow,
@@ -321,6 +326,7 @@ function commandThreadId(command: OrchestrationV2Command): ThreadId {
     case "thread.interaction-mode.set":
     case "thread.model-selection.set":
     case "provider-session.detach":
+    case "thread.review":
     case "workflow.update":
     case "message.dispatch":
     case "notification.delivery.accept":
@@ -655,6 +661,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const runtimePolicy = yield* RuntimePolicyV2;
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor;
+  const agentDefinitions = yield* Effect.serviceOption(AgentDefinitionService);
   const workflowConfigs = yield* Effect.serviceOption(WorkflowConfigService);
 
   const mapDispatchError =
@@ -5704,22 +5711,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command: Extract<OrchestrationV2Command, { readonly type: "delegated_task.request" }>,
       events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
       effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+      review?: { readonly skills: ReadonlyArray<string> },
     ) {
-      const parentProjection = yield* projectionStore
-        .getThreadProjection(command.parentThreadId)
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new OrchestratorProjectionError({
-                threadId: command.parentThreadId,
-                cause,
-              }),
-          ),
-        );
+      const parentProjection = yield* getProjectionWithPendingEvents(
+        command.parentThreadId,
+        events,
+      );
       const parentRun = parentProjection.runs.find(
         (candidate) => candidate.id === command.parentRunId,
       );
-      if (parentRun === undefined || !isBlockingRun(parentRun)) {
+      if (
+        parentRun === undefined ||
+        (review ? parentRun.status !== "completed" : !isBlockingRun(parentRun))
+      ) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
@@ -5784,6 +5788,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           createdBy: command.createdBy,
           creationSource: command.creationSource,
         }),
+        ...(review ? { workflow: null } : {}),
         runtimeMode: command.runtimeMode,
         interactionMode: command.interactionMode,
       };
@@ -5803,6 +5808,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         title: command.title ?? null,
         model: command.modelSelection.model,
         ...(command.completionWake === undefined ? {} : { completionWake: command.completionWake }),
+        ...(review
+          ? { completionDelivery: { state: "disposed" as const, observedByRunId: null } }
+          : {}),
         status: "running",
         result: null,
         startedAt: now,
@@ -5902,6 +5910,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         text: command.task,
         attachments: [],
         modelSelection: command.modelSelection,
+        ...(review ? { workflowSkillAllowlist: [...review.skills] } : {}),
         dispatchMode: { type: "start_immediately" },
       } satisfies Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>;
       yield* dispatchMessage(childMessageCommand, events, effects);
@@ -5953,6 +5962,125 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     },
   );
+
+  const dispatchThreadReview = Effect.fn("orchestrationV2.dispatch.threadReview")(function* (
+    command: Extract<OrchestrationV2Command, { readonly type: "thread.review" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+    const run = reviewableRun(projection);
+    if (run === null || run.id !== command.runId || run.rootNodeId === null) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "Wait for the latest task and its agents to finish before requesting a review.",
+      });
+    }
+    if (Option.isNone(agentDefinitions)) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "The agent catalog is unavailable.",
+      });
+    }
+    const catalog = agentDefinitions.value;
+    const reviewers = yield* mapDispatchError(command)(
+      Effect.forEach(command.agentIds, (agentId) =>
+        catalog.resolve({ projectId: projection.thread.projectId, agentId }),
+      ),
+    );
+    const context = projection.messages
+      .filter(
+        (message) =>
+          message.role === "user" || (message.runId === run.id && message.role === "assistant"),
+      )
+      .slice(-12)
+      .map((message) => `${message.role}: ${message.text.slice(0, 4_000)}`)
+      .join("\n\n")
+      .slice(-24_000);
+    // Persist every child and its start effect in one command. The effect worker
+    // runs the independent sessions concurrently; none wakes the implementer.
+    for (const reviewer of reviewers) {
+      yield* dispatchDelegatedTaskRequest(
+        {
+          type: "delegated_task.request",
+          commandId: CommandId.make(
+            `${command.commandId}:review:${encodeURIComponent(reviewer.id)}`,
+          ),
+          parentThreadId: command.threadId,
+          parentRunId: run.id,
+          parentNodeId: run.rootNodeId,
+          title: `Review · ${reviewer.name}`,
+          task: reviewerPrompt({
+            instructions: reviewer.instructions,
+            task: "Review the completed task below, including its committed and uncommitted changes.",
+            context: `Task context:\n${context}`,
+          }),
+          modelSelection: reviewer.modelSelection,
+          runtimeMode: "approval-required",
+          interactionMode: "plan",
+          createdBy: command.createdBy,
+          creationSource: command.creationSource,
+        },
+        events,
+        effects,
+        { skills: reviewer.skills },
+      );
+    }
+    const now = yield* DateTime.now;
+    const pendingProjection = yield* getProjectionWithPendingEvents(command.threadId, events);
+    const revision =
+      projection.turnItems.filter(
+        (item) => item.type === "workflow_verification" && item.reviewOnly,
+      ).length + 1;
+    const reviews: WorkflowReviewResult[] = reviewers.map((reviewer) => ({
+      reviewerId: reviewer.id,
+      reviewerThreadId: idAllocator.derive.delegatedTaskThread({
+        commandId: CommandId.make(`${command.commandId}:review:${encodeURIComponent(reviewer.id)}`),
+      }),
+      revision,
+      status: "running",
+      review: null,
+      error: null,
+    }));
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "turn-item.updated",
+      threadId: command.threadId,
+      runId: run.id,
+      occurredAt: now,
+      payload: {
+        id: TurnItemId.make(`review:${command.commandId}`),
+        threadId: command.threadId,
+        runId: run.id,
+        nodeId: run.rootNodeId,
+        providerThreadId: run.providerThreadId,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: nextTurnItemOrdinal(pendingProjection),
+        status: "running",
+        title: "Agent review",
+        startedAt: now,
+        completedAt: null,
+        updatedAt: now,
+        type: "workflow_verification",
+        reviewOnly: true,
+        profileId: "standalone-review",
+        profileName: "Agent review",
+        revision,
+        phase: "reviewing",
+        configuredChecks: [],
+        checks: [],
+        reviewerLabels: reviewers.map(({ id, name }) => ({ id, name })),
+        reviews,
+        terminalReason: null,
+      },
+    });
+  });
 
   // Rewrites a delegated task's completionWake after creation. The wait path
   // uses this when its blocking window ends without a terminal (timeout), so
@@ -7752,17 +7880,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
       const parentThreadId = childProjection.thread.lineage.parentThreadId;
       const parentProjection = yield* projectionStore.getThreadProjection(parentThreadId);
-      // The workflow coordinator consumes review verdicts and owns repairs and
-      // completion. Generic delegation must not deliver their raw JSON as a wake.
-      if (
-        parentProjection.turnItems.some(
-          (item) =>
-            item.type === "workflow_verification" &&
-            item.reviews.some((review) => review.reviewerThreadId === childThreadId),
-        )
-      ) {
-        return;
-      }
+      const verification = parentProjection.turnItems.find(
+        (item) =>
+          item.type === "workflow_verification" &&
+          item.reviews.some((review) => review.reviewerThreadId === childThreadId),
+      );
+      // Workflow gates are consumed by their coordinator. Standalone reviews use
+      // the same result contract here, without waking an implementation run.
+      if (verification?.type === "workflow_verification" && !verification.reviewOnly) return;
       const task = parentProjection.subagents.find(
         (candidate) =>
           candidate.id === forkedFrom.nodeId &&
@@ -7792,11 +7917,61 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const parentTurnItem = parentProjection.turnItems.find(
         (candidate) => candidate.type === "subagent" && candidate.subagentId === task.id,
       );
+      const pendingReview =
+        verification?.type === "workflow_verification"
+          ? verification.reviews.find((review) => review.reviewerThreadId === childThreadId)
+          : undefined;
+      const reviewResult =
+        pendingReview === undefined
+          ? undefined
+          : yield* collectReviewerResult({
+              pending: pendingReview,
+              runStatus: childRun.status,
+              text:
+                result.messageId === null && result.turnItemId === null ? undefined : result.text,
+            });
+      const taskStatus = reviewResult?.status === "failed" ? "failed" : terminalStatus;
+      const taskResult =
+        reviewResult === undefined
+          ? result.text
+          : (reviewResult.review?.summary ?? reviewResult.error);
+      const reviewItems: Array<Omit<OrchestrationV2DomainEvent, "id">> = [];
+      if (verification?.type === "workflow_verification" && reviewResult !== undefined) {
+        const reviews = verification.reviews.map((review) =>
+          review.reviewerThreadId === childThreadId ? reviewResult : review,
+        );
+        const running = reviews.some((review) => review.status === "running");
+        const failed = reviews.some((review) => review.status === "failed");
+        const approved = reviews.every((review) => review.review?.verdict === "approve");
+        reviewItems.push({
+          type: "turn-item.updated",
+          threadId: parentThreadId,
+          ...(verification.runId === null ? {} : { runId: verification.runId }),
+          occurredAt: now,
+          payload: {
+            ...verification,
+            reviews,
+            phase: running
+              ? "reviewing"
+              : failed
+                ? "needs_human"
+                : approved
+                  ? "approved"
+                  : "changes_requested",
+            status: running ? "running" : failed ? "failed" : "completed",
+            terminalReason: failed
+              ? "One or more reviewers failed. Open the reviewer for details or request another review."
+              : null,
+            completedAt: running ? null : now,
+            updatedAt: now,
+          },
+        });
+      }
       const updatedTask: OrchestrationV2Subagent = {
         ...task,
         providerThreadId: childRun.providerThreadId,
-        status: terminalStatus,
-        result: result.text,
+        status: taskStatus,
+        result: taskResult,
         completedAt: now,
         updatedAt: now,
       };
@@ -7882,6 +8057,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       };
 
       yield* writeSystemEvents([
+        ...reviewItems,
         {
           type: "subagent.updated",
           threadId: parentThreadId,
@@ -7937,7 +8113,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 occurredAt: now,
                 payload: {
                   ...parentNode,
-                  status: terminalStatus,
+                  status: taskStatus,
                   providerThreadId: childRun.providerThreadId,
                   completedAt: now,
                 },
@@ -7955,8 +8131,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 occurredAt: now,
                 payload: {
                   ...parentTurnItem,
-                  status: terminalStatus,
-                  result: result.text,
+                  status: taskStatus,
+                  result: taskResult,
                   completedAt: now,
                   updatedAt: now,
                 },
@@ -8378,6 +8554,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "thread.merge_back":
         yield* dispatchThreadMergeBack(command, events);
+        break;
+      case "thread.review":
+        yield* dispatchThreadReview(command, events, effects);
         break;
       case "delegated_task.request":
         yield* dispatchDelegatedTaskRequest(command, events, effects);

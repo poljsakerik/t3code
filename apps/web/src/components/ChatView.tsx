@@ -1,3 +1,5 @@
+import { reviewableRun } from "@t3tools/contracts";
+import { RequestReviewDialogHost } from "./RequestReviewDialog";
 import { resolveVisibleWorktreeSetup } from "./ChatView.logic";
 import * as DateTime from "effect/DateTime";
 import { restorePlanFollowUpComposer } from "./ChatView.logic";
@@ -9766,6 +9768,7 @@ export default function ChatView(props: ChatViewProps) {
           {!rightPanelControlsAtRoot && !rightPanelControlsInPanel ? panelLayoutControls : null}
           {inlineRightPanelOwnsTitleBar ? threadPanelHeaderControl : null}
           <ChatHeader
+            canRequestReview={serverProjection !== null && reviewableRun(serverProjection) !== null}
             activeThreadEnvironmentId={activeThread.environmentId}
             activeThreadId={activeThread.id}
             isServerThread={isServerThread}
@@ -10444,6 +10447,7 @@ export default function ChatView(props: ChatViewProps) {
         </AlertDialogPopup>
       </AlertDialog>
       <LinkPullRequestDialogHost />
+      <RequestReviewDialogHost />
       {expandedImage && (
         <ExpandedImageDialog
           key={expandedImageKey(expandedImage)}

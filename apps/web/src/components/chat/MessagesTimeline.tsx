@@ -2442,7 +2442,11 @@ function WorkflowVerificationCard({
   const ctx = use(TimelineRowCtx);
   const phasePresentation =
     item.phase === "approved"
-      ? { label: "Verified", className: "text-success-foreground", dot: "bg-success" }
+      ? {
+          label: item.reviewOnly ? "Approved" : "Verified",
+          className: "text-success-foreground",
+          dot: "bg-success",
+        }
       : item.phase === "changes_requested"
         ? {
             label: "Changes requested",
@@ -2451,7 +2455,7 @@ function WorkflowVerificationCard({
           }
         : item.phase === "needs_human"
           ? {
-              label: "Needs human",
+              label: item.reviewOnly ? "Review failed" : "Needs human",
               className: "text-destructive-foreground",
               dot: "bg-destructive",
             }
@@ -2478,7 +2482,9 @@ function WorkflowVerificationCard({
         <ShieldCheckIcon aria-hidden className={cn("size-4", phasePresentation.className)} />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-            <span className="text-sm font-medium">Verification · revision {item.revision}</span>
+            <span className="text-sm font-medium">
+              {item.reviewOnly ? "Review · round" : "Verification · revision"} {item.revision}
+            </span>
             <span
               className={cn("inline-flex items-center gap-1 text-xs", phasePresentation.className)}
             >
@@ -2489,8 +2495,8 @@ function WorkflowVerificationCard({
           <p className="truncate text-xs text-muted-foreground">{item.profileName}</p>
         </div>
         <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
-          {passedChecks}/{item.configuredChecks.length} checks · {approvedReviews}/
-          {item.reviewerLabels.length} approvals
+          {!item.reviewOnly && `${passedChecks}/${item.configuredChecks.length} checks · `}
+          {approvedReviews}/{item.reviewerLabels.length} approvals
         </span>
       </div>
 

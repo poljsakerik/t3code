@@ -365,6 +365,27 @@ describe("orchestration V2 contracts", () => {
     expect(event.payload.id).toBe(RunId.make("run-1"));
   });
 
+  it("requires a bounded, nonempty selection of unique review agents", () => {
+    const command = {
+      type: "thread.review",
+      commandId: "review-1",
+      threadId: "thread-1",
+      runId: "run-1",
+      agentIds: [".t3/agents/correctness", ".t3/agents/security"],
+      createdBy: "user",
+      creationSource: "mobile",
+    };
+    expect(decodeOrchestrationV2Command(command)).toMatchObject(command);
+    for (const agentIds of [
+      [],
+      ["same", "same"],
+      [""],
+      Array.from({ length: 21 }, (_, i) => `agent-${i}`),
+    ]) {
+      expect(() => decodeOrchestrationV2Command({ ...command, agentIds })).toThrow();
+    }
+  });
+
   it("decodes app-owned delegated task commands", () => {
     const command = decodeOrchestrationV2Command({
       type: "delegated_task.request",
@@ -599,6 +620,10 @@ describe("orchestration V2 contracts", () => {
     if (item.type !== "workflow_verification") throw new Error("expected verification item");
     expect(item.phase).toBe("changes_requested");
     expect(item.reviews[0]?.review?.findings[0]?.file).toBe("src/input.test.ts");
+    const standalone = decodeOrchestrationV2TurnItem({ ...item, reviewOnly: true });
+    const wire = encodeOrchestrationV2TurnItemJson(standalone);
+    expect(decodeOrchestrationV2TurnItemJson(wire)).toEqual(standalone);
+    expect(standalone).toHaveProperty("reviewOnly", true);
   });
 
   it("decodes provider-neutral replay transcripts", () => {

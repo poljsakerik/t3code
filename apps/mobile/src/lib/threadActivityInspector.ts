@@ -263,8 +263,8 @@ export function buildThreadActivityInspector(
       break;
     case "workflow_verification": {
       fields.push(
-        { label: "Profile", value: item.profileName },
-        { label: "Revision", value: String(item.revision) },
+        { label: item.reviewOnly ? "Review" : "Profile", value: item.profileName },
+        { label: item.reviewOnly ? "Round" : "Revision", value: String(item.revision) },
         { label: "Phase", value: item.phase.replaceAll("_", " ") },
       );
       addBlock(

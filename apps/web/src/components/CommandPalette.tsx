@@ -4,6 +4,8 @@ import {
   requestNewAgentConversation,
 } from "../agentConversationNavigation";
 
+import { openRequestReviewDialog } from "./RequestReviewDialog";
+
 import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-request-compatibility";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 
@@ -1995,6 +1997,19 @@ function OpenCommandPaletteDialog(props: {
       icon: <MessageSquareDashedIcon className={ITEM_ICON_CLASS} />,
       shortcutCommand: "chat.newWithoutProject",
       run: () => startScratchThread(scratchTargetEnvironmentId),
+    });
+  }
+
+  if (activeThread !== null) {
+    actionItems.push({
+      kind: "action",
+      value: "action:request-review",
+      searchTerms: ["review", "agents", "parallel", "verify"],
+      title: "Request review",
+      icon: <SquarePenIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        openRequestReviewDialog(scopeThreadRef(activeThread.environmentId, activeThread.id));
+      },
     });
   }
 

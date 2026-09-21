@@ -5,7 +5,6 @@ import {
   CommandId,
   MessageId,
   ThreadId,
-  WorkflowReview,
   type OrchestrationV2ThreadProjection,
   type ResolvedWorkflowProfile,
   type ThreadWorkflowState,
@@ -16,17 +15,16 @@ import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import { collectReviewerResult, reviewerPrompt } from "./Reviewer.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { makeKeyedSerialExecutor } from "../orchestration-v2/KeyedSerialExecutor.ts";
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
 
 const MAX_EVIDENCE_CHARS = 24_000;
 const encodeUnknownJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
-const decodeWorkflowReview = Schema.decodeUnknownEffect(Schema.fromJsonString(WorkflowReview));
 
 function bounded(text: string): string {
   return text.length <= MAX_EVIDENCE_CHARS
@@ -40,12 +38,6 @@ function fingerprint(value: string): string {
 
 function terminalRun(status: string): boolean {
   return ["completed", "failed", "interrupted", "cancelled", "rolled_back"].includes(status);
-}
-
-function reviewJson(text: string): string {
-  const trimmed = text.trim();
-  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
-  return fenced?.[1] ?? trimmed;
 }
 
 function reviewThreadId(threadId: ThreadId, revision: number, reviewerId: string): ThreadId {
@@ -62,20 +54,11 @@ function reviewPrompt(input: {
   const checks = input.workflow.checks
     .map((check) => `${check.name}: ${check.passed ? "passed" : "failed"}`)
     .join("\n");
-  return `${input.reviewer.instructions}
-
-Review revision ${input.workflow.revision} of this verified workflow. Inspect the current repository snapshot and diff. Do not modify files.
-
-Approved plan:
-${input.planMarkdown}
-
-Deterministic checks:
-${checks}
-
-Return only one JSON object with this exact shape:
-{"verdict":"approve"|"request_changes","summary":"...","findings":[{"id":"stable-id","severity":"blocking"|"advisory","title":"...","description":"...","file":"optional/path","line":1,"evidence":"optional"}]}
-
-Approve only when there are no blocking findings.`;
+  return reviewerPrompt({
+    instructions: input.reviewer.instructions,
+    task: `Review revision ${input.workflow.revision} of this verified workflow.`,
+    context: `Approved plan:\n${input.planMarkdown}\n\nDeterministic checks:\n${checks}`,
+  });
 }
 
 function revisionFeedback(input: {
@@ -455,27 +438,13 @@ export const live = Layer.effectDiscard(
           if (child._tag === "None") return pending;
           const run = child.value.runs.at(-1);
           if (run === undefined || !terminalRun(run.status)) return pending;
-          if (run.status !== "completed") {
-            return {
-              ...pending,
-              status: "failed" as const,
-              error: `Reviewer run ended as ${run.status}.`,
-            };
-          }
-          const text = child.value.messages.findLast(
-            (message) => message.runId === run.id && message.role === "assistant",
-          )?.text;
-          if (text === undefined) {
-            return {
-              ...pending,
-              status: "failed" as const,
-              error: "Reviewer returned no final response.",
-            };
-          }
-          const parsed = yield* Effect.result(decodeWorkflowReview(reviewJson(text)));
-          return Result.isSuccess(parsed)
-            ? { ...pending, status: "completed" as const, review: parsed.success, error: null }
-            : { ...pending, status: "failed" as const, error: String(parsed.failure) };
+          return yield* collectReviewerResult({
+            pending,
+            runStatus: run.status,
+            text: child.value.messages.findLast(
+              (message) => message.runId === run.id && message.role === "assistant",
+            )?.text,
+          });
         }),
         { concurrency: "unbounded" },
       );

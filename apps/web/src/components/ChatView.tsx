@@ -8,6 +8,8 @@ import {
   resolveWorktreeSetupProgress,
 } from "./ChatView.logic";
 import { requestNewAgentConversation } from "../agentConversationNavigation";
+import { reviewableRun } from "@t3tools/contracts";
+import { RequestReviewDialogHost } from "./RequestReviewDialog";
 import * as DateTime from "effect/DateTime";
 import { restorePlanFollowUpComposer } from "./ChatView.logic";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
@@ -10917,6 +10919,7 @@ export default function ChatView(props: ChatViewProps) {
           {!rightPanelControlsAtRoot && !rightPanelControlsInPanel ? panelLayoutControls : null}
           {inlineRightPanelOwnsTitleBar ? threadPanelHeaderControl : null}
           <ChatHeader
+            canRequestReview={serverProjection !== null && reviewableRun(serverProjection) !== null}
             activeThreadEnvironmentId={activeThread.environmentId}
             activeThreadId={activeThread.id}
             isServerThread={isServerThread}
@@ -11656,6 +11659,7 @@ export default function ChatView(props: ChatViewProps) {
         </AlertDialogPopup>
       </AlertDialog>
       <LinkPullRequestDialogHost />
+      <RequestReviewDialogHost />
       {expandedImage && (
         <ExpandedImageDialog
           key={expandedImageKey(expandedImage)}

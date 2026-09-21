@@ -372,18 +372,27 @@ describe("orchestration V2 contracts", () => {
       commandId: "review-1",
       threadId: "thread-1",
       runId: "run-1",
-      agentIds: [".t3/agents/correctness", ".t3/agents/security"],
+      agents: [
+        { projectId: "project-a", agentId: ".t3/agents/reviewer" },
+        { projectId: "project-b", agentId: ".t3/agents/reviewer" },
+        { agentId: ".t3/agents/reviewer" },
+      ],
       createdBy: "user",
       creationSource: "mobile",
     };
     expect(decodeOrchestrationV2Command(command)).toMatchObject(command);
-    for (const agentIds of [
+    for (const agents of [
       [],
-      ["same", "same"],
-      [""],
-      Array.from({ length: 21 }, (_, i) => `agent-${i}`),
+      [{ agentId: "same" }, { agentId: "same" }],
+      [
+        { projectId: "project-a", agentId: "same" },
+        { agentId: "same", projectId: "project-a" },
+      ],
+      [{ agentId: "" }],
+      ["unscoped-string"],
+      Array.from({ length: 21 }, (_, i) => ({ agentId: `agent-${i}` })),
     ]) {
-      expect(() => decodeOrchestrationV2Command({ ...command, agentIds })).toThrow();
+      expect(() => decodeOrchestrationV2Command({ ...command, agents })).toThrow();
     }
   });
 

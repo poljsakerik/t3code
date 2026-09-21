@@ -6869,9 +6869,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     const catalog = agentDefinitions.value;
     const reviewers = yield* mapDispatchError(command)(
-      Effect.forEach(command.agentIds, (agentId) =>
-        catalog.resolve({ projectId: projection.thread.projectId, agentId }),
-      ),
+      Effect.forEach(command.agents, (agent) => catalog.resolve(agent)),
     );
     const context = projection.messages
       .filter(

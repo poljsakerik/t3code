@@ -1,4 +1,5 @@
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
+import { agentDefinitionKey } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as FileSystem from "effect/FileSystem";
 import { SourceControlProviderRegistry } from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -424,6 +425,37 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
           updatedAt: DateTime.formatIso(now),
           deletedAt: null,
         });
+        const reviewerWorkspace = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-external-reviewer-",
+        });
+        const reviewerProjectId = ProjectId.make("reviewer-source-project");
+        yield* fs.makeDirectory(`${reviewerWorkspace}/.t3/agents/correctness/skills/context`, {
+          recursive: true,
+        });
+        yield* fs.writeFileString(
+          `${reviewerWorkspace}/.t3/agents/correctness/instructions.md`,
+          "Review using the other project's agent instructions.",
+        );
+        yield* fs.writeFileString(
+          `${reviewerWorkspace}/.t3/agents/correctness/agent.ts`,
+          'export default { model: "anthropic/claude-sonnet-4-6" };',
+        );
+        yield* fs.writeFileString(
+          `${reviewerWorkspace}/.t3/agents/correctness/skills/context/SKILL.md`,
+          "Use the external review checklist.",
+        );
+        yield* projects.upsert({
+          projectId: reviewerProjectId,
+          title: "Reviewer sources",
+          workspaceRoot: reviewerWorkspace,
+          defaultModelSelection: null,
+          defaultThreadEnvMode: null,
+          autoPull: false,
+          scripts: [],
+          createdAt: DateTime.formatIso(now),
+          updatedAt: DateTime.formatIso(now),
+          deletedAt: null,
+        });
         yield* orchestrator.dispatch({
           type: "thread.create",
           commandId: CommandId.make("review-create"),
@@ -456,7 +488,10 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
           commandId: CommandId.make("review-request"),
           threadId,
           runId: run.id,
-          agentIds: [".t3/agents/correctness", ".t3/agents/security"],
+          agents: [
+            { projectId, agentId: ".t3/agents/correctness" },
+            { projectId: reviewerProjectId, agentId: ".t3/agents/correctness" },
+          ],
           createdBy: "user" as const,
           creationSource: "web" as const,
         };
@@ -491,7 +526,10 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         const unsupported = {
           ...request,
           commandId: CommandId.make("review-unsupported"),
-          agentIds: [".t3/agents/correctness", ".t3/agents/unsupported"],
+          agents: [
+            { projectId, agentId: ".t3/agents/correctness" },
+            { projectId, agentId: ".t3/agents/unsupported" },
+          ],
         };
         assert.equal((yield* Effect.exit(orchestrator.dispatch(unsupported)))._tag, "Failure");
         assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).subagents, 0);
@@ -529,12 +567,21 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
           assert.isNull(child.thread.workflow ?? null);
           assert.deepEqual(child.runs[0]?.workflowSkillAllowlist, []);
           assert.equal(child.runs[0]?.modelSelection.instanceId, claudeModelSelection.instanceId);
+          assert.equal(child.thread.projectId, projectId);
           assert.include(child.messages[0]!.text, "Fix the login regression.");
+          assert.include(
+            child.messages[0]!.text,
+            index === 0
+              ? "Check correctness."
+              : "Review using the other project's agent instructions.",
+          );
+          if (index === 1)
+            assert.include(child.messages[0]!.text, "Use the external review checklist.");
           assert.include(child.messages[0]!.text, "Return only one JSON object");
           assert.include(child.messages[0]!.text, "Do not create report files");
           assert.equal(parent.subagents[index]?.completionDelivery?.state, "disposed");
           const childCommandId = CommandId.make(
-            `${request.commandId}:review:${encodeURIComponent(request.agentIds[index]!)}`,
+            `${request.commandId}:review:${encodeURIComponent(agentDefinitionKey(request.agents[index]!))}`,
           );
           assert.isTrue(
             (yield* outbox.listByCommandId(childCommandId)).some(

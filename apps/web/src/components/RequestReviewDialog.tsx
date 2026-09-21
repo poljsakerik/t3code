@@ -1,5 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
-import { CommandId, reviewableRun, type ScopedThreadRef } from "@t3tools/contracts";
+import {
+  CommandId,
+  reviewableRun,
+  agentDefinitionKey,
+  type AgentDefinitionGetInput,
+  type ScopedThreadRef,
+} from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
 import { useRef, useState } from "react";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
@@ -42,7 +48,7 @@ function RequestReviewDialog({ threadRef }: { threadRef: ScopedThreadRef }) {
   const run = projection ? reviewableRun(projection) : null;
   const catalog = useEnvironmentQuery(
     projection
-      ? projectEnvironment.agentDefinitions({
+      ? projectEnvironment.agentCatalog({
           environmentId: threadRef.environmentId,
           input: { projectId: projection.thread.projectId },
         })
@@ -51,7 +57,9 @@ function RequestReviewDialog({ threadRef }: { threadRef: ScopedThreadRef }) {
   const dispatch = useAtomCommand(orchestrationEnvironment.v2.dispatchCommand, {
     reportFailure: false,
   });
-  const [selected, setSelected] = useState<ReadonlyArray<string>>([]);
+  const [selected, setSelected] = useState<ReadonlyMap<string, AgentDefinitionGetInput>>(
+    () => new Map(),
+  );
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
@@ -59,7 +67,7 @@ function RequestReviewDialog({ threadRef }: { threadRef: ScopedThreadRef }) {
     if (!busyRef.current) appAtomRegistry.set(reviewThreadAtom, null);
   };
   const start = async () => {
-    if (busyRef.current || !run || selected.length === 0) return;
+    if (busyRef.current || !run || selected.size === 0) return;
     busyRef.current = true;
     setBusy(true);
     setError(null);
@@ -70,7 +78,7 @@ function RequestReviewDialog({ threadRef }: { threadRef: ScopedThreadRef }) {
         commandId: CommandId.make(randomUUID()),
         threadId: threadRef.threadId,
         runId: run.id,
-        agentIds: selected,
+        agents: [...selected.values()],
         createdBy: "user",
         creationSource: "web",
       },
@@ -110,35 +118,58 @@ function RequestReviewDialog({ threadRef }: { threadRef: ScopedThreadRef }) {
             </div>
           ) : !catalog.data ? (
             <p role="status">Loading agents…</p>
-          ) : catalog.data.agents.length === 0 ? (
+          ) : catalog.data.groups.every((group) => group.agents.length === 0 && !group.error) ? (
             <p className="text-sm text-muted-foreground">
-              No agents are configured for this project. Add agents in Agents, then return here to
-              request a review.
+              No agents are configured in this environment. Add agents in Agents, then return here
+              to request a review.
             </p>
           ) : (
             <div className="max-h-72 space-y-2 overflow-y-auto">
-              {catalog.data.agents.map((agent) => (
-                <label
-                  key={agent.id}
-                  className="flex cursor-pointer items-center gap-3 rounded-lg border p-3"
-                >
-                  <Checkbox
-                    checked={selected.includes(agent.id)}
-                    disabled={busy || (!selected.includes(agent.id) && selected.length >= 20)}
-                    onCheckedChange={(checked) =>
-                      setSelected((current) =>
-                        checked ? [...current, agent.id] : current.filter((id) => id !== agent.id),
-                      )
-                    }
-                  />
-                  <span className="min-w-0">
-                    <span className="block text-sm font-medium">{agent.name}</span>
-                    <span className="block truncate text-xs text-muted-foreground">
-                      {agent.directory}
-                    </span>
-                  </span>
-                </label>
-              ))}
+              {catalog.data.groups.map((group) =>
+                group.agents.length > 0 || group.error ? (
+                  <section key={group.projectId ?? "global"} className="space-y-2">
+                    <p className="text-sm font-medium">{group.name}</p>
+                    {group.error ? (
+                      <p role="alert" className="text-sm text-destructive-foreground">
+                        {group.error}
+                      </p>
+                    ) : null}
+                    {group.agents.map((agent) => {
+                      const reference = {
+                        ...(group.projectId === null ? {} : { projectId: group.projectId }),
+                        agentId: agent.id,
+                      };
+                      const key = agentDefinitionKey(reference);
+                      const checked = selected.has(key);
+                      return (
+                        <label
+                          key={key}
+                          className="flex cursor-pointer items-center gap-3 rounded-lg border p-3"
+                        >
+                          <Checkbox
+                            checked={checked}
+                            disabled={busy || (!checked && selected.size >= 20)}
+                            onCheckedChange={(value) =>
+                              setSelected((current) => {
+                                const next = new Map(current);
+                                if (value) next.set(key, reference);
+                                else next.delete(key);
+                                return next;
+                              })
+                            }
+                          />
+                          <span className="min-w-0">
+                            <span className="block text-sm font-medium">{agent.name}</span>
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {agent.directory}
+                            </span>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </section>
+                ) : null,
+              )}
             </div>
           )}
           {error ? (
@@ -152,12 +183,12 @@ function RequestReviewDialog({ threadRef }: { threadRef: ScopedThreadRef }) {
             Cancel
           </Button>
           <Button
-            disabled={busy || !run || selected.length === 0 || catalog.isPending}
+            disabled={busy || !run || selected.size === 0 || catalog.isPending}
             onClick={() => void start()}
           >
             {busy
               ? "Starting reviews…"
-              : `Start review${selected.length > 1 ? "s" : ""}${selected.length ? ` (${selected.length})` : ""}`}
+              : `Start review${selected.size > 1 ? "s" : ""}${selected.size ? ` (${selected.size})` : ""}`}
           </Button>
         </DialogFooter>
       </DialogPopup>

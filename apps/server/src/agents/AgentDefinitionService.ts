@@ -2,7 +2,9 @@ import {
   AgentSkillInstallInput,
   AgentSkillRemoveInput,
   type AgentInstalledSkill,
+  type ResolvedAgentDefinition,
 } from "@t3tools/contracts";
+import { loadAgentDefinition } from "./AgentDefinitionLoader.ts";
 import { downloadAgentSkill } from "./AgentSkills.ts";
 import { ProcessRunner } from "../processRunner.ts";
 import * as NodeOS from "node:os";
@@ -178,6 +180,9 @@ export const discoverAgentDefinitions = Effect.fn("discoverAgentDefinitions")(
 export class AgentDefinitionService extends Context.Service<
   AgentDefinitionService,
   {
+    readonly resolve: (
+      input: AgentDefinitionGetInput,
+    ) => Effect.Effect<ResolvedAgentDefinition, AgentDefinitionError>;
     readonly installSkill: (
       input: AgentSkillInstallInput,
     ) => Effect.Effect<AgentDefinitionGetResult, AgentDefinitionError>;
@@ -491,6 +496,22 @@ export const layer = Layer.effect(
       lock.withPermits(1),
       Effect.mapError(wrapError),
     );
-    return AgentDefinitionService.of({ list, get, create, update, installSkill, removeSkill });
+    const resolve = Effect.fn("AgentDefinitionService.resolve")(function* (
+      input: AgentDefinitionGetInput,
+    ) {
+      const root = yield* workspace(input);
+      return yield* loadAgentDefinition(root, yield* findAgent(root, input.agentId)).pipe(
+        Effect.provideService(Path.Path, path),
+      );
+    }, Effect.mapError(wrapError));
+    return AgentDefinitionService.of({
+      list,
+      get,
+      create,
+      update,
+      installSkill,
+      removeSkill,
+      resolve,
+    });
   }),
 );

@@ -1,4 +1,6 @@
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
+import * as Schema from "effect/Schema";
+import * as FileSystem from "effect/FileSystem";
 import { SourceControlProviderRegistry } from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -89,6 +91,8 @@ const PlatformTestLayer = Layer.merge(
 const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-orchestration-v2-runtime-layer-",
 });
+
+const encodeReviewJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 const modelSelection = {
   instanceId: ProviderInstanceId.make("codex"),
@@ -384,6 +388,302 @@ const SharedApplicationDataPlaneTestLayer = Layer.merge(
 );
 
 it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
+  it.effect(
+    "starts selected reviewers atomically and collects results without restarting completed work",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const workspaceRoot = yield* fs
+          .makeTempDirectoryScoped({ prefix: "t3-review-request-" })
+          .pipe(Effect.flatMap(fs.realPath));
+        for (const name of ["correctness", "security", "unsupported"]) {
+          const directory = `${workspaceRoot}/.t3/agents/${name}`;
+          yield* fs.makeDirectory(directory, { recursive: true });
+          yield* fs.writeFileString(`${directory}/instructions.md`, `Check ${name}.`);
+          yield* fs.writeFileString(
+            `${directory}/agent.ts`,
+            `export default { model: "${name === "unsupported" ? "openai/gpt-5.4" : "anthropic/claude-sonnet-4-6"}" };`,
+          );
+        }
+        const orchestrator = yield* OrchestratorV2;
+        const projects = yield* ProjectionProjectRepository;
+        const sink = yield* EventSinkV2;
+        const outbox = yield* EffectOutboxV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("request-review-parent");
+        const projectId = ProjectId.make("request-review-project");
+        yield* projects.upsert({
+          projectId,
+          title: "Reviews",
+          workspaceRoot,
+          defaultModelSelection: null,
+          defaultThreadEnvMode: null,
+          autoPull: false,
+          scripts: [],
+          createdAt: DateTime.formatIso(now),
+          updatedAt: DateTime.formatIso(now),
+          deletedAt: null,
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("review-create"),
+          threadId,
+          projectId,
+          title: "Fix task",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: "feature",
+          worktreePath: workspaceRoot,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("review-task"),
+          threadId,
+          messageId: MessageId.make("review-task"),
+          text: "Fix the login regression.",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const initial = yield* orchestrator.getThreadProjection(threadId);
+        const run = initial.runs[0]!;
+        const request = {
+          type: "thread.review" as const,
+          commandId: CommandId.make("review-request"),
+          threadId,
+          runId: run.id,
+          agentIds: [".t3/agents/correctness", ".t3/agents/security"],
+          createdBy: "user" as const,
+          creationSource: "web" as const,
+        };
+        assert.equal(
+          (yield* Effect.exit(
+            orchestrator.dispatch({ ...request, commandId: CommandId.make("review-too-early") }),
+          ))._tag,
+          "Failure",
+        );
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("review-parent-completed"),
+              type: "run.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: { ...run, status: "completed", completedAt: now },
+            },
+          ],
+        });
+        assert.equal(
+          (yield* Effect.exit(
+            orchestrator.dispatch({
+              ...request,
+              commandId: CommandId.make("review-stale"),
+              runId: RunId.make("old-run"),
+            }),
+          ))._tag,
+          "Failure",
+        );
+        const unsupported = {
+          ...request,
+          commandId: CommandId.make("review-unsupported"),
+          agentIds: [".t3/agents/correctness", ".t3/agents/unsupported"],
+        };
+        assert.equal((yield* Effect.exit(orchestrator.dispatch(unsupported)))._tag, "Failure");
+        assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).subagents, 0);
+        yield* orchestrator.dispatch(request);
+        yield* orchestrator.dispatch(request);
+        const parent = yield* orchestrator.getThreadProjection(threadId);
+        assert.lengthOf(parent.subagents, 2);
+        const reviewCard = parent.turnItems.find((item) => item.type === "workflow_verification");
+        assert.equal(reviewCard?.type, "workflow_verification");
+        if (reviewCard?.type !== "workflow_verification") return;
+        assert.isTrue(reviewCard.reviewOnly);
+        assert.equal(reviewCard.phase, "reviewing");
+        assert.lengthOf(reviewCard.reviews, 2);
+        assert.lengthOf(parent.runs, 1);
+        assert.equal(parent.runs[0]?.status, "completed");
+        assert.equal(
+          new Set(
+            parent.turnItems.filter((item) => item.type === "subagent").map((item) => item.ordinal),
+          ).size,
+          2,
+        );
+        assert.equal(
+          (yield* Effect.exit(
+            orchestrator.dispatch({ ...request, commandId: CommandId.make("review-duplicate") }),
+          ))._tag,
+          "Failure",
+        );
+        const children = yield* Effect.forEach(parent.subagents, (task) =>
+          orchestrator.getThreadProjection(task.childThreadId!),
+        );
+        for (const [index, child] of children.entries()) {
+          assert.equal(child.thread.lineage.parentThreadId, threadId);
+          assert.equal(child.thread.interactionMode, "plan");
+          assert.equal(child.thread.worktreePath, workspaceRoot);
+          assert.isNull(child.thread.workflow ?? null);
+          assert.deepEqual(child.runs[0]?.workflowSkillAllowlist, []);
+          assert.equal(child.runs[0]?.modelSelection.instanceId, claudeModelSelection.instanceId);
+          assert.include(child.messages[0]!.text, "Fix the login regression.");
+          assert.include(child.messages[0]!.text, "Return only one JSON object");
+          assert.include(child.messages[0]!.text, "Do not create report files");
+          assert.equal(parent.subagents[index]?.completionDelivery?.state, "disposed");
+          const childCommandId = CommandId.make(
+            `${request.commandId}:review:${encodeURIComponent(request.agentIds[index]!)}`,
+          );
+          assert.isTrue(
+            (yield* outbox.listByCommandId(childCommandId)).some(
+              (effect) => effect.request.type === "provider-turn.start",
+            ),
+          );
+        }
+        // Both starts are already queued before either reviewer finishes.
+        const afterSequence = yield* orchestrator.getThreadEventSequence(threadId);
+        for (const [index, child] of children.entries()) {
+          const childRun = child.runs[0]!;
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make(`review-child-response-${index}`),
+                type: "message.updated",
+                threadId: child.thread.id,
+                runId: childRun.id,
+                occurredAt: now,
+                payload: {
+                  ...child.messages[0]!,
+                  id: MessageId.make(`review-result-${index}`),
+                  role: "assistant",
+                  text:
+                    index === 0
+                      ? yield* encodeReviewJson({
+                          verdict: "request_changes",
+                          summary: "Blocking: login still accepts expired tokens.",
+                          findings: [
+                            {
+                              id: "expired-token",
+                              severity: "blocking",
+                              title: "Expired tokens accepted",
+                              description: "Reject expired tokens at login.",
+                              file: "src/login.ts",
+                              line: 12,
+                              evidence: "An expired token still authenticates.",
+                            },
+                          ],
+                        })
+                      : "Review could not finish.",
+                  streaming: false,
+                },
+              },
+              {
+                id: EventId.make(`review-child-completed-${index}`),
+                type: "run.updated",
+                threadId: child.thread.id,
+                runId: childRun.id,
+                occurredAt: now,
+                payload: {
+                  ...childRun,
+                  status: "completed",
+                  completedAt: now,
+                },
+              },
+            ],
+          });
+        }
+        yield* sink.stream({ threadId, afterSequence }).pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "subagent.updated" &&
+              ["completed", "failed"].includes(stored.event.payload.status),
+          ),
+          Stream.take(2),
+          Stream.runDrain,
+        );
+        const completed = yield* orchestrator.getThreadProjection(threadId);
+        assert.lengthOf(completed.runs, 1);
+        const completedCard = completed.turnItems.find((item) => item.id === reviewCard.id);
+        assert.equal(completedCard?.type, "workflow_verification");
+        if (completedCard?.type !== "workflow_verification") return;
+        assert.equal(completedCard.phase, "needs_human");
+        assert.equal(completedCard.status, "failed");
+        assert.equal(completedCard.reviews[0]?.review?.findings[0]?.file, "src/login.ts");
+        assert.include(completedCard.reviews[1]?.error ?? "", "invalid review JSON");
+        assert.deepEqual(
+          completed.subagents.map((task) => task.status),
+          ["completed", "failed"],
+        );
+        assert.equal(
+          completed.subagents[0]?.result,
+          "Blocking: login still accepts expired tokens.",
+        );
+        assert.isTrue(
+          completed.subagents.every((task) => task.completionDelivery?.state === "disposed"),
+        );
+        const agent = {
+          id: "workflow-agent",
+          name: "Workflow agent",
+          skills: [],
+          instructions: "Implement the task",
+          modelSelection,
+        };
+        const workflow: ThreadWorkflowState = {
+          profileId: "done-workflow",
+          workspaceRoot,
+          profile: {
+            version: 1,
+            id: "done-workflow",
+            name: "Done workflow",
+            planner: agent,
+            implementer: agent,
+            reviewers: [agent],
+            checks: [{ id: "tests", name: "Tests", run: "true", timeoutMs: 1000 }],
+            limits: { maxRevisionCycles: 3, identicalFailureLimit: 2 },
+          },
+          status: "done",
+          revision: 1,
+          revisionCycles: 0,
+          consecutiveFailureCount: 0,
+          lastFailureFingerprint: null,
+          approvedPlanId: null,
+          candidateRunId: run.id,
+          workspaceDigest: "digest",
+          checks: [],
+          reviews: [],
+          terminalReason: null,
+          updatedAt: DateTime.formatIso(now),
+        };
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("review-completed-workflow"),
+              type: "thread.workflow-updated",
+              threadId,
+              occurredAt: now,
+              payload: { ...completed.thread, workflow },
+            },
+          ],
+        });
+        yield* orchestrator.dispatch({ ...request, commandId: CommandId.make("review-again") });
+        const repeated = yield* orchestrator.getThreadProjection(threadId);
+        assert.lengthOf(repeated.subagents, 4);
+        for (const task of repeated.subagents.slice(2)) {
+          const child = yield* orchestrator.getThreadProjection(task.childThreadId!);
+          assert.isNull(child.thread.workflow);
+          assert.equal(child.runs[0]?.modelSelection.instanceId, claudeModelSelection.instanceId);
+        }
+        assert.deepEqual(
+          repeated.turnItems
+            .filter((item) => item.type === "workflow_verification")
+            .map((item) => item.revision),
+          [1, 2],
+        );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("creates workflow reviewers as owned subagents", () =>
     Effect.gen(function* () {
       const orchestrator = yield* OrchestratorV2;

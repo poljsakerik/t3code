@@ -1,5 +1,6 @@
 import { AgentConversation, AgentConversationOwner } from "./agentDefinitions.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
+import { AgentDefinitionGetInput, agentDefinitionKey } from "./agentDefinitions.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
@@ -3002,10 +3003,13 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     runId: RunId,
-    agentIds: Schema.Array(TrimmedNonEmptyString).check(
+    agents: Schema.Array(AgentDefinitionGetInput).check(
       Schema.isMinLength(1),
       Schema.isMaxLength(20),
-      Schema.isUnique(),
+      Schema.makeFilter(
+        (agents) => new Set(agents.map(agentDefinitionKey)).size === agents.length,
+        { expected: "unique agent references" },
+      ),
     ),
   }),
   Schema.Struct({

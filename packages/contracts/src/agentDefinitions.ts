@@ -44,6 +44,21 @@ export const AgentDefinitionsListResult = Schema.Struct({
 });
 export type AgentDefinitionsListResult = typeof AgentDefinitionsListResult.Type;
 
+/** List the environment's global and project agents, with the current project first. */
+export const AgentCatalogInput = Schema.Struct({ projectId: Schema.optional(ProjectId) });
+export type AgentCatalogInput = typeof AgentCatalogInput.Type;
+export const AgentCatalogResult = Schema.Struct({
+  groups: Schema.Array(
+    Schema.Struct({
+      projectId: Schema.NullOr(ProjectId),
+      name: TrimmedNonEmptyString,
+      agents: Schema.Array(AgentDefinition),
+      error: Schema.NullOr(Schema.String),
+    }),
+  ),
+});
+export type AgentCatalogResult = typeof AgentCatalogResult.Type;
+
 /** Plain Markdown sources only; loading the editor never evaluates authored modules. */
 export const AgentInstructionDocument = Schema.Struct({
   path: TrimmedNonEmptyString,
@@ -56,6 +71,11 @@ export const AgentDefinitionGetInput = Schema.Struct({
   agentId: TrimmedNonEmptyString,
 });
 export type AgentDefinitionGetInput = typeof AgentDefinitionGetInput.Type;
+
+/** Agent folder IDs are local to their source project, or to the environment's home. */
+export function agentDefinitionKey(input: AgentDefinitionGetInput): string {
+  return JSON.stringify([input.projectId ?? null, input.agentId]);
+}
 /** A skill package owned by this agent, not installed into a provider's shared catalog. */
 export const AgentInstalledSkill = Schema.Struct({
   name: TrimmedNonEmptyString,

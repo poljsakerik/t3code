@@ -1,8 +1,10 @@
 import { useRef, useState } from "react";
-import { Modal, Pressable, ScrollView, View } from "react-native";
+import { Modal, Pressable, ScrollView, Switch, View } from "react-native";
 import {
   CommandId,
   reviewableRun,
+  agentDefinitionKey,
+  type AgentDefinitionGetInput,
   type EnvironmentId,
   type ProjectId,
   type RunId,
@@ -52,7 +54,7 @@ function RequestReviewModal(props: {
   onClose: () => void;
 }) {
   const catalog = useEnvironmentQuery(
-    projectEnvironment.agentDefinitions({
+    projectEnvironment.agentCatalog({
       environmentId: props.environmentId,
       input: { projectId: props.projectId },
     }),
@@ -60,7 +62,9 @@ function RequestReviewModal(props: {
   const dispatch = useAtomCommand(orchestrationEnvironment.v2.dispatchCommand, {
     reportFailure: false,
   });
-  const [selected, setSelected] = useState<ReadonlyArray<string>>([]);
+  const [selected, setSelected] = useState<ReadonlyMap<string, AgentDefinitionGetInput>>(
+    () => new Map(),
+  );
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
@@ -68,7 +72,7 @@ function RequestReviewModal(props: {
     if (!busyRef.current) props.onClose();
   };
   const start = async () => {
-    if (busyRef.current || !props.runId || selected.length === 0) return;
+    if (busyRef.current || !props.runId || selected.size === 0) return;
     busyRef.current = true;
     setBusy(true);
     setError(null);
@@ -79,7 +83,7 @@ function RequestReviewModal(props: {
         commandId: CommandId.make(uuidv4()),
         threadId: props.threadId,
         runId: props.runId,
-        agentIds: selected,
+        agents: [...selected.values()],
         createdBy: "user",
         creationSource: "mobile",
       },
@@ -118,44 +122,66 @@ function RequestReviewModal(props: {
             </>
           ) : !catalog.data ? (
             <AppText>Loading agents…</AppText>
-          ) : catalog.data.agents.length === 0 ? (
+          ) : catalog.data.groups.every((group) => group.agents.length === 0 && !group.error) ? (
             <AppText>
-              No agents are configured for this project. Add project agents in the web or desktop
-              app, then return here.
+              No agents are configured in this environment. Add agents in the web or desktop app,
+              then return here.
             </AppText>
           ) : (
-            catalog.data.agents.map((agent) => {
-              const checked = selected.includes(agent.id);
-              return (
-                <Pressable
-                  key={agent.id}
-                  accessibilityRole="checkbox"
-                  accessibilityState={{ checked }}
-                  disabled={busy || (!checked && selected.length >= 20)}
-                  className="min-h-12 rounded-xl bg-subtle p-3"
-                  onPress={() =>
-                    setSelected((current) =>
-                      checked ? current.filter((id) => id !== agent.id) : [...current, agent.id],
-                    )
-                  }
-                >
-                  <AppText>
-                    {checked ? "✓ " : ""}
-                    {agent.name}
-                  </AppText>
-                  <AppText className="text-xs text-foreground-secondary">{agent.directory}</AppText>
-                </Pressable>
-              );
-            })
+            catalog.data.groups.map((group) =>
+              group.agents.length > 0 || group.error ? (
+                <View key={group.projectId ?? "global"} className="gap-2">
+                  <AppText className="font-t3-semibold">{group.name}</AppText>
+                  {group.error ? <AppText accessibilityRole="alert">{group.error}</AppText> : null}
+                  {group.agents.map((agent) => {
+                    const reference = {
+                      ...(group.projectId === null ? {} : { projectId: group.projectId }),
+                      agentId: agent.id,
+                    };
+                    const key = agentDefinitionKey(reference);
+                    const checked = selected.has(key);
+                    return (
+                      <View
+                        key={key}
+                        className="min-h-12 flex-row items-center gap-3 rounded-xl bg-subtle p-3"
+                      >
+                        <View className="min-w-0 flex-1">
+                          <AppText>{agent.name}</AppText>
+                          <AppText className="text-xs text-foreground-secondary">
+                            {agent.directory}
+                          </AppText>
+                        </View>
+                        <Switch
+                          accessibilityLabel={`${agent.name}, ${group.name}`}
+                          value={checked}
+                          disabled={busy || (!checked && selected.size >= 20)}
+                          ios_backgroundColorClassName="accent-switch-inactive-track"
+                          trackColorOffClassName="accent-switch-inactive-track"
+                          trackColorOnClassName="accent-switch-active-track"
+                          onValueChange={(value) =>
+                            setSelected((current) => {
+                              const next = new Map(current);
+                              if (value) next.set(key, reference);
+                              else next.delete(key);
+                              return next;
+                            })
+                          }
+                        />
+                      </View>
+                    );
+                  })}
+                </View>
+              ) : null,
+            )
           )}
           {error ? <AppText accessibilityRole="alert">{error}</AppText> : null}
           <Pressable
             accessibilityRole="button"
-            disabled={busy || !props.runId || selected.length === 0 || catalog.isPending}
+            disabled={busy || !props.runId || selected.size === 0 || catalog.isPending}
             className="min-h-12 items-center justify-center rounded-xl bg-subtle disabled:opacity-50"
             onPress={() => void start()}
           >
-            <AppText>{busy ? "Starting reviews…" : `Start reviews (${selected.length})`}</AppText>
+            <AppText>{busy ? "Starting reviews…" : `Start reviews (${selected.size})`}</AppText>
           </Pressable>
           <Pressable
             accessibilityRole="button"

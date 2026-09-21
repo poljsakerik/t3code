@@ -357,6 +357,8 @@ import {
   AgentDefinitionUpdateInput,
   AgentDefinitionsListInput,
   AgentDefinitionsListResult,
+  AgentCatalogInput,
+  AgentCatalogResult,
 } from "./agentDefinitions.ts";
 
 export const WS_METHODS = {
@@ -364,6 +366,7 @@ export const WS_METHODS = {
   agentSkillsInstall: "agentSkills.install",
   agentSkillsRemove: "agentSkills.remove",
   agentDefinitionsList: "agentDefinitions.list",
+  agentDefinitionsCatalog: "agentDefinitions.catalog",
   agentDefinitionsGet: "agentDefinitions.get",
   agentDefinitionsCreate: "agentDefinitions.create",
   agentDefinitionsUpdate: "agentDefinitions.update",
@@ -1187,6 +1190,12 @@ const WsAgentDefinitionsListRpc = Rpc.make(WS_METHODS.agentDefinitionsList, {
   error: Schema.Union([AgentDefinitionError, EnvironmentAuthorizationError]),
 });
 
+const WsAgentDefinitionsCatalogRpc = Rpc.make(WS_METHODS.agentDefinitionsCatalog, {
+  payload: AgentCatalogInput,
+  success: AgentCatalogResult,
+  error: Schema.Union([AgentDefinitionError, EnvironmentAuthorizationError]),
+});
+
 const WsAgentDefinitionsGetRpc = Rpc.make(WS_METHODS.agentDefinitionsGet, {
   payload: AgentDefinitionGetInput,
   success: AgentDefinitionGetResult,
@@ -1875,6 +1884,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsAgentSkillsInstallRpc,
   WsAgentSkillsRemoveRpc,
   WsAgentDefinitionsListRpc,
+  WsAgentDefinitionsCatalogRpc,
   WsAgentDefinitionsGetRpc,
   WsAgentDefinitionsCreateRpc,
   WsAgentDefinitionsUpdateRpc,

@@ -3,10 +3,13 @@ import { ProcessRunner, ProcessSpawnError } from "../processRunner.ts";
 import * as NodeOS from "node:os";
 import { afterEach, vi } from "vite-plus/test";
 import { AgentDefinitionService, layer } from "./AgentDefinitionService.ts";
-import { ProjectId } from "@t3tools/contracts";
+import { ProjectId, agentDefinitionKey } from "@t3tools/contracts";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
+import {
+  ProjectionProjectRepository,
+  type ProjectionProject,
+} from "../persistence/Services/ProjectionProjects.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -21,6 +24,8 @@ vi.mock("node:os", async (importOriginal) => {
 });
 
 afterEach(() => vi.mocked(NodeOS.homedir).mockReset());
+const listAllProjects = vi.fn(() => Effect.succeed<ReadonlyArray<ProjectionProject>>([]));
+afterEach(() => listAllProjects.mockReset());
 
 const fixture = Effect.fn("fixture")(function* (files: Record<string, string>) {
   const fs = yield* FileSystem.FileSystem;
@@ -246,6 +251,7 @@ const serviceLayer = layer.pipe(
   Layer.provide(installer),
   Layer.provide(
     Layer.mock(ProjectionProjectRepository)({
+      listAll: () => listAllProjects(),
       getById: ({ projectId }) =>
         Effect.succeed(
           projectId === "missing"
@@ -269,6 +275,88 @@ const serviceLayer = layer.pipe(
 );
 
 it.layer(serviceLayer)("project agent catalog", (it) => {
+  it.effect(
+    "lists all agent sources with the current project first and isolates unavailable projects",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* AgentDefinitionService;
+        const definitions = {
+          ".t3/agents/reviewer/agent.ts": "throw new Error('catalog must not evaluate modules');",
+        };
+        const home = yield* fixture(definitions);
+        const current = yield* fixture(definitions);
+        const other = yield* fixture(definitions);
+        const deleted = yield* fixture(definitions);
+        vi.mocked(NodeOS.homedir).mockReturnValue(home);
+        listAllProjects.mockReturnValue(
+          Effect.succeed(
+            [
+              [other, "Another project", null],
+              [current, "Current project", null],
+              [deleted, "Deleted project", "2026-01-01T00:00:00.000Z"],
+              [home, "Registered home", null],
+              ["missing", "Unavailable project", null],
+            ].map(([root, name, deletedAt]) => ({
+              projectId: ProjectId.make(root!),
+              title: name!,
+              workspaceRoot: root!,
+              defaultModelSelection: null,
+              defaultThreadEnvMode: null,
+              autoPull: false,
+              scripts: [],
+              createdAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-01T00:00:00.000Z",
+              deletedAt: deletedAt ?? null,
+            })),
+          ),
+        );
+        const catalog = yield* service.catalog({ projectId: ProjectId.make(current) });
+        expect(catalog.groups.map(({ name }) => name)).toEqual([
+          "Current project",
+          "Global",
+          "Another project",
+          "Unavailable project",
+        ]);
+        expect(catalog.groups.slice(0, 3).map(({ agents }) => agents[0]?.id)).toEqual([
+          ".t3/agents/reviewer",
+          ".t3/agents/reviewer",
+          ".t3/agents/reviewer",
+        ]);
+        expect(catalog.groups[3]).toMatchObject({
+          agents: [],
+          error: "Project missing was not found.",
+        });
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("resolves same-named agents from their selected project or Global source", () =>
+    Effect.gen(function* () {
+      const service = yield* AgentDefinitionService;
+      const home = yield* fixture({
+        ".t3/agents/reviewer/agent.ts": 'export default { model: "anthropic/claude-sonnet-4-6" };',
+        ".t3/agents/reviewer/instructions.md": "Global review instructions.",
+      });
+      const project = yield* fixture({
+        ".t3/agents/reviewer/agent.ts": 'export default { model: "openai/gpt-5.4" };',
+        ".t3/agents/reviewer/instructions.md": "Project review instructions.",
+        ".t3/agents/reviewer/skills/checklist/SKILL.md": "Check the public API.",
+      });
+      vi.mocked(NodeOS.homedir).mockReturnValue(home);
+      const globalRef = { agentId: ".t3/agents/reviewer" };
+      const projectRef = { projectId: ProjectId.make(project), agentId: ".t3/agents/reviewer" };
+      const global = yield* service.resolve(globalRef);
+      const local = yield* service.resolve(projectRef);
+      expect(global.id).toBe(agentDefinitionKey(globalRef));
+      expect(local.id).toBe(agentDefinitionKey(projectRef));
+      expect(global.id).not.toBe(local.id);
+      expect(global.instructions).toBe("Global review instructions.");
+      expect(global.modelSelection.instanceId).toBe("claudeAgent");
+      expect(local.instructions).toContain("Project review instructions.");
+      expect(local.instructions).toContain("Check the public API.");
+      expect(local.modelSelection.instanceId).toBe("codex");
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("installs complete skill files only on the selected agent and removes them", () =>
     Effect.gen(function* () {
       const service = yield* AgentDefinitionService;

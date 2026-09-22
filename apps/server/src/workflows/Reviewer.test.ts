@@ -94,3 +94,38 @@ it.effect("does not accept approval with blocking findings or a failed run", () 
     }
   }),
 );
+
+it.effect("accepts a single fenced review surrounded by commentary without losing findings", () =>
+  Effect.gen(function* () {
+    const review = {
+      verdict: "request_changes" as const,
+      summary: "Source review only.",
+      findings: [{ ...finding, severity: "blocking" as const }],
+    };
+    const json = yield* encodeReviewJson(review);
+    for (const text of [
+      json,
+      `I completed the full critique.\n\n\`\`\`json\n${json}\n\`\`\`\n\nNo browser was available.`,
+    ]) {
+      const result = yield* collectReviewerResult({ pending, runStatus: "completed", text });
+      assert.equal(result.status, "completed");
+      assert.deepEqual(result.review, review);
+    }
+  }),
+);
+
+it.effect(
+  "rejects ambiguous fenced reviews and validates findings inside a prose-wrapped block",
+  () =>
+    Effect.gen(function* () {
+      const json = yield* encodeReviewJson({ verdict: "approve", summary: "Done", findings: [] });
+      for (const text of [
+        `\`\`\`json\n${json}\n\`\`\`\n\`\`\`json\n${json}\n\`\`\``,
+        `Review complete.\n\`\`\`json\n{"verdict":"approve","summary":"Done","findings":[{}]}\n\`\`\``,
+      ]) {
+        const result = yield* collectReviewerResult({ pending, runStatus: "completed", text });
+        assert.equal(result.status, "failed");
+        assert.isNull(result.review);
+      }
+    }),
+);

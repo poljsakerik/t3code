@@ -89,6 +89,8 @@ Legacy Markdown entries directly under `skills/`, and skill folders without a `S
 
 Authored Eve tools, connections, hooks, extensions, sandbox configuration, and other executable capability slots are rejected for workflow agents. The provider harness remains responsible for tools and permissions. Markdown `instructions/` directories are supported; executable instruction modules are not.
 
+T3-launched subagents, including workflow and manual reviewers, run with full access and no approval prompts regardless of the parent thread’s mode. Reviewers are instructed to inspect and report findings without modifying files.
+
 Reviewers use a fresh native provider thread with a portable summary of the implementation instead of inheriting a native thread that may already have loaded skills. Codex, Claude, and OpenCode currently expose the native controls needed to enforce this allowlist. Reviewer turns fail before starting on Cursor and Grok because those integrations do not expose an exclusive per-session skill control. T3 Code does not fall back to prompt instructions that leave the full skill catalog in context.
 
 Skill entries use the provider's canonical names. For example, a plugin that exposes one `impeccable` skill with a `critique` mode is assigned as `impeccable:impeccable`, even when its invocation is `/impeccable critique`. Codex fails the reviewer before sending its prompt when an assigned skill is unavailable. Claude passes the configured allowlist directly to its native skill filter without a separate availability preflight.

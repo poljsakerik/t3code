@@ -19,6 +19,13 @@ import type {
 import * as DateTime from "effect/DateTime";
 import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
 
+// T3-owned agents run unattended. Claude's plan mode restricts tools even with
+// full access, so review-only behavior belongs in the task instructions.
+export const APP_OWNED_SUBAGENT_MODES = {
+  runtimeMode: "full-access",
+  interactionMode: "default",
+} as const;
+
 function trimmed(value: string | null | undefined): string | undefined {
   const result = value?.trim();
   return result && result.length > 0 ? result : undefined;

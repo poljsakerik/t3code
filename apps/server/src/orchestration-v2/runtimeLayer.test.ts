@@ -463,8 +463,8 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
           projectId,
           title: "Fix task",
           modelSelection,
-          runtimeMode: "full-access",
-          interactionMode: "default",
+          runtimeMode: "approval-required",
+          interactionMode: "plan",
           branch: "feature",
           worktreePath: workspaceRoot,
           createdBy: "user",
@@ -562,7 +562,8 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         );
         for (const [index, child] of children.entries()) {
           assert.equal(child.thread.lineage.parentThreadId, threadId);
-          assert.equal(child.thread.interactionMode, "plan");
+          assert.equal(child.thread.runtimeMode, "full-access");
+          assert.equal(child.thread.interactionMode, "default");
           assert.equal(child.thread.worktreePath, workspaceRoot);
           assert.isNull(child.thread.workflow ?? null);
           assert.deepEqual(child.runs[0]?.workflowSkillAllowlist, []);
@@ -731,6 +732,70 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.effect(
+    "starts delegated subagents with full access regardless of parent or requested modes",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* OrchestratorV2;
+        for (const runtimeMode of [
+          "approval-required",
+          "auto-accept-edits",
+          "auto",
+          "full-access",
+        ] as const) {
+          const threadId = ThreadId.make(`delegation-access-${runtimeMode}`);
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`create-${threadId}`),
+            threadId,
+            projectId: ProjectId.make("delegation-access-project"),
+            title: "Delegate a task",
+            modelSelection,
+            runtimeMode,
+            interactionMode: "plan",
+            branch: null,
+            worktreePath: process.cwd(),
+            createdBy: "user",
+            creationSource: "web",
+          });
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(`start-${threadId}`),
+            threadId,
+            messageId: MessageId.make(`message-${threadId}`),
+            text: "Delegate the investigation.",
+            attachments: [],
+            dispatchMode: { type: "start_immediately" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+          const parent = yield* orchestrator.getThreadProjection(threadId);
+          const run = parent.runs[0]!;
+          yield* orchestrator.dispatch({
+            type: "delegated_task.request",
+            commandId: CommandId.make(`delegate-${threadId}`),
+            parentThreadId: threadId,
+            parentRunId: run.id,
+            parentNodeId: run.rootNodeId!,
+            task: "Inspect the implementation.",
+            modelSelection: claudeModelSelection,
+            runtimeMode: "approval-required",
+            interactionMode: "plan",
+            createdBy: "agent",
+            creationSource: "mcp",
+          });
+          const updated = yield* orchestrator.getThreadProjection(threadId);
+          const child = yield* orchestrator.getThreadProjection(
+            updated.subagents[0]!.childThreadId!,
+          );
+          assert.equal(child.thread.runtimeMode, "full-access");
+          assert.equal(child.thread.interactionMode, "default");
+          assert.equal(updated.thread.runtimeMode, runtimeMode);
+          assert.equal(updated.thread.interactionMode, "plan");
+        }
+      }),
+  );
+
   it.effect("creates workflow reviewers as owned subagents", () =>
     Effect.gen(function* () {
       const orchestrator = yield* OrchestratorV2;
@@ -748,8 +813,8 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         projectId: ProjectId.make("workflow-subagents-project"),
         title: parentId,
         modelSelection,
-        runtimeMode: "full-access",
-        interactionMode: "default",
+        runtimeMode: "approval-required",
+        interactionMode: "plan",
         branch: "feature/review",
         worktreePath: "/workspace/review",
         createdBy: "user",
@@ -880,13 +945,15 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         });
         assert.deepEqual(child.thread.forkedFrom, { type: "node", nodeId: task.id });
         assert.isNull(child.thread.workflow);
+        assert.equal(child.thread.runtimeMode, "full-access");
+        assert.equal(child.thread.interactionMode, "default");
         assert.equal(child.thread.worktreePath, parent.worktreePath);
         assert.equal(task.origin, "app_owned");
         assert.equal(task.runId, runId);
       }
       const fresh = yield* orchestrator.getThreadProjection(freshId);
       assert.isNull(fresh.thread.activeProviderThreadId);
-      assert.equal(fresh.thread.interactionMode, "plan");
+      assert.equal(fresh.thread.interactionMode, "default");
       assert.deepEqual(fresh.thread.modelSelection, claudeModelSelection);
       const freshTask = updated.subagents.find((task) => task.childThreadId === freshId)!;
       assert.equal(freshTask.driver, "claudeAgent");

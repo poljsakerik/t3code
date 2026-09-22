@@ -1,3 +1,5 @@
+import { reviewableRun } from "@t3tools/contracts";
+import { openRequestReviewDialog, RequestReviewDialogHost } from "./RequestReviewDialog";
 import { resolveVisibleWorktreeSetup } from "./ChatView.logic";
 import * as DateTime from "effect/DateTime";
 import { restorePlanFollowUpComposer } from "./ChatView.logic";
@@ -9833,6 +9835,22 @@ export default function ChatView(props: ChatViewProps) {
             <div className="relative flex min-h-0 flex-1 flex-col bg-background">
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               <MessagesTimeline
+                bottomAccessory={
+                  !paintOnlyDisplayedTimeline &&
+                  activeThreadRef &&
+                  serverProjection &&
+                  reviewableRun(serverProjection) ? (
+                    <div className="py-3">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => openRequestReviewDialog(activeThreadRef)}
+                      >
+                        Request review
+                      </Button>
+                    </div>
+                  ) : null
+                }
                 citationRequest={paintOnlyDisplayedTimeline ? null : citationRequest}
                 citationHistoryLoading={threadDetailLoading}
                 {...(!paintOnlyDisplayedTimeline ? { onCiteAssistantText: citeAssistantText } : {})}
@@ -10444,6 +10462,7 @@ export default function ChatView(props: ChatViewProps) {
         </AlertDialogPopup>
       </AlertDialog>
       <LinkPullRequestDialogHost />
+      <RequestReviewDialogHost />
       {expandedImage && (
         <ExpandedImageDialog
           key={expandedImageKey(expandedImage)}

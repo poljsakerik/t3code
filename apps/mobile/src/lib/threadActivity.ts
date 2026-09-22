@@ -466,15 +466,19 @@ function itemSummary(
   if (item.type === "workflow_verification") {
     const action =
       item.phase === "approved"
-        ? "Verified"
+        ? item.reviewOnly
+          ? "Approved"
+          : "Verified"
         : item.phase === "changes_requested"
           ? "Changes requested for"
           : item.phase === "needs_human"
-            ? "Needs help on"
+            ? item.reviewOnly
+              ? "Review failed for"
+              : "Needs help on"
             : item.phase === "reviewing"
               ? "Reviewing"
               : "Checking";
-    return `${action} revision ${item.revision}`;
+    return `${action} ${item.reviewOnly ? "review round" : "revision"} ${item.revision}`;
   }
   const title = item.title?.trim();
   if (title) return toolPresentation?.displayName ?? capitalizePhrase(title);
@@ -580,7 +584,7 @@ function itemPreview(item: OrchestrationV2TurnItem): string | null {
       const approvals = item.reviews.filter(
         (review) => review.review?.verdict === "approve",
       ).length;
-      const counts = `${passedChecks}/${item.configuredChecks.length} checks · ${approvals}/${item.reviewerLabels.length} approvals`;
+      const counts = `${item.reviewOnly ? "" : `${passedChecks}/${item.configuredChecks.length} checks · `}${approvals}/${item.reviewerLabels.length} approvals`;
       return item.terminalReason ? `${counts} · ${item.terminalReason}` : counts;
     }
   }

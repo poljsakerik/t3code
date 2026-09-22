@@ -630,10 +630,26 @@ describe("OrchestratorMcpService provider resolution", () => {
           const request = commands[0] as {
             type: string;
             modelSelection: { instanceId: string; model: string };
+            runtimeMode: string;
+            interactionMode: string;
           };
           assert.equal(request.type, "delegated_task.request");
           assert.equal(request.modelSelection.instanceId, antigravityInstanceId);
           assert.equal(request.modelSelection.model, "ant-model");
+          assert.equal(request.runtimeMode, "full-access");
+          assert.equal(request.interactionMode, "default");
+          yield* service.delegateTask(scope, {
+            task: "Plan the implementation without editing.",
+            target: { providerInstanceId: antigravityInstanceId, model: "ant-model" },
+            mode: "async",
+            runtimeMode: "approval-required",
+            interactionMode: "plan",
+            clientRequestId: "delegate-antigravity-planner",
+          });
+          assert.include(yield* Ref.get(dispatched).pipe(Effect.map((commands) => commands[1])), {
+            runtimeMode: "approval-required",
+            interactionMode: "plan",
+          });
         }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));
       }),
   );

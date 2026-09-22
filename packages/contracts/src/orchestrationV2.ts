@@ -1,4 +1,5 @@
 import { OrchestrationMessageContext } from "./composerContext.ts";
+import { AgentDefinitionGetInput, agentDefinitionKey } from "./agentDefinitions.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -1305,6 +1306,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
     type: Schema.Literal("workflow_verification"),
+    reviewOnly: Schema.optional(Schema.Boolean),
     profileId: TrimmedNonEmptyString,
     profileName: TrimmedNonEmptyString,
     revision: NonNegativeInt,
@@ -1529,6 +1531,23 @@ export const OrchestrationV2ThreadProjection = Schema.Struct({
   updatedAt: Schema.DateTimeUtc,
 });
 export type OrchestrationV2ThreadProjection = typeof OrchestrationV2ThreadProjection.Type;
+
+/** A review belongs to the latest completed task and must not race its agents. */
+export function reviewableRun(
+  projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "subagents">,
+): OrchestrationV2Run | null {
+  const run = projection.runs.at(-1);
+  if (
+    run?.status !== "completed" ||
+    run.rootNodeId === null ||
+    projection.thread.archivedAt !== null ||
+    projection.thread.deletedAt !== null ||
+    projection.thread.workflow != null ||
+    projection.subagents.some((task) => ["pending", "running", "waiting"].includes(task.status))
+  )
+    return null;
+  return run;
+}
 
 export const OrchestrationV2ShellThreadStatus = Schema.Union([
   Schema.Literal("idle"),
@@ -2061,6 +2080,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
     type: Schema.Literal("workflow_verification"),
+    reviewOnly: Schema.optional(Schema.Boolean),
     profileId: TrimmedNonEmptyString,
     profileName: TrimmedNonEmptyString,
     revision: NonNegativeInt,
@@ -2712,6 +2732,21 @@ export const OrchestrationV2Command = Schema.Union([
     targetThreadId: ThreadId,
     sourcePoint: OrchestrationV2ThreadForkSourcePoint,
     createdAt: Schema.optional(Schema.DateTimeUtc),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.review"),
+    ...OrchestrationV2CreationFields,
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
+    agents: Schema.Array(AgentDefinitionGetInput).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(20),
+      Schema.makeFilter(
+        (agents) => new Set(agents.map(agentDefinitionKey)).size === agents.length,
+        { expected: "unique agent references" },
+      ),
+    ),
   }),
   Schema.Struct({
     type: Schema.Literal("delegated_task.request"),

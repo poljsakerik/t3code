@@ -362,7 +362,11 @@ function TimelineListFooter({
 }) {
   return (
     <div>
-      {children}
+      {children ? (
+        <div className="messages-timeline-row-frame">
+          <div className="chat-content-lane">{children}</div>
+        </div>
+      ) : null}
       <div aria-hidden style={{ height: composerInset }} />
       <div aria-hidden className="h-3 sm:h-4" />
     </div>

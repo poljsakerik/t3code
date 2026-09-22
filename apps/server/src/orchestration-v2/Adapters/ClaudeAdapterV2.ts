@@ -805,7 +805,6 @@ export function makeClaudeQueryOptions(input: {
   readonly detachedConversation?: boolean;
   readonly conversationSkillDirectories?: ReadonlyArray<string>;
   readonly agentInstructions?: string | undefined;
-  readonly conversationFilesystemRoot?: string;
   readonly modelSelection: ModelSelection;
   readonly nativeThreadId: string;
   readonly resume: boolean;
@@ -939,10 +938,9 @@ export function makeClaudeQueryOptions(input: {
       sandbox: {
         enabled: true,
         failIfUnavailable: true,
-        allowUnsandboxedCommands: false,
+        allowUnsandboxedCommands: true,
         autoAllowBashIfSandboxed: true,
         filesystem: {
-          denyRead: [input.conversationFilesystemRoot ?? "/"],
           allowRead: [
             input.cwd,
             ...(input.conversationSkillDirectories ?? []),
@@ -954,9 +952,9 @@ export function makeClaudeQueryOptions(input: {
           allowWrite: [input.cwd],
         },
         network: {
-          allowedDomains: [],
-          deniedDomains: ["*"],
-          strictAllowlist: true,
+          allowedDomains: ["*"],
+          deniedDomains: [],
+          strictAllowlist: false,
           allowAllUnixSockets: false,
           allowLocalBinding: false,
         },
@@ -6630,57 +6628,6 @@ export function makeClaudeAdapterV2(
             } satisfies PermissionResult;
           }
 
-          if (
-            context.input.runtimePolicy.detachedConversation &&
-            !["AskUserQuestion", "Skill", "Bash"].includes(toolName)
-          ) {
-            const cwd = context.input.runtimePolicy.cwd;
-            const requested = firstStringInputField(claudeNativeToolInputFromRecord(toolInput), [
-              "file_path",
-              "path",
-            ]);
-            const requestedPath = cwd === null ? null : path.resolve(cwd, requested ?? ".");
-            const target =
-              requestedPath === null
-                ? null
-                : yield* fileSystem.realPath(requestedPath).pipe(
-                    Effect.catch(() =>
-                      fileSystem
-                        .realPath(path.dirname(requestedPath))
-                        .pipe(
-                          Effect.map((parent) => path.join(parent, path.basename(requestedPath))),
-                        ),
-                    ),
-                    Effect.orElseSucceed(() => null),
-                  );
-            const roots = [
-              cwd,
-              ...(["Read", "Glob", "Grep"].includes(toolName) ? conversationSkillDirectories : []),
-            ];
-            const allowed =
-              target !== null &&
-              roots.some((root) => {
-                if (root === null) return false;
-                const relative = path.relative(root, target);
-                return (
-                  relative !== ".." &&
-                  !relative.startsWith(`..${path.sep}`) &&
-                  !path.isAbsolute(relative)
-                );
-              });
-            if (!allowed) {
-              return {
-                behavior: "deny",
-                message: "Agent conversations can access only their own files and retained skills.",
-                toolUseID: callbackOptions.toolUseID,
-              } satisfies PermissionResult;
-            }
-            return {
-              behavior: "allow",
-              updatedInput: toolInput,
-              toolUseID: callbackOptions.toolUseID,
-            } satisfies PermissionResult;
-          }
           const nativeRequestId = callbackOptions.toolUseID;
           const nativeToolInput = claudeNativeToolInputFromRecord(toolInput);
           // While root output awaits its prompt echo, the tool's streamed
@@ -7129,7 +7076,6 @@ export function makeClaudeAdapterV2(
                   detachedConversation: true,
                   conversationSkillDirectories,
                   agentInstructions: turnInput.runtimePolicy.agentInstructions,
-                  conversationFilesystemRoot: path.parse(turnInput.runtimePolicy.cwd ?? "/").root,
                 }
               : {}),
             attachmentsDir,

@@ -105,7 +105,7 @@ it.layer(TestLayer)("RuntimePolicyV2", (it) => {
       assert.equal(resolved.agentInstructions, "Write clearly.");
       assert.deepEqual(resolved.workflowSkillAllowlist, ["writing"]);
       assert.isTrue(resolved.detachedConversation);
-      assert.equal(resolved.approvalPolicy, "never");
+      assert.equal(resolved.approvalPolicy, "on-request");
     }),
   );
 

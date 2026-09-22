@@ -6904,14 +6904,14 @@ it.effect("keeps detached turns on their named permission profile and frozen ins
         cwd: "/managed/conversation",
         runtimeMode: "approval-required",
         interactionMode: "default",
-        approvalPolicy: "never",
+        approvalPolicy: "on-request",
         detachedConversation: true,
         agentInstructions: "Write clearly.",
       },
       hasT3Mcp: true,
     });
     assert.isUndefined(params.sandboxPolicy);
-    assert.equal(params.approvalPolicy, "never");
+    assert.equal(params.approvalPolicy, "on-request");
     assert.equal(params.collaborationMode?.settings.developer_instructions, "Write clearly.");
   }),
 );

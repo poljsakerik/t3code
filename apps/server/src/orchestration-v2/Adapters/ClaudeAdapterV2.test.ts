@@ -6859,5 +6859,18 @@ it("isolates detached Claude configuration from global integrations and project 
   assert.equal(options.permissionMode, "default");
   assert.isFalse(options.allowDangerouslySkipPermissions);
   assert.isTrue(options.sandbox?.failIfUnavailable);
-  assert.isFalse(options.sandbox?.allowUnsandboxedCommands);
+  assert.isTrue(options.sandbox?.allowUnsandboxedCommands);
+  assert.isUndefined(options.sandbox?.filesystem?.denyRead);
+  assert.deepEqual(options.sandbox?.network?.allowedDomains, ["*"]);
+  assert.deepEqual(options.sandbox?.network?.deniedDomains, []);
+  assert.isFalse(options.sandbox?.network?.strictAllowlist);
+  assert.isTrue(
+    claudeRuntimeQueryPolicyForRuntimePolicy({
+      cwd: "/managed/writer",
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      detachedConversation: true,
+      approvalPolicy: "on-request",
+    }).installPermissionCallback,
+  );
 });

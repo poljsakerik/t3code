@@ -135,6 +135,10 @@
       "types": "./src/state/itemSupport.ts",
       "default": "./src/state/itemSupport.ts"
     },
+    "./state/agent-conversations": {
+      "types": "./src/state/agentConversations.ts",
+      "default": "./src/state/agentConversations.ts"
+    },
     "./state/models": {
       "types": "./src/state/models.ts",
       "default": "./src/state/models.ts"

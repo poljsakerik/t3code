@@ -81,6 +81,7 @@ import { isAutomaticCompletionRun, queuedRunsInDeliveryOrder } from "./QueuedRun
 import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
 import {
   makeSubagentChildThread,
+  APP_OWNED_SUBAGENT_MODES,
   subagentResultForRun,
   delegatedTaskProgress,
   subagentThreadTitle,
@@ -1781,7 +1782,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             creationSource: "server",
           }),
           workflow: null,
-          interactionMode: "plan" as const,
+          ...APP_OWNED_SUBAGENT_MODES,
         };
         yield* emitEvent({
           type: "thread.created",
@@ -5789,8 +5790,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           creationSource: command.creationSource,
         }),
         ...(review ? { workflow: null } : {}),
-        runtimeMode: command.runtimeMode,
-        interactionMode: command.interactionMode,
+        ...APP_OWNED_SUBAGENT_MODES,
       };
       const task: OrchestrationV2Subagent = {
         id: taskNodeId,
@@ -6016,8 +6016,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             context: `Task context:\n${context}`,
           }),
           modelSelection: reviewer.modelSelection,
-          runtimeMode: "approval-required",
-          interactionMode: "plan",
+          ...APP_OWNED_SUBAGENT_MODES,
           createdBy: command.createdBy,
           creationSource: command.creationSource,
         },

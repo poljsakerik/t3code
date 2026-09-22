@@ -544,7 +544,7 @@ describe("OrchestratorMcpService provider resolution", () => {
   );
 
   it.effect(
-    "delegates to an Antigravity instance whose adapter resolves through the registry",
+    "delegates to a registered Antigravity adapter with full access despite a restricted parent",
     () =>
       Effect.gen(function* () {
         let delegated = false;
@@ -572,12 +572,21 @@ describe("OrchestratorMcpService provider resolution", () => {
         const dependencies = Layer.mergeAll(
           NodeServices.layer,
           Layer.mock(ThreadManagementService)({
-            getThreadProjection: (threadId) =>
-              Effect.succeed(
+            getThreadProjection: (threadId) => {
+              const parent = parentProjection(delegated ? [task] : []);
+              return Effect.succeed(
                 threadId === parentThreadId
-                  ? parentProjection(delegated ? [task] : [])
+                  ? {
+                      ...parent,
+                      thread: {
+                        ...parent.thread,
+                        runtimeMode: "approval-required",
+                        interactionMode: "plan",
+                      },
+                    }
                   : childProjection,
-              ),
+              );
+            },
             dispatch: (command) =>
               Ref.update(dispatched, (commands) => [...commands, command]).pipe(
                 Effect.andThen(
@@ -622,6 +631,8 @@ describe("OrchestratorMcpService provider resolution", () => {
             target: { providerInstanceId: antigravityInstanceId, model: "ant-model" },
             mode: "async",
             clientRequestId: "delegate-antigravity-1",
+            runtimeMode: "full-access",
+            interactionMode: "default",
           });
           assert.equal(result.status, "running");
           assert.equal(result.providerInstanceId, antigravityInstanceId);
@@ -629,9 +640,13 @@ describe("OrchestratorMcpService provider resolution", () => {
           assert.equal(commands.length, 1);
           const request = commands[0] as {
             type: string;
+            runtimeMode: string;
+            interactionMode: string;
             modelSelection: { instanceId: string; model: string };
           };
           assert.equal(request.type, "delegated_task.request");
+          assert.equal(request.runtimeMode, "full-access");
+          assert.equal(request.interactionMode, "default");
           assert.equal(request.modelSelection.instanceId, antigravityInstanceId);
           assert.equal(request.modelSelection.model, "ant-model");
         }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));

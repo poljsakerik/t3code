@@ -1,6 +1,6 @@
+import { AgentModeTabs } from "../AgentModeTabs";
 import {
   ArrowLeftIcon,
-  BotIcon,
   ChartNoAxesColumnIcon,
   SettingsIcon,
 } from "lucide-react";
@@ -40,6 +40,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
 }: {
   isElectron: boolean;
 }) {
+  const pathname = useLocation({ select: (location) => location.pathname });
   const stageLabel = useEnvironmentStageLabel();
   const environmentIdentificationMode = useEnvironmentIdentificationMode();
   const backdropVariant = resolveSidebarStageBackdropVariant(
@@ -52,6 +53,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
       : null;
 
   return (
+    <>
     // The titlebar row, not a padded SidebarHeader: it aligns to the window controls.
     <div
       className={cn(
@@ -78,6 +80,8 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
         ) : null}
       </div>
     </div>
+      {!pathname.startsWith("/settings") ? <AgentModeTabs /> : null}
+    </>
   );
 });
 
@@ -229,14 +233,6 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
               onClick={handlePullRequestsClick}
             />
           ) : null}
-          <SidebarUtilityItem
-            icon={<BotIcon />}
-            label="Agents"
-            onClick={() => {
-              closeMobileSidebar();
-              void navigate({ to: "/agents" });
-            }}
-          />
           <SidebarUtilityItem
             icon={<ChartNoAxesColumnIcon />}
             label="Usage"

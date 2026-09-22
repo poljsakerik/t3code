@@ -3381,6 +3381,7 @@ it.effect("keeps completed runs completed when pull request refresh fails", () =
 
 function captureRootRunTermination(input: {
   readonly key: string;
+  readonly detached?: boolean;
   readonly shouldFinalizeRun: () => Effect.Effect<boolean, ProjectionStore.ProjectionStoreV2Error>;
   readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
   readonly seedOpenSubagent?: boolean;
@@ -3419,7 +3420,12 @@ function captureRootRunTermination(input: {
     const testLayer = RunExecutionService.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
-          Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
+          Layer.mock(CheckpointService.CheckpointServiceV2)({
+            captureBaseline: () =>
+              input.detached
+                ? Effect.die("Detached conversations must not capture a baseline")
+                : Effect.void,
+          }),
           Layer.mock(EventSink.EventSinkV2)({
             write: (payload) =>
               Effect.gen(function* () {
@@ -3430,7 +3436,12 @@ function captureRootRunTermination(input: {
                 }
                 return [];
               }),
-            writeWithEffects: (payload) => captureFinalEvents(payload.events).pipe(Effect.as([])),
+            writeWithEffects: (payload) =>
+              Effect.gen(function* () {
+                if (input.detached) assert.deepEqual(payload.effects, []);
+                yield* captureFinalEvents(payload.events);
+                return [];
+              }),
             writeIfRunCurrent: (payload) =>
               captureFinalEvents(payload.events).pipe(
                 Effect.as({ committed: true, storedEvents: [] }),
@@ -3456,7 +3467,10 @@ function captureRootRunTermination(input: {
       const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
       yield* runExecution.startRootRun({
         commandId: CommandId.make(`command:${input.key}`),
-        appThread: { id: ids.threadId } as OrchestrationV2AppThread,
+        appThread: {
+          id: ids.threadId,
+          ...(input.detached ? { agent: { directory: "/managed/conversation" } } : {}),
+        } as OrchestrationV2AppThread,
         providerSessionId: ProviderSessionId.make(`session:${input.key}`),
         session: {
           events: Stream.empty,
@@ -3501,9 +3515,11 @@ function captureRootRunTermination(input: {
           id: ids.rootNodeId,
           providerTurnId: ids.rootProviderTurnId,
         } as OrchestrationV2ExecutionNode,
-        checkpointScope: {
-          id: CheckpointScopeId.make(`checkpoint-scope:${input.key}`),
-        } as OrchestrationV2CheckpointScope,
+        checkpointScope: input.detached
+          ? null
+          : ({
+              id: CheckpointScopeId.make(`checkpoint-scope:${input.key}`),
+            } as OrchestrationV2CheckpointScope),
         providerThread: {
           id: ids.providerThreadId,
           driver,
@@ -4015,4 +4031,18 @@ it.effect("releases ingestion after idle subagent rows and items settle", () =>
       "root-finalized",
     ]);
   }),
+);
+
+it.effect(
+  "completes a detached conversation without checkpoint finalization or project refresh",
+  () =>
+    Effect.gen(function* () {
+      const { observed } = yield* captureRootRunTermination({
+        key: "detached-completion",
+        detached: true,
+        shouldFinalizeRun: () => Effect.succeed(true),
+        events: (ids) => Stream.make(rootTerminalEvent(ids, "completed")),
+      });
+      assert.deepEqual(observed, ["run:completed"]);
+    }),
 );

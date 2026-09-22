@@ -310,7 +310,7 @@ function resolveAgentAwarenessRelayPublishSnapshot(input: {
       reason: "thread-not-found",
     };
   }
-  if (Option.isNone(input.project)) {
+  if (Option.isNone(input.project) && input.thread.value.agent === undefined) {
     return {
       projectId: input.thread.value.projectId,
       state: null,
@@ -322,7 +322,7 @@ function resolveAgentAwarenessRelayPublishSnapshot(input: {
     state: sanitizeRelayAgentActivityState(
       projectThreadAwarenessV2({
         environmentId: input.environmentId,
-        project: input.project.value,
+        project: Option.getOrNull(input.project),
         thread: input.thread.value,
       }),
     ),
@@ -346,13 +346,13 @@ export function resolveAgentAwarenessRelayActiveThreadIds(input: {
   const projectById = new Map(input.projects.map((project) => [project.id, project]));
   return input.threads
     .filter((thread) => {
-      const project = projectById.get(thread.projectId);
-      if (!project) {
+      const project = thread.projectId === null ? undefined : projectById.get(thread.projectId);
+      if (!project && thread.agent === undefined) {
         return false;
       }
       const state = projectThreadAwarenessV2({
         environmentId: input.environmentId,
-        project,
+        project: project ?? null,
         thread,
       });
       return (
@@ -537,9 +537,10 @@ export const make = Effect.gen(function* () {
       threadShell === null || threadShell.archivedAt !== null
         ? Option.none<OrchestrationV2ThreadShell>()
         : Option.some(threadShell);
-    const project = Option.isSome(thread)
-      ? yield* projects.getById(thread.value.projectId)
-      : Option.none<Project>();
+    const project =
+      Option.isSome(thread) && thread.value.projectId !== null
+        ? yield* projects.getById(thread.value.projectId)
+        : Option.none<Project>();
     const snapshot = resolveAgentAwarenessRelayPublishSnapshot({
       environmentId,
       threadId,

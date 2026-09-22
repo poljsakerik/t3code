@@ -1577,6 +1577,7 @@ export interface ChatComposerProps {
 
   // Provider / model
   lockedProvider: ProviderDriverKind | null;
+  fixedAgent?: boolean;
   providerStatuses: ServerProvider[];
   /** False until the environment's server config has arrived at least once. */
   providerCatalogKnown: boolean;
@@ -1726,6 +1727,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     runtimeMode,
     interactionMode: requestedInteractionMode,
     lockedProvider,
+    fixedAgent = false,
     providerStatuses,
     providerCatalogKnown,
     activeProjectDefaultModelSelection,
@@ -2078,7 +2080,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ),
     [providerStatuses, settings],
   );
-  const selectedProviderByThreadId = composerDraft.activeProvider ?? null;
+  const selectedProviderByThreadId = fixedAgent
+    ? (activeThreadModelSelection?.instanceId ?? null)
+    : (composerDraft.activeProvider ?? null);
   const {
     selectedProviderEntry,
     requestedDriverKind,
@@ -2144,15 +2148,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ? runtimeMode
     : (compatibleRuntimeModeOptions[0]?.mode ?? runtimeMode);
 
-  const { modelOptions: composerModelOptions, selectedModel } = useEffectiveComposerModelState({
-    threadRef: composerDraftTarget,
-    providers: providerStatuses,
-    selectedProvider,
-    selectedInstanceId,
-    threadModelSelection: activeThreadModelSelection,
-    projectModelSelection: activeProjectDefaultModelSelection,
-    settings,
-  });
+  const { modelOptions: composerModelOptions, selectedModel: draftSelectedModel } =
+    useEffectiveComposerModelState({
+      threadRef: composerDraftTarget,
+      providers: providerStatuses,
+      selectedProvider,
+      selectedInstanceId,
+      threadModelSelection: activeThreadModelSelection,
+      projectModelSelection: activeProjectDefaultModelSelection,
+      settings,
+    });
+  const selectedModel =
+    fixedAgent && activeThreadModelSelection
+      ? activeThreadModelSelection.model
+      : draftSelectedModel;
   const providerSendBlockReason = getAntigravitySendBlockReason(
     selectedProviderEntry?.snapshot,
     selectedModel,
@@ -2305,8 +2314,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     interactionMode: requestedInteractionMode,
   });
   const selectedModelSelection = useMemo<ModelSelection>(
-    () => createModelSelection(selectedInstanceId, selectedModel, selectedModelOptionsForDispatch),
-    [selectedInstanceId, selectedModel, selectedModelOptionsForDispatch],
+    () =>
+      fixedAgent && activeThreadModelSelection
+        ? activeThreadModelSelection
+        : createModelSelection(selectedInstanceId, selectedModel, selectedModelOptionsForDispatch),
+    [
+      fixedAgent,
+      activeThreadModelSelection,
+      selectedInstanceId,
+      selectedModel,
+      selectedModelOptionsForDispatch,
+    ],
   );
   const selectedModelForPicker = selectedModel;
   // Instance-keyed option list so the picker can show each configured
@@ -5340,7 +5358,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     hidden: composerControlsHidden || restingHiddenBlockCount > 1,
   });
   const restingBlockDefs = [
-    ...(providerTraitsPicker
+    ...(!fixedAgent && providerTraitsPicker
       ? [
           {
             id: "traits",
@@ -5362,7 +5380,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           runtimeMode={compatibleRuntimeMode}
           runtimeModeOptions={compatibleRuntimeModeOptions}
           size={composerControlsCollapsed ? "xs" : "sm"}
-          hidden={composerControlsHidden || restingHiddenBlockCount > 0}
+          hidden={fixedAgent || composerControlsHidden || restingHiddenBlockCount > 0}
           onToggleInteractionMode={toggleInteractionMode}
           onRuntimeModeChange={handleRuntimeModeChange}
         />
@@ -5401,7 +5419,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       <ProviderModelPicker
         compact={false}
         isComposerOwned
-        disabled={providerCatalogPending || isSendBusy}
+        disabled={providerCatalogPending || isSendBusy || fixedAgent}
         {...(routeKind === "draft" && supportsMultipleModels
           ? {
               ...(multipleModelSelections !== null
@@ -6239,6 +6257,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Imperative handle
   // ------------------------------------------------------------------
   const openModelPicker = useCallback(() => {
+    if (fixedAgent) return;
     if (composerControlsHidden) {
       if (composerBlurFrameRef.current !== null) {
         window.cancelAnimationFrame(composerBlurFrameRef.current);
@@ -6248,7 +6267,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       setIsComposerFocused(true);
     }
     setIsComposerModelPickerOpen(true);
-  }, [composerControlsHidden, setIsComposerFocused, setIsComposerScrollCollapsed]);
+  }, [fixedAgent, composerControlsHidden, setIsComposerFocused, setIsComposerScrollCollapsed]);
 
   useImperativeHandle(
     composerRef,

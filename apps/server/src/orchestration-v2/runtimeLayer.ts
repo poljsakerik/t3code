@@ -1,5 +1,6 @@
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import * as AgentConversationLaunch from "../agents/AgentConversationLaunch.ts";
 import * as Layer from "effect/Layer";
 import { layer as agentDefinitionServiceLayer } from "../agents/AgentDefinitionService.ts";
 import * as OrchestrationCommandReceipts from "../persistence/Layers/OrchestrationCommandReceipts.ts";
@@ -255,6 +256,7 @@ const managedProjectFoldersProvided = ManagedProjectFolders.layer.pipe(
   Layer.provide(ProjectServiceLayerLive),
 );
 const threadLaunchProvided = threadLaunchServiceLayer.pipe(
+  Layer.provide(AgentConversationLaunch.layer.pipe(Layer.provide(threadManagementProvided))),
   Layer.provide(
     Layer.mergeAll(
       ProjectServiceLayerLive,

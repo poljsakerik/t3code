@@ -7,6 +7,7 @@ import {
   resolveVisibleWorktreeSetup,
   resolveWorktreeSetupProgress,
 } from "./ChatView.logic";
+import { requestNewAgentConversation } from "../agentConversationNavigation";
 import * as DateTime from "effect/DateTime";
 import { restorePlanFollowUpComposer } from "./ChatView.logic";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
@@ -2047,6 +2048,7 @@ export default function ChatView(props: ChatViewProps) {
   );
   const isServerThread = serverThread !== null;
   const activeThread = isServerThread ? serverThread : localDraftThread;
+  const isAgentConversation = serverThread?.agent !== undefined;
   const serverLatestRun = useMemo(
     () => (serverProjection === null ? null : deriveLatestThreadRun(serverProjection)),
     [serverProjection],
@@ -2514,6 +2516,7 @@ export default function ChatView(props: ChatViewProps) {
   ]);
   const activeProjectDefaultModelSelection = activeProjectSettings.settings.defaultModelSelection;
   const handleNewThreadInActiveProject = useCallback(() => {
+    if (requestNewAgentConversation()) return;
     startNewThreadForProject(activeProjectRef, handleNewThread);
   }, [activeProjectRef, handleNewThread]);
   const projectGroupingSettings = selectProjectGroupingSettings(settings);
@@ -5177,7 +5180,7 @@ export default function ChatView(props: ChatViewProps) {
 
   const handleRuntimeModeChange = useCallback(
     (mode: RuntimeMode) => {
-      if (mode === runtimeMode) return;
+      if (isAgentConversation || mode === runtimeMode) return;
       setComposerDraftRuntimeMode(composerDraftTarget, mode);
       if (isLocalDraftThread) {
         setDraftThreadContext(composerDraftTarget, { runtimeMode: mode });
@@ -5185,6 +5188,7 @@ export default function ChatView(props: ChatViewProps) {
       scheduleComposerFocus();
     },
     [
+      isAgentConversation,
       isLocalDraftThread,
       runtimeMode,
       scheduleComposerFocus,
@@ -5196,7 +5200,7 @@ export default function ChatView(props: ChatViewProps) {
 
   const handleInteractionModeChange = useCallback(
     (mode: ProviderInteractionMode) => {
-      if (mode === "plan" && !interactionModeEnabled) return;
+      if (isAgentConversation || (mode === "plan" && !interactionModeEnabled)) return;
       if (mode === interactionMode) return;
       setComposerDraftInteractionMode(composerDraftTarget, mode);
       if (isLocalDraftThread) {
@@ -5205,6 +5209,7 @@ export default function ChatView(props: ChatViewProps) {
       scheduleComposerFocus();
     },
     [
+      isAgentConversation,
       interactionMode,
       interactionModeEnabled,
       isLocalDraftThread,
@@ -7271,7 +7276,7 @@ export default function ChatView(props: ChatViewProps) {
   const compactThreadUnavailable =
     !activeThread ||
     !activeThreadHasCompactableConversation ||
-    !activeProject ||
+    (!activeProject && !isAgentConversation) ||
     !isServerThread ||
     !manualCompactionProviderAvailable ||
     isWorking ||
@@ -8816,7 +8821,7 @@ export default function ChatView(props: ChatViewProps) {
       }
       return;
     }
-    if (!activeProject) {
+    if (!activeProject && !isAgentConversation) {
       toastManager.add(
         stackedThreadToast({
           type: "warning",
@@ -8829,14 +8834,20 @@ export default function ChatView(props: ChatViewProps) {
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || activeMessageCount === 0;
     const baseBranchForWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
+      !isAgentConversation &&
+      isFirstMessage &&
+      sendEnvMode === "worktree" &&
+      !activeThread.worktreePath
         ? activeThreadBranch
         : null;
 
     // In worktree mode, require an explicit base branch so we don't silently
     // fall back to local execution when branch selection is missing.
     const shouldCreateWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath;
+      !isAgentConversation &&
+      isFirstMessage &&
+      sendEnvMode === "worktree" &&
+      !activeThread.worktreePath;
     if (shouldCreateWorktree && !activeThreadBranch) {
       setThreadError(threadIdForSend, "Select a base branch before sending in New worktree mode.");
       return;
@@ -9474,7 +9485,7 @@ export default function ChatView(props: ChatViewProps) {
     let turnStartSucceeded = false;
     if (failure === null && turnAttachmentsResult._tag === "Success") {
       const bootstrap =
-        isLocalDraftThread || baseBranchForWorktree
+        activeProject && (isLocalDraftThread || baseBranchForWorktree)
           ? {
               ...(isLocalDraftThread
                 ? {
@@ -10287,7 +10298,7 @@ export default function ChatView(props: ChatViewProps) {
 
   const onProviderModelSelect = useCallback(
     (instanceId: ProviderInstanceId, model: string, options?: { focusComposer?: boolean }) => {
-      if (!activeThread) return;
+      if (!activeThread || isAgentConversation) return;
       // Look up the configured instance so model normalization and custom
       // model lookup stay scoped to that exact instance. Unknown instance ids
       // are rejected by returning early; the server remains authoritative too.
@@ -10367,6 +10378,7 @@ export default function ChatView(props: ChatViewProps) {
       if (options?.focusComposer !== false) scheduleComposerFocus();
     },
     [
+      isAgentConversation,
       activeThread,
       activeRuntime,
       lockedProvider,
@@ -10786,7 +10798,9 @@ export default function ChatView(props: ChatViewProps) {
   const panelToggleControls = (
     <PanelLayoutControls
       {...panelToggleControlProps}
-      showThreadPanelControl={!inlineRightPanelOwnsTitleBar}
+      showThreadPanelControl={!isAgentConversation && !inlineRightPanelOwnsTitleBar}
+      showTerminalControl={!isAgentConversation}
+      showRightPanelControl={!isAgentConversation}
     />
   );
   const threadPanelHeaderControl = (
@@ -10907,6 +10921,7 @@ export default function ChatView(props: ChatViewProps) {
             activeThreadId={activeThread.id}
             isServerThread={isServerThread}
             activeThreadTitle={activeThread.title}
+            {...(serverThread?.agent ? { agentName: serverThread.agent.name } : {})}
             activeProject={activeProject ?? null}
             workflowProfileName={
               serverProjection?.thread.workflow?.profile?.name ??
@@ -10972,6 +10987,7 @@ export default function ChatView(props: ChatViewProps) {
             <div className="relative flex min-h-0 flex-1 flex-col bg-background">
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               <MessagesTimeline
+                agentName={serverThread?.agent?.name}
                 citationRequest={paintOnlyDisplayedTimeline ? null : citationRequest}
                 citationHistoryLoading={threadDetailLoading}
                 {...(!paintOnlyDisplayedTimeline
@@ -11367,7 +11383,7 @@ export default function ChatView(props: ChatViewProps) {
                               />
                             </ComposerSurface.ContextStrip>
                           ) : null}
-                          {mountComposerContextStrip && (
+                          {!isAgentConversation && mountComposerContextStrip && (
                             <div className="pointer-events-auto">
                               <BranchToolbar
                                 forceNewWorktree={multipleModelSelections !== null}

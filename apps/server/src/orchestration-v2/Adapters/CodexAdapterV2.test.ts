@@ -655,7 +655,7 @@ describe("CodexAdapterV2 process spawning", () => {
     );
     assert.throws(
       () => codexWorkflowSkillConfig(["missing"], []),
-      /Assigned Codex reviewer skills are unavailable/,
+      /Assigned Codex skills are unavailable/,
     );
   });
 
@@ -7320,3 +7320,25 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
   );
 });
+
+it.effect("keeps detached turns on their named permission profile and frozen instructions", () =>
+  Effect.gen(function* () {
+    const params = yield* buildCodexTurnStartParams({
+      nativeThreadId: "agent-conversation",
+      codexInput: [],
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+      runtimePolicy: {
+        cwd: "/managed/conversation",
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        approvalPolicy: "never",
+        detachedConversation: true,
+        agentInstructions: "Write clearly.",
+      },
+      hasT3Mcp: true,
+    });
+    assert.isUndefined(params.sandboxPolicy);
+    assert.equal(params.approvalPolicy, "never");
+    assert.equal(params.collaborationMode?.settings.developer_instructions, "Write clearly.");
+  }),
+);

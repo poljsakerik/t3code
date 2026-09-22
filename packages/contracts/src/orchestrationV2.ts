@@ -1,3 +1,4 @@
+import { AgentConversation, AgentConversationOwner } from "./agentDefinitions.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -366,7 +367,8 @@ export type OrchestrationV2LimitRecoveryUpdate = typeof OrchestrationV2LimitReco
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
-  projectId: ProjectId,
+  projectId: Schema.NullOr(ProjectId),
+  agent: Schema.optional(AgentConversation),
   title: TrimmedNonEmptyString,
   providerInstanceId: ProviderInstanceId,
   modelSelection: ModelSelection,
@@ -1772,7 +1774,8 @@ export type OrchestrationV2LatestVisibleMessageSummary =
 export const OrchestrationV2ThreadShell = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
-  projectId: ProjectId,
+  projectId: Schema.NullOr(ProjectId),
+  agent: Schema.optional(AgentConversationOwner),
   title: Schema.String,
   providerInstanceId: ProviderInstanceId,
   modelSelection: ModelSelection,
@@ -2579,7 +2582,8 @@ export const OrchestrationV2Command = Schema.Union([
     ...OrchestrationV2CreationFields,
     commandId: CommandId,
     threadId: ThreadId,
-    projectId: ProjectId,
+    projectId: Schema.NullOr(ProjectId),
+    agent: Schema.optional(AgentConversation),
     title: TrimmedNonEmptyString,
     modelSelection: ModelSelection,
     runtimeMode: RuntimeMode,
@@ -3123,7 +3127,7 @@ export const OrchestrationV2ArchivedShellStreamItem = Schema.Union([
 export type OrchestrationV2ArchivedShellStreamItem =
   typeof OrchestrationV2ArchivedShellStreamItem.Type;
 
-export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
+const ProjectThreadLaunchInput = Schema.Struct({
   commandId: CommandId,
   creationSource: Schema.optional(OrchestrationV2CreationSource),
   threadId: Schema.optional(ThreadId),
@@ -3145,6 +3149,21 @@ export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
     }),
   ),
 });
+export const AgentConversationLaunchInput = Schema.Struct({
+  commandId: CommandId,
+  creationSource: Schema.optional(OrchestrationV2CreationSource),
+  threadId: ThreadId,
+  agent: Schema.Struct({
+    agentId: TrimmedNonEmptyString,
+    sourceProjectId: Schema.NullOr(ProjectId),
+  }),
+  title: TrimmedNonEmptyString,
+  initialMessage: ProjectThreadLaunchInput.fields.initialMessage,
+});
+export const OrchestrationV2ThreadLaunchInput = Schema.Union([
+  ProjectThreadLaunchInput,
+  AgentConversationLaunchInput,
+]);
 export type OrchestrationV2ThreadLaunchInput = typeof OrchestrationV2ThreadLaunchInput.Type;
 
 export const OrchestrationV2ThreadLaunchResult = Schema.Struct({
@@ -3346,7 +3365,7 @@ export class OrchestrationV2ThreadLaunchError extends Schema.TaggedError<Orchest
   "OrchestrationV2ThreadLaunchError",
   {
     commandId: CommandId,
-    projectId: ProjectId,
+    projectId: Schema.NullOr(ProjectId),
     message: Schema.String,
     cause: Schema.optional(Schema.Defect()),
   },

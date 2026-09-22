@@ -24,7 +24,16 @@ const isAgentDefinitionError = Schema.is(AgentDefinitionError);
 
 /** Translates Eve's source definition into the subset supported by T3's harnesses. */
 export const loadAgentDefinition = Effect.fn("loadAgentDefinition")(
-  function* (workspaceRoot: string, definition: AgentDefinition) {
+  function* (
+    workspaceRoot: string,
+    definition: AgentDefinition,
+    options?: {
+      readonly retainSkill?: (
+        directory: string,
+        name: string,
+      ) => Effect.Effect<string, AgentDefinitionError>;
+    },
+  ) {
     const path = yield* Path.Path;
     const manifest = yield* Effect.tryPromise({
       try: () =>
@@ -96,8 +105,12 @@ export const loadAgentDefinition = Effect.fn("loadAgentDefinition")(
               message: "Skill instructions must contain between 1 and 1,000,000 characters.",
               path: document,
             });
+          const resourceDirectory =
+            options?.retainSkill === undefined
+              ? directory
+              : yield* options.retainSkill(directory, skill.name);
           parts.push(
-            `## Agent skill: ${skill.name}\nApply these instructions when relevant to your task. Resolve this skill's relative file and script paths from ${directory}.\n\n${content}`,
+            `## Agent skill: ${skill.name}\nApply these instructions when relevant to your task. Resolve this skill's relative file and script paths from ${resourceDirectory}.\n\n${content}`,
           );
           continue;
         }

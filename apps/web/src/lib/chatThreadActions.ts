@@ -1,3 +1,4 @@
+import { requestNewAgentConversation } from "../agentConversationNavigation";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import type {
   EnvironmentId,
@@ -14,7 +15,7 @@ type ComposerModelSelectionState = Pick<
 
 interface ThreadContextLike {
   environmentId: EnvironmentId;
-  projectId: ProjectId;
+  projectId: ProjectId | null;
 }
 
 interface NewThreadHandler {
@@ -92,6 +93,7 @@ export function resolveThreadActionProjectRef(
 export async function startNewThreadFromContext(
   context: ChatThreadActionContext,
 ): Promise<boolean> {
+  if (requestNewAgentConversation()) return true;
   const projectRef = resolveThreadActionProjectRef(context);
   if (!projectRef) {
     return false;

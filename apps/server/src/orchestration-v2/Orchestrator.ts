@@ -10,6 +10,8 @@ import {
   CommandId,
   TurnItemId,
   type WorkflowReviewResult,
+  type ResolvedAgentDefinition,
+  type NodeId,
   MessageId,
   type ModelSelection,
   OrchestrationV2Command,
@@ -81,7 +83,6 @@ import { isAutomaticCompletionRun, queuedRunsInDeliveryOrder } from "./QueuedRun
 import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
 import {
   makeSubagentChildThread,
-  APP_OWNED_SUBAGENT_MODES,
   subagentResultForRun,
   delegatedTaskProgress,
   subagentThreadTitle,
@@ -1584,6 +1585,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const dispatchWorkflowUpdate = Effect.fn("orchestrationV2.dispatch.workflowUpdate")(function* (
     command: Extract<OrchestrationV2Command, { readonly type: "workflow.update" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) {
     if (command.createdBy !== "system" || command.creationSource !== "server") {
       return yield* new OrchestratorDispatchError({
@@ -1751,6 +1753,54 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (candidate) => candidate.id === review.reviewerId,
       );
       const modelSelection = reviewer?.modelSelection ?? projection.thread.modelSelection;
+      const reviewerNodeId = idAllocator.derive.workflowReviewerNode({
+        threadId: command.threadId,
+        revision: review.revision,
+        reviewerId: review.reviewerId,
+      });
+      const existingTask = projection.subagents.find((task) => task.id === reviewerNodeId);
+      if (review.status === "running") {
+        if (workflow.status !== "reviewing") continue;
+        const child =
+          existingTask === undefined
+            ? undefined
+            : yield* getProjectionWithPendingEvents(review.reviewerThreadId, events);
+        if (child === undefined || child.runs.length === 0) {
+          const plan = projection.plans.find(
+            (candidate) => candidate.id === workflow.approvedPlanId,
+          );
+          if (reviewer === undefined || plan?.kind !== "proposed_plan") {
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "A workflow review requires its configured reviewer and approved plan.",
+            });
+          }
+          const base = `workflow:${encodeURIComponent(command.threadId)}:${review.revision}:review:${encodeURIComponent(review.reviewerId)}`;
+          const checks = workflow.checks
+            .map((check) => `${check.name}: ${check.passed ? "passed" : "failed"}`)
+            .join("\n");
+          yield* launchThreadReview(
+            {
+              command,
+              parentThread: projection.thread,
+              parentRun: candidateRun,
+              parentNode: rootNode,
+              reviewer: { ...reviewer, modelSelection },
+              childThreadId: review.reviewerThreadId,
+              reviewerNodeId,
+              startCommandId: CommandId.make(`command:${base}:start`),
+              messageId: MessageId.make(`message:${base}`),
+              task: `Review revision ${review.revision} of this verified workflow.`,
+              context: `Approved plan:\n${plan.markdown}\n\nDeterministic checks:\n${checks}`,
+              ...(child ? { existingThread: child.thread } : {}),
+            },
+            events,
+            effects,
+          );
+        }
+        continue;
+      }
       const adapter = yield* providerAdapters.get(modelSelection.instanceId).pipe(
         Effect.mapError(
           (cause) =>
@@ -1761,37 +1811,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             }),
         ),
       );
-      const reviewerNodeId = idAllocator.derive.workflowReviewerNode({
-        threadId: command.threadId,
-        revision: review.revision,
-        reviewerId: review.reviewerId,
-      });
-      const existingTask = projection.subagents.find((task) => task.id === reviewerNodeId);
-      if (existingTask === undefined) {
-        const childThread = {
-          ...makeSubagentChildThread({
-            parentThread: projection.thread,
-            childThreadId: review.reviewerThreadId,
-            parentNodeId: reviewerNodeId,
-            activeProviderThreadId: null,
-            providerInstanceId: modelSelection.instanceId,
-            modelSelection,
-            title: `${reviewer?.name ?? review.reviewerId}: ${projection.thread.title}`,
-            now,
-            createdBy: "system",
-            creationSource: "server",
-          }),
-          workflow: null,
-          ...APP_OWNED_SUBAGENT_MODES,
-        };
-        yield* emitEvent({
-          type: "thread.created",
-          threadId: childThread.id,
-          providerInstanceId: childThread.providerInstanceId,
-          occurredAt: now,
-          payload: childThread,
-        });
-      }
       const existingNode = projection.nodes.find((node) => node.id === reviewerNodeId);
       const execution = workflowReviewerExecution(review);
       const status = execution.status;
@@ -1825,7 +1844,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerThreadId: null,
         childThreadId: review.reviewerThreadId,
         nativeTaskRef: null,
-        prompt: `Review revision ${review.revision} of verified workflow ${workflow.profileId}.`,
+        prompt:
+          existingTask?.prompt ??
+          `Review revision ${review.revision} of verified workflow ${workflow.profileId}.`,
+        completionDelivery: { state: "disposed", observedByRunId: null },
         title: reviewer?.name ?? review.reviewerId,
         role: "Reviewer",
         model: modelSelection.model,
@@ -3761,10 +3783,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       let workflowPromptPrefix = "";
       const workflow = projection.thread.workflow ?? null;
       const parentThreadId = projection.thread.lineage.parentThreadId;
+      const pendingParentWorkflow = (yield* Ref.get(events)).findLast(
+        (event) => event.threadId === parentThreadId && event.type === "thread.workflow-updated",
+      );
       const parentWorkflow =
         projection.thread.lineage.relationshipToParent === "subagent" && parentThreadId !== null
-          ? (yield* projectionStore.getThread(parentThreadId).pipe(mapDispatchError(command)))
-              .workflow
+          ? pendingParentWorkflow?.type === "thread.workflow-updated"
+            ? pendingParentWorkflow.payload.workflow
+            : (yield* projectionStore.getThread(parentThreadId).pipe(mapDispatchError(command)))
+                .workflow
           : null;
       const reviewerId = parentWorkflow?.reviews.find(
         (review) => review.reviewerThreadId === command.threadId,
@@ -5712,7 +5739,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command: Extract<OrchestrationV2Command, { readonly type: "delegated_task.request" }>,
       events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
       effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
-      review?: { readonly skills: ReadonlyArray<string> },
     ) {
       const parentProjection = yield* getProjectionWithPendingEvents(
         command.parentThreadId,
@@ -5721,10 +5747,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const parentRun = parentProjection.runs.find(
         (candidate) => candidate.id === command.parentRunId,
       );
-      if (
-        parentRun === undefined ||
-        (review ? parentRun.status !== "completed" : !isBlockingRun(parentRun))
-      ) {
+      if (parentRun === undefined || !isBlockingRun(parentRun)) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
@@ -5789,8 +5812,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           createdBy: command.createdBy,
           creationSource: command.creationSource,
         }),
-        ...(review ? { workflow: null } : {}),
-        ...APP_OWNED_SUBAGENT_MODES,
+        runtimeMode: command.runtimeMode,
+        interactionMode: command.interactionMode,
       };
       const task: OrchestrationV2Subagent = {
         id: taskNodeId,
@@ -5808,9 +5831,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         title: command.title ?? null,
         model: command.modelSelection.model,
         ...(command.completionWake === undefined ? {} : { completionWake: command.completionWake }),
-        ...(review
-          ? { completionDelivery: { state: "disposed" as const, observedByRunId: null } }
-          : {}),
         status: "running",
         result: null,
         startedAt: now,
@@ -5910,7 +5930,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         text: command.task,
         attachments: [],
         modelSelection: command.modelSelection,
-        ...(review ? { workflowSkillAllowlist: [...review.skills] } : {}),
         dispatchMode: { type: "start_immediately" },
       } satisfies Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>;
       yield* dispatchMessage(childMessageCommand, events, effects);
@@ -5963,7 +5982,157 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     },
   );
 
-  const dispatchThreadReview = Effect.fn("orchestrationV2.dispatch.threadReview")(function* (
+  // Both review entry points supply their own context and identity. This only
+  // creates the owned reviewer and queues its first turn in the caller's transaction.
+  const launchThreadReview = Effect.fn("orchestrationV2.launchThreadReview")(function* (
+    input: {
+      readonly command: Extract<
+        OrchestrationV2Command,
+        { readonly type: "thread.review" | "workflow.update" }
+      >;
+      readonly parentThread: OrchestrationV2AppThread;
+      readonly parentRun: OrchestrationV2Run;
+      readonly parentNode: OrchestrationV2ExecutionNode;
+      readonly reviewer: ResolvedAgentDefinition;
+      readonly childThreadId: ThreadId;
+      readonly reviewerNodeId: NodeId;
+      readonly startCommandId: CommandId;
+      readonly messageId: MessageId;
+      readonly task: string;
+      readonly context: string;
+      readonly existingThread?: OrchestrationV2AppThread;
+    },
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const {
+      command,
+      parentThread,
+      parentRun,
+      parentNode,
+      reviewer,
+      childThreadId,
+      reviewerNodeId,
+    } = input;
+    const adapter = yield* providerAdapters
+      .get(reviewer.modelSelection.instanceId)
+      .pipe(mapDispatchError(command));
+    const now = yield* DateTime.now;
+    const prompt = reviewerPrompt({
+      instructions: reviewer.instructions,
+      task: input.task,
+      context: input.context,
+    });
+    const childThread: OrchestrationV2AppThread = {
+      ...(input.existingThread ??
+        makeSubagentChildThread({
+          parentThread,
+          childThreadId,
+          parentNodeId: reviewerNodeId,
+          activeProviderThreadId: null,
+          providerInstanceId: reviewer.modelSelection.instanceId,
+          modelSelection: reviewer.modelSelection,
+          title: `Review · ${reviewer.name}`,
+          now,
+          createdBy: command.createdBy,
+          creationSource: command.creationSource,
+        })),
+      workflow: null,
+      // Reviews are unattended inspections. Plan mode restricts provider tools;
+      // the shared review prompt carries the no-edit instruction instead.
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      updatedAt: now,
+    };
+    const node: OrchestrationV2ExecutionNode = {
+      id: reviewerNodeId,
+      threadId: parentThread.id,
+      runId: parentRun.id,
+      parentNodeId: parentNode.id,
+      rootNodeId: parentNode.rootNodeId,
+      kind: "subagent",
+      status: "running",
+      countsForRun: false,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      runtimeRequestId: null,
+      checkpointScopeId: null,
+      startedAt: now,
+      completedAt: null,
+    };
+    const subagent: OrchestrationV2Subagent = {
+      id: reviewerNodeId,
+      threadId: parentThread.id,
+      runId: parentRun.id,
+      parentNodeId: parentNode.id,
+      origin: "app_owned",
+      createdBy: command.createdBy,
+      driver: adapter.driver,
+      providerInstanceId: reviewer.modelSelection.instanceId,
+      providerThreadId: null,
+      childThreadId,
+      nativeTaskRef: null,
+      prompt,
+      title: reviewer.name,
+      role: "Reviewer",
+      model: reviewer.modelSelection.model,
+      completionDelivery: { state: "disposed", observedByRunId: null },
+      status: "running",
+      result: null,
+      startedAt: now,
+      completedAt: null,
+      updatedAt: now,
+    };
+    const emitEvent = emit(events, command);
+    yield* emitEvent({
+      type: input.existingThread ? "thread.metadata-updated" : "thread.created",
+      threadId: childThreadId,
+      driver: adapter.driver,
+      providerInstanceId: reviewer.modelSelection.instanceId,
+      occurredAt: now,
+      payload: childThread,
+    });
+    yield* emitEvent({
+      type: "node.updated",
+      threadId: parentThread.id,
+      runId: parentRun.id,
+      nodeId: reviewerNodeId,
+      driver: adapter.driver,
+      providerInstanceId: reviewer.modelSelection.instanceId,
+      occurredAt: now,
+      payload: node,
+    });
+    yield* emitEvent({
+      type: "subagent.updated",
+      threadId: parentThread.id,
+      runId: parentRun.id,
+      nodeId: reviewerNodeId,
+      driver: adapter.driver,
+      providerInstanceId: reviewer.modelSelection.instanceId,
+      occurredAt: now,
+      payload: subagent,
+    });
+    yield* dispatchMessage(
+      {
+        type: "message.dispatch",
+        commandId: input.startCommandId,
+        threadId: childThreadId,
+        messageId: input.messageId,
+        text: prompt,
+        attachments: [],
+        modelSelection: reviewer.modelSelection,
+        workflowSkillAllowlist: reviewer.skills,
+        dispatchMode: { type: "start_immediately" },
+        createdBy: command.createdBy,
+        creationSource: command.creationSource,
+      },
+      events,
+      effects,
+    );
+  });
+
+  const dispatchRequestedReview = Effect.fn("orchestrationV2.dispatch.requestedReview")(function* (
     command: Extract<OrchestrationV2Command, { readonly type: "thread.review" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
@@ -6000,32 +6169,35 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       .map((message) => `${message.role}: ${message.text.slice(0, 4_000)}`)
       .join("\n\n")
       .slice(-24_000);
-    // Persist every child and its start effect in one command. The effect worker
-    // runs the independent sessions concurrently; none wakes the implementer.
+    const parentNode = projection.nodes.find((node) => node.id === run.rootNodeId);
+    if (parentNode === undefined) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "The completed task has no root node.",
+      });
+    }
+    // Starts and the review card commit together; invalid reviewers leave no partial round.
     for (const reviewer of reviewers) {
-      yield* dispatchDelegatedTaskRequest(
+      const startCommandId = CommandId.make(
+        `${command.commandId}:review:${encodeURIComponent(reviewer.id)}`,
+      );
+      yield* launchThreadReview(
         {
-          type: "delegated_task.request",
-          commandId: CommandId.make(
-            `${command.commandId}:review:${encodeURIComponent(reviewer.id)}`,
-          ),
-          parentThreadId: command.threadId,
-          parentRunId: run.id,
-          parentNodeId: run.rootNodeId,
-          title: `Review · ${reviewer.name}`,
-          task: reviewerPrompt({
-            instructions: reviewer.instructions,
-            task: "Review the completed task below, including its committed and uncommitted changes.",
-            context: `Task context:\n${context}`,
-          }),
-          modelSelection: reviewer.modelSelection,
-          ...APP_OWNED_SUBAGENT_MODES,
-          createdBy: command.createdBy,
-          creationSource: command.creationSource,
+          command,
+          parentThread: projection.thread,
+          parentRun: run,
+          parentNode,
+          reviewer,
+          childThreadId: idAllocator.derive.delegatedTaskThread({ commandId: startCommandId }),
+          reviewerNodeId: idAllocator.derive.delegatedTaskNode({ commandId: startCommandId }),
+          startCommandId,
+          messageId: idAllocator.derive.delegatedTaskMessage({ commandId: startCommandId }),
+          task: "Review the completed task below, including its committed and uncommitted changes.",
+          context: `Task context:\n${context}`,
         },
         events,
         effects,
-        { skills: reviewer.skills },
       );
     }
     const now = yield* DateTime.now;
@@ -8482,7 +8654,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         );
       }
       case "workflow.update":
-        yield* dispatchWorkflowUpdate(command, events);
+        yield* dispatchWorkflowUpdate(command, events, effects);
         break;
       case "thread.archive":
       case "thread.unarchive":
@@ -8556,7 +8728,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* dispatchThreadMergeBack(command, events);
         break;
       case "thread.review":
-        yield* dispatchThreadReview(command, events, effects);
+        yield* dispatchRequestedReview(command, events, effects);
         break;
       case "delegated_task.request":
         yield* dispatchDelegatedTaskRequest(command, events, effects);

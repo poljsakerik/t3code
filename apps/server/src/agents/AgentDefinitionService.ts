@@ -2,7 +2,12 @@ import {
   AgentSkillInstallInput,
   AgentSkillRemoveInput,
   type AgentInstalledSkill,
+  type ResolvedAgentDefinition,
+  agentDefinitionKey,
+  type AgentCatalogInput,
+  type AgentCatalogResult,
 } from "@t3tools/contracts";
+import { loadAgentDefinition } from "./AgentDefinitionLoader.ts";
 import { downloadAgentSkill } from "./AgentSkills.ts";
 import { ProcessRunner } from "../processRunner.ts";
 import * as NodeOS from "node:os";
@@ -25,6 +30,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as Result from "effect/Result";
 import type { PlatformError } from "effect/PlatformError";
 import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
 
@@ -178,6 +184,12 @@ export const discoverAgentDefinitions = Effect.fn("discoverAgentDefinitions")(
 export class AgentDefinitionService extends Context.Service<
   AgentDefinitionService,
   {
+    readonly catalog: (
+      input: AgentCatalogInput,
+    ) => Effect.Effect<AgentCatalogResult, AgentDefinitionError>;
+    readonly resolve: (
+      input: AgentDefinitionGetInput,
+    ) => Effect.Effect<ResolvedAgentDefinition, AgentDefinitionError>;
     readonly installSkill: (
       input: AgentSkillInstallInput,
     ) => Effect.Effect<AgentDefinitionGetResult, AgentDefinitionError>;
@@ -339,6 +351,39 @@ export const layer = Layer.effect(
     const get = Effect.fn("AgentDefinitionService.get")(function* (input: AgentDefinitionGetInput) {
       return yield* getAt(yield* workspace(input), input.agentId);
     }, Effect.mapError(wrapError));
+    const catalog = Effect.fn("AgentDefinitionService.catalog")(function* (
+      input: AgentCatalogInput,
+    ) {
+      const registered = (yield* projects.listAll()).filter(
+        (project) => project.deletedAt === null,
+      );
+      const sources = [
+        { projectId: null, name: "Global" },
+        ...registered.map((project) => ({ projectId: project.projectId, name: project.title })),
+      ].sort((left, right) => {
+        const priority = (projectId: typeof left.projectId) =>
+          projectId === input.projectId ? 0 : projectId === null ? 1 : 2;
+        return (
+          priority(left.projectId) - priority(right.projectId) ||
+          left.name.localeCompare(right.name)
+        );
+      });
+      const groups = yield* Effect.forEach(
+        sources,
+        Effect.fnUntraced(function* (source) {
+          const result = yield* Effect.result(
+            list(source.projectId === null ? {} : { projectId: source.projectId }),
+          );
+          if (Result.isFailure(result))
+            return { ...source, agents: [], error: result.failure.message };
+          // A project registered at home already appears in the Global group.
+          if (source.projectId !== null && result.success.scope === "global") return null;
+          return { ...source, agents: result.success.agents, error: null };
+        }),
+        { concurrency: 4 },
+      );
+      return { groups: groups.filter((group) => group !== null) };
+    }, Effect.mapError(wrapError));
     // Check every existing ancestor before creating directories, including the .t3 root.
     const ensureDirectory = Effect.fn("AgentDefinitionService.ensureDirectory")(function* (
       root: string,
@@ -491,6 +536,24 @@ export const layer = Layer.effect(
       lock.withPermits(1),
       Effect.mapError(wrapError),
     );
-    return AgentDefinitionService.of({ list, get, create, update, installSkill, removeSkill });
+    const resolve = Effect.fn("AgentDefinitionService.resolve")(function* (
+      input: AgentDefinitionGetInput,
+    ) {
+      const root = yield* workspace(input);
+      const agent = yield* loadAgentDefinition(root, yield* findAgent(root, input.agentId)).pipe(
+        Effect.provideService(Path.Path, path),
+      );
+      return { ...agent, id: agentDefinitionKey(input) };
+    }, Effect.mapError(wrapError));
+    return AgentDefinitionService.of({
+      list,
+      catalog,
+      get,
+      create,
+      update,
+      installSkill,
+      removeSkill,
+      resolve,
+    });
   }),
 );

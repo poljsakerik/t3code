@@ -1066,6 +1066,19 @@ describe("buildThreadFeed", () => {
       status: "neutral",
     });
 
+    const reviewFeed = buildThreadFeed([
+      projected(
+        { ...verification, reviewOnly: true, phase: "approved", configuredChecks: [], checks: [] },
+        0,
+      ),
+    ]);
+    expect(
+      reviewFeed[0]?.type === "activity-group" ? reviewFeed[0].activities[0] : null,
+    ).toMatchObject({
+      summary: "Approved review round 2",
+      detail: "0/1 approvals",
+    });
+
     const rejectedFeed = buildThreadFeed([
       projected(
         {

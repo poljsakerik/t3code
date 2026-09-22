@@ -67,6 +67,11 @@ export function createProjectEnvironmentAtoms<R, E>(
       label: "environment-data:projects:remove-agent-skill",
       tag: WS_METHODS.agentSkillsRemove,
     }),
+    agentCatalog: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:projects:agent-catalog",
+      tag: WS_METHODS.agentDefinitionsCatalog,
+      staleTimeMs: 0,
+    }),
     agentDefinitions: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:projects:agent-definitions",
       tag: WS_METHODS.agentDefinitionsList,

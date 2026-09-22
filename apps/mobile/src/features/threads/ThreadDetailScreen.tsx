@@ -1,3 +1,4 @@
+import { RequestReviewControl } from "./RequestReviewControl";
 import { useNavigation } from "@react-navigation/native";
 import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
 import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
@@ -942,6 +943,13 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             }
           />
           <ThreadFeed
+            bottomAccessory={
+              <RequestReviewControl
+                key={selectedThreadKey}
+                environmentId={props.environmentId}
+                threadId={props.selectedThread.id}
+              />
+            }
             key={selectedThreadKey}
             environmentId={props.environmentId}
             threadId={props.selectedThread.id}

@@ -126,6 +126,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.agentSkillsInstall]: AuthOrchestrationOperateScope,
   [WS_METHODS.agentSkillsRemove]: AuthOrchestrationOperateScope,
   [WS_METHODS.agentDefinitionsList]: AuthOrchestrationReadScope,
+  [WS_METHODS.agentDefinitionsCatalog]: AuthOrchestrationReadScope,
   [WS_METHODS.agentDefinitionsGet]: AuthOrchestrationReadScope,
   [WS_METHODS.agentDefinitionsCreate]: AuthOrchestrationOperateScope,
   [WS_METHODS.agentDefinitionsUpdate]: AuthOrchestrationOperateScope,

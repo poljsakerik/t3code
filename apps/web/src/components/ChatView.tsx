@@ -9,7 +9,7 @@ import {
 } from "./ChatView.logic";
 import { requestNewAgentConversation } from "../agentConversationNavigation";
 import { reviewableRun } from "@t3tools/contracts";
-import { RequestReviewDialogHost } from "./RequestReviewDialog";
+import { openRequestReviewDialog, RequestReviewDialogHost } from "./RequestReviewDialog";
 import * as DateTime from "effect/DateTime";
 import { restorePlanFollowUpComposer } from "./ChatView.logic";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
@@ -10919,7 +10919,6 @@ export default function ChatView(props: ChatViewProps) {
           {!rightPanelControlsAtRoot && !rightPanelControlsInPanel ? panelLayoutControls : null}
           {inlineRightPanelOwnsTitleBar ? threadPanelHeaderControl : null}
           <ChatHeader
-            canRequestReview={serverProjection !== null && reviewableRun(serverProjection) !== null}
             activeThreadEnvironmentId={activeThread.environmentId}
             activeThreadId={activeThread.id}
             isServerThread={isServerThread}
@@ -10991,6 +10990,22 @@ export default function ChatView(props: ChatViewProps) {
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               <MessagesTimeline
                 agentName={serverThread?.agent?.name}
+                bottomAccessory={
+                  !paintOnlyDisplayedTimeline &&
+                  activeThreadRef &&
+                  serverProjection &&
+                  reviewableRun(serverProjection) ? (
+                    <div className="mx-auto w-full max-w-3xl py-3">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => openRequestReviewDialog(activeThreadRef)}
+                      >
+                        Request review
+                      </Button>
+                    </div>
+                  ) : null
+                }
                 citationRequest={paintOnlyDisplayedTimeline ? null : citationRequest}
                 citationHistoryLoading={threadDetailLoading}
                 {...(!paintOnlyDisplayedTimeline

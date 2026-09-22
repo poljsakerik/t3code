@@ -201,7 +201,14 @@ for (const completedAtStartup of [false, true]) {
                                       },
                                     ]
                                   : [],
-                            }).pipe(Effect.orDie),
+                            }).pipe(
+                              Effect.map((json) =>
+                                id === reviewerIds[0]
+                                  ? `Review complete.\n\n\`\`\`json\n${json}\n\`\`\``
+                                  : json,
+                              ),
+                              Effect.orDie,
+                            ),
                           },
                         ],
                       };

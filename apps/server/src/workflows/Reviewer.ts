@@ -40,8 +40,10 @@ export const collectReviewerResult = Effect.fn("collectReviewerResult")(function
   if (input.runStatus !== "completed") return fail(`Reviewer run ended as ${input.runStatus}.`);
   if (!input.text?.trim()) return fail("Reviewer returned no final response.");
   const trimmed = input.text.trim();
-  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
-  const parsed = yield* Effect.result(decodeReview(fenced?.[1] ?? trimmed));
+  // Some providers add an introduction despite the JSON-only instruction. Accept
+  // one fenced response, but never choose between multiple candidate reviews.
+  const blocks = [...trimmed.matchAll(/^```(?:json)?[ \t]*\r?\n([\s\S]*?)^```[ \t]*$/gim)];
+  const parsed = yield* Effect.result(decodeReview(blocks.length === 1 ? blocks[0]![1]! : trimmed));
   if (Result.isFailure(parsed))
     return fail(`Reviewer returned invalid review JSON: ${String(parsed.failure)}`);
   if (

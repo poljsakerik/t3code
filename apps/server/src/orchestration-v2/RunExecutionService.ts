@@ -632,10 +632,13 @@ export const layer: Layer.Layer<
                 allocateEventId,
               })
             : [];
-        const persistedStatus =
-          input.terminal.status === "completed" && input.checkpointScope !== null
-            ? "waiting"
-            : input.terminal.status;
+        const checkpointScope = input.checkpointScope;
+        const needsCheckpoint =
+          checkpointScope !== null &&
+          (input.terminal.status === "completed" ||
+            input.terminal.status === "interrupted" ||
+            input.terminal.status === "cancelled");
+        const persistedStatus = needsCheckpoint ? "waiting" : input.terminal.status;
         // Completion cohorts are advanced by Orchestrator while a provider
         // turn is in flight. Do not replay the run snapshot captured at start
         // over a newer acknowledgement, successor, or Stop barrier.
@@ -644,18 +647,12 @@ export const layer: Layer.Layer<
         const finalizedRun: OrchestrationV2Run = {
           ...runWithoutDelegatedCompletion,
           status: persistedStatus,
-          completedAt:
-            input.terminal.status === "completed" && input.checkpointScope !== null
-              ? null
-              : completedAt,
+          completedAt: needsCheckpoint ? null : completedAt,
         };
         const finalizedRootNode: OrchestrationV2ExecutionNode = {
           ...input.rootNode,
           status: persistedStatus,
-          completedAt:
-            input.terminal.status === "completed" && input.checkpointScope !== null
-              ? null
-              : completedAt,
+          completedAt: needsCheckpoint ? null : completedAt,
           checkpointScopeId: input.checkpointScope?.id ?? null,
         };
         const finalizedProviderThread: OrchestrationV2ProviderThread = {
@@ -673,24 +670,20 @@ export const layer: Layer.Layer<
         // the next message. The capture is enqueued with these terminal events,
         // ahead of any later run's start on this thread's effect lane.
         const finalization = {
-          effects:
-            input.checkpointScope !== null &&
-            (input.terminal.status === "completed" ||
-              input.terminal.status === "interrupted" ||
-              input.terminal.status === "cancelled")
-              ? [
-                  {
-                    id: `effect:checkpoint.capture:${input.run.id}`,
-                    commandId: checkpointCaptureCommandId,
-                    threadId: input.run.threadId,
-                    request: {
-                      type: "checkpoint.capture" as const,
-                      runId: input.run.id,
-                      scopeId: input.checkpointScope.id,
-                    },
+          effects: needsCheckpoint
+            ? [
+                {
+                  id: `effect:checkpoint.capture:${input.run.id}`,
+                  commandId: checkpointCaptureCommandId,
+                  threadId: input.run.threadId,
+                  request: {
+                    type: "checkpoint.capture" as const,
+                    runId: input.run.id,
+                    scopeId: checkpointScope.id,
                   },
-                ]
-              : [],
+                },
+              ]
+            : [],
           events: [
             // Terminalize open run-owned subagent rows before the root run
             // settles so projections never keep a forever-running subagent card.

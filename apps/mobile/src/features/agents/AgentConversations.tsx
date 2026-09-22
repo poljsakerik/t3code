@@ -1,3 +1,7 @@
+import {
+  buildAgentConversationData,
+  buildAgentConversationScopes,
+} from "@t3tools/client-runtime/state/agent-conversations";
 import { AppText as Text } from "../../components/AppText";
 import { SymbolView } from "../../components/AppSymbol";
 import {
@@ -11,13 +15,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/unstable/reactivity";
 import { useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
-import {
-  CommandId,
-  ThreadId,
-  type EnvironmentId,
-  type ProjectId,
-  type AgentConversationOwner,
-} from "@t3tools/contracts";
+import { CommandId, ThreadId, type EnvironmentId, type ProjectId } from "@t3tools/contracts";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useProjects, useNavigationThreadShells } from "../../state/entities";
 import { useEnvironments } from "../../state/environments";
@@ -131,26 +129,15 @@ function AgentScope({
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const selection = useAtomValue(conversationSelectionsAtom).agents;
   const [error, setError] = useState<string | null>(null);
-  const matching = threads.filter(
-    (thread) =>
-      thread.environmentId === environmentId &&
-      thread.agent?.sourceProjectId === sourceProjectId &&
-      thread.deletedAt === null,
-  );
-  const archivedThreads = (archive.data?.threads ?? [])
-    .map((thread) => presentThreadShell(environmentId, thread))
-    .filter(
-      (thread) => thread.agent?.sourceProjectId === sourceProjectId && thread.deletedAt === null,
-    );
-  const definitions =
-    sourceProjectId !== null && catalog.data?.scope === "global"
-      ? []
-      : (catalog.data?.agents ?? []);
-  const owners = new Map<string, AgentConversationOwner>();
-  for (const thread of [...matching, ...archivedThreads])
-    if (thread.agent) owners.set(thread.agent.agentId, thread.agent);
-  for (const definition of definitions)
-    owners.set(definition.id, { agentId: definition.id, name: definition.name, sourceProjectId });
+  const { conversations, definitions, owners } = buildAgentConversationData({
+    environmentId,
+    sourceProjectId,
+    threads: [
+      ...threads,
+      ...(archive.data?.threads ?? []).map((thread) => presentThreadShell(environmentId, thread)),
+    ],
+    catalog: catalog.data,
+  });
   if (owners.size === 0 && !catalog.isPending && catalog.error === null) return null;
   return (
     <View className="gap-2 px-4 py-3">
@@ -165,7 +152,7 @@ function AgentScope({
         const exists = definition !== undefined;
         const needsModel = definition?.configurationPath === null;
         const expanded = !collapsed.has(owner.agentId);
-        const history = [...matching, ...archivedThreads]
+        const history = conversations
           .filter((thread) => thread.agent?.agentId === owner.agentId)
           .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
         return (
@@ -351,18 +338,12 @@ function AgentEnvironment({
         })
       : null,
   );
-  const scopes = new Map<ProjectId | null, { label: string; available: boolean }>([
-    [null, { label: "Global", available: true }],
-  ]);
-  for (const project of projects)
-    if (project.environmentId === environment.environmentId)
-      scopes.set(project.id, { label: project.title, available: true });
-  for (const thread of [
-    ...threads.filter((thread) => thread.environmentId === environment.environmentId),
-    ...(archive.data?.threads ?? []),
-  ])
-    if (thread.agent && !scopes.has(thread.agent.sourceProjectId))
-      scopes.set(thread.agent.sourceProjectId, { label: "Removed project", available: false });
+  const scopes = buildAgentConversationScopes({
+    environmentId: environment.environmentId,
+    projects,
+    threads,
+    archivedThreads: archive.data?.threads ?? [],
+  });
   return (
     <View key={environment.environmentId}>
       {environment.serverConfig?.agentConversations !== true ? (

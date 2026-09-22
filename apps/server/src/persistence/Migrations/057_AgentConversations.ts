@@ -11,9 +11,4 @@ export default Effect.gen(function* () {
   yield* sql`ALTER TABLE orchestration_v2_projection_threads DROP COLUMN previous_project_id`;
   yield* sql`CREATE INDEX orchestration_v2_projection_threads_project_updated_idx
     ON orchestration_v2_projection_threads(project_id, updated_at)`;
-  yield* sql`CREATE INDEX orchestration_v2_projection_threads_agent_updated_idx
-    ON orchestration_v2_projection_threads(
-      json_extract(payload_json, '$.agent.owner.sourceProjectId'),
-      json_extract(payload_json, '$.agent.owner.agentId'), updated_at)
-    WHERE project_id IS NULL`;
 });

@@ -1,4 +1,8 @@
 import {
+  buildAgentConversationData,
+  buildAgentConversationScopes,
+} from "@t3tools/client-runtime/state/agent-conversations";
+import {
   Archive,
   ArchiveRestore,
   Bot,
@@ -18,12 +22,7 @@ import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 import { newThreadId } from "../lib/utils";
 import { useCallback, useEffect, useState } from "react";
 import { useRouter, Link } from "@tanstack/react-router";
-import {
-  CommandId,
-  type AgentConversationOwner,
-  type EnvironmentId,
-  type ProjectId,
-} from "@t3tools/contracts";
+import { CommandId, type EnvironmentId, type ProjectId } from "@t3tools/contracts";
 import { useProjects, useThreadShells, waitForThreadShell } from "../state/entities";
 import { useEnvironments } from "../state/environments";
 import { projectEnvironment } from "../state/projects";
@@ -145,26 +144,15 @@ function AgentScope({
   const archiveThread = useAtomCommand(threadEnvironment.archive, "archive conversation");
   const restoreThread = useAtomCommand(threadEnvironment.unarchive, "restore conversation");
   const [pending, setPending] = useState<string | null>(null);
-  const matching = threads.filter(
-    (thread) =>
-      thread.environmentId === environmentId &&
-      thread.agent?.sourceProjectId === sourceProjectId &&
-      thread.deletedAt === null,
-  );
-  const archivedThreads = (archive.data?.threads ?? [])
-    .map((thread) => presentThreadShell(environmentId, thread))
-    .filter(
-      (thread) => thread.agent?.sourceProjectId === sourceProjectId && thread.deletedAt === null,
-    );
-  const owners = new Map<string, AgentConversationOwner>();
-  for (const thread of [...matching, ...archivedThreads])
-    if (thread.agent) owners.set(thread.agent.agentId, thread.agent);
-  const definitions =
-    sourceProjectId !== null && catalog.data?.scope === "global"
-      ? []
-      : (catalog.data?.agents ?? []);
-  for (const agent of definitions)
-    owners.set(agent.id, { agentId: agent.id, name: agent.name, sourceProjectId });
+  const { conversations, definitions, owners } = buildAgentConversationData({
+    environmentId,
+    sourceProjectId,
+    threads: [
+      ...threads,
+      ...(archive.data?.threads ?? []).map((thread) => presentThreadShell(environmentId, thread)),
+    ],
+    catalog: catalog.data,
+  });
   if (owners.size === 0 && !catalog.isPending && catalog.error === null) return null;
   return (
     <section className="space-y-1 px-[var(--sidebar-content-inset)] py-2">
@@ -178,9 +166,7 @@ function AgentScope({
       ) : null}
       {query &&
       ![...owners.values()].some((owner) => owner.name.toLowerCase().includes(query)) &&
-      ![...matching, ...archivedThreads].some((thread) =>
-        thread.title.toLowerCase().includes(query),
-      ) ? (
+      !conversations.some((thread) => thread.title.toLowerCase().includes(query)) ? (
         <p className="px-2.5 py-2 text-xs text-sidebar-muted-foreground">
           No matching agents or conversations.
         </p>
@@ -189,7 +175,7 @@ function AgentScope({
         const definition = definitions.find((definition) => definition.id === owner.agentId);
         const exists = definition !== undefined;
         const needsModel = definition?.configurationPath === null;
-        const history = [...matching, ...archivedThreads]
+        const history = conversations
           .filter((thread) => thread.agent?.agentId === owner.agentId)
           .filter(
             (thread) =>
@@ -393,18 +379,12 @@ function AgentEnvironment({
         })
       : null,
   );
-  const scopes = new Map<ProjectId | null, { label: string; available: boolean }>([
-    [null, { label: "Global", available: true }],
-  ]);
-  for (const project of projects)
-    if (project.environmentId === environment.environmentId)
-      scopes.set(project.id, { label: project.title, available: true });
-  for (const thread of [
-    ...threads.filter((thread) => thread.environmentId === environment.environmentId),
-    ...(archive.data?.threads ?? []),
-  ])
-    if (thread.agent && !scopes.has(thread.agent.sourceProjectId))
-      scopes.set(thread.agent.sourceProjectId, { label: "Removed project", available: false });
+  const scopes = buildAgentConversationScopes({
+    environmentId: environment.environmentId,
+    projects,
+    threads,
+    archivedThreads: archive.data?.threads ?? [],
+  });
   return (
     <div key={environment.environmentId}>
       {environment.serverConfig?.agentConversations !== true ? (

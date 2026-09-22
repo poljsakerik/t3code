@@ -43,6 +43,7 @@ export function providerRuntimePolicyForRun(
   base: ProviderAdapterV2RuntimePolicy,
   run: Pick<OrchestrationV2Run, "workflowSkillAllowlist">,
 ): ProviderAdapterV2RuntimePolicy {
+  if (base.detachedConversation) return base;
   return ProviderAdapterV2RuntimePolicy.make({
     ...base,
     ...(run.workflowSkillAllowlist === undefined
@@ -151,7 +152,7 @@ export const layer: Layer.Layer<
         providerThread === undefined ||
         providerThread.providerSessionId === null ||
         message === undefined ||
-        checkpointScope === undefined
+        (checkpointScope === undefined && projection.thread.agent === undefined)
       ) {
         return yield* new ProviderTurnStartError({
           runId,
@@ -304,7 +305,7 @@ export const layer: Layer.Layer<
         }
       }
       const { worktreePath, branch } = projection.thread;
-      if (worktreePath !== null && branch !== null) {
+      if (projection.thread.projectId !== null && worktreePath !== null && branch !== null) {
         const exists = yield* fileSystem
           .exists(worktreePath)
           .pipe(Effect.orElseSucceed(() => true));
@@ -660,7 +661,7 @@ export const layer: Layer.Layer<
         session,
         run: runningRun,
         rootNode: runningRootNode,
-        checkpointScope,
+        checkpointScope: checkpointScope ?? null,
         providerThread: runningProviderThread,
         attempt: runningAttempt,
         attemptId: attempt.id,

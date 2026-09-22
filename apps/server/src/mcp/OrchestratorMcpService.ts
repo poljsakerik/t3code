@@ -578,7 +578,11 @@ function listItemFromShell(shell: OrchestrationV2ThreadShell): OrchestratorMcpTh
   };
 }
 
-function threadDetail(projection: OrchestrationV2ThreadProjection): OrchestratorMcpThreadDetail {
+function threadDetail(
+  projection: OrchestrationV2ThreadProjection & {
+    readonly thread: { readonly projectId: import("@t3tools/contracts").ProjectId };
+  },
+): OrchestratorMcpThreadDetail {
   const latest = latestRun(projection);
   const active = latestActiveRun(projection);
   return {
@@ -761,21 +765,26 @@ const make = Effect.gen(function* () {
         );
 
   const loadProjection = (threadId: ThreadId) =>
-    threadManagement
-      .getThreadProjection(threadId)
-      .pipe(
-        Effect.mapError((error) =>
-          failure(
-            "orchestration_error",
-            `Unable to read thread ${threadId}: ${errorMessage(error)}`,
-          ),
-        ),
-      );
+    threadManagement.getThreadProjection(threadId).pipe(
+      Effect.flatMap((projection) =>
+        projection.thread.projectId === null
+          ? Effect.fail(
+              failure("capability_denied", "Project tools are unavailable in agent conversations."),
+            )
+          : Effect.succeed({
+              ...projection,
+              thread: { ...projection.thread, projectId: projection.thread.projectId },
+            }),
+      ),
+      Effect.mapError((error) =>
+        failure("orchestration_error", `Unable to read thread ${threadId}: ${errorMessage(error)}`),
+      ),
+    );
 
   const loadProjectThread = (
-    projectId: OrchestrationV2ThreadProjection["thread"]["projectId"],
+    projectId: import("@t3tools/contracts").ProjectId,
     threadId: ThreadId,
-  ): Effect.Effect<OrchestrationV2ThreadProjection, OrchestratorMcpFailure> =>
+  ) =>
     threadManagement
       .getProjectThread({ projectId, threadId })
       .pipe(Effect.mapError(threadManagementFailure));

@@ -1,3 +1,10 @@
+import { useAtomValue } from "@effect/atom-react";
+import { View } from "react-native";
+import {
+  AgentConversations,
+  AgentModeTabs,
+  conversationModeAtom,
+} from "../agents/AgentConversations";
 import * as Arr from "effect/Array";
 import * as Order from "effect/Order";
 import { useNavigation } from "@react-navigation/native";
@@ -26,10 +33,15 @@ import { getConnectionAwareBrandHeaderOptions } from "./WorkspaceConnectionTitle
 /* ─── Route screen ───────────────────────────────────────────────────── */
 
 export function HomeRouteScreen() {
+  const conversationMode = useAtomValue(conversationModeAtom);
   const { width: windowWidth } = useWindowDimensions();
   const { layout } = useAdaptiveWorkspaceLayout();
   const projects = useProjects();
-  const threads = useNavigationThreadShells();
+  const allThreads = useNavigationThreadShells();
+  const threads = useMemo(
+    () => allThreads.filter((thread) => thread.agent === undefined),
+    [allThreads],
+  );
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const navigation = useNavigation();
@@ -132,6 +144,14 @@ export function HomeRouteScreen() {
     );
   }
 
+  if (conversationMode === "agents")
+    return (
+      <View className="flex-1 bg-screen">
+        <AgentModeTabs />
+        <AgentConversations />
+      </View>
+    );
+
   return (
     <AndroidHomeFabLayout
       onStartNewTask={() => navigation.navigate("NewTaskSheet", { screen: "NewTask" })}
@@ -154,6 +174,7 @@ export function HomeRouteScreen() {
             headerShown: true,
           }}
         />
+        <AgentModeTabs />
         <HomeHeader
           environments={environments}
           projects={projectFilterOptions}

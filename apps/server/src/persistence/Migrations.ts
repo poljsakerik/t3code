@@ -1,3 +1,4 @@
+import Migration0054 from "./Migrations/054_AgentConversations.ts";
 /**
  * Migration runner with an inline loader.
  *
@@ -131,6 +132,7 @@ export const migrationEntries = [
   [51, "ProjectionThreadMessageContext", Migration0051],
   [52, "ProjectionThreadTitleState", Migration0052],
   [53, "OrchestrationV2", Migration0053],
+  [54, "AgentConversations", Migration0054],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

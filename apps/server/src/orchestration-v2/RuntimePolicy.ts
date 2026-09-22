@@ -22,7 +22,7 @@ import {
 export class RuntimePolicyResolveError extends Schema.TaggedError<RuntimePolicyResolveError>()(
   "RuntimePolicyResolveError",
   {
-    projectId: ProjectId,
+    projectId: Schema.NullOr(ProjectId),
     providerInstanceId: ProviderInstanceId,
     cause: Schema.optional(Schema.Defect()),
   },
@@ -79,6 +79,23 @@ export const layerFromProjectRepository: Layer.Layer<
     const projects = yield* ProjectionProjects.ProjectionProjectRepository;
     return RuntimePolicyV2.of({
       resolve: Effect.fn("RuntimePolicyV2.resolve")(function* (input) {
+        if (input.thread.agent !== undefined) {
+          return ProviderAdapterV2RuntimePolicy.make({
+            cwd: input.thread.agent.directory,
+            runtimeMode: "approval-required",
+            interactionMode: "default",
+            agentInstructions: input.thread.agent.definition.instructions,
+            detachedConversation: true,
+            approvalPolicy: "never",
+            workflowSkillAllowlist: [...input.thread.agent.definition.skills],
+          });
+        }
+        if (input.thread.projectId === null)
+          return yield* new RuntimePolicyResolveError({
+            projectId: null,
+            providerInstanceId: input.modelSelection.instanceId,
+            cause: "Thread has no owner.",
+          });
         const cwd =
           input.thread.worktreePath ??
           (yield* projects.getById({ projectId: input.thread.projectId }).pipe(
@@ -125,19 +142,21 @@ export function layerWithOverride(
         resolve: (input) =>
           base.resolve(input).pipe(
             Effect.map((policy) =>
-              ProviderAdapterV2RuntimePolicy.make({
-                ...policy,
-                ...(override.cwd === undefined ? {} : { cwd: override.cwd }),
-                ...(override.approvalPolicy === undefined
-                  ? {}
-                  : { approvalPolicy: override.approvalPolicy }),
-                ...(override.sandboxPolicy === undefined
-                  ? {}
-                  : { sandboxPolicy: override.sandboxPolicy }),
-                ...(override.reasoningEffort === undefined
-                  ? {}
-                  : { reasoningEffort: override.reasoningEffort }),
-              }),
+              policy.detachedConversation
+                ? policy
+                : ProviderAdapterV2RuntimePolicy.make({
+                    ...policy,
+                    ...(override.cwd === undefined ? {} : { cwd: override.cwd }),
+                    ...(override.approvalPolicy === undefined
+                      ? {}
+                      : { approvalPolicy: override.approvalPolicy }),
+                    ...(override.sandboxPolicy === undefined
+                      ? {}
+                      : { sandboxPolicy: override.sandboxPolicy }),
+                    ...(override.reasoningEffort === undefined
+                      ? {}
+                      : { reasoningEffort: override.reasoningEffort }),
+                  }),
             ),
           ),
       } satisfies RuntimePolicyV2Shape;

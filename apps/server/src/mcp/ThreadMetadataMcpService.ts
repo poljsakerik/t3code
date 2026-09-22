@@ -70,7 +70,7 @@ function commandId(input: {
 function metadataCommand(input: {
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
-  readonly projectId: OrchestrationV2AppThread["projectId"];
+  readonly projectId: NonNullable<OrchestrationV2AppThread["projectId"]>;
   readonly update: ThreadMetadataMcpUpdateInput;
 }): Extract<OrchestrationV2Command, { readonly type: "thread.metadata.update" }> {
   switch (input.update.action) {
@@ -170,6 +170,12 @@ const make = Effect.gen(function* () {
           ),
         ),
       );
+    if (parent.thread.projectId === null)
+      return yield* failure(
+        "capability_denied",
+        "Project tools are unavailable in agent conversations.",
+      );
+    const projectId = parent.thread.projectId;
     const threadId = input.threadId ?? scope.threadId;
     const target =
       threadId === scope.threadId
@@ -192,7 +198,7 @@ const make = Effect.gen(function* () {
         metadataCommand({
           commandId: updateCommandId,
           threadId,
-          projectId: target.thread.projectId,
+          projectId,
           update: input,
         }),
       )

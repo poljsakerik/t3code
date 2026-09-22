@@ -676,7 +676,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         ) : null}
 
         {modelUnavailable ? (
-          <Pressable accessibilityRole="button" className="px-3 py-2" onPress={openSettings}>
+          <Pressable
+            accessibilityRole="button"
+            className="px-3 py-2"
+            onPress={props.selectedThread.agent ? undefined : openSettings}
+          >
             <Text className="text-xs text-foreground">Model unavailable. Open model settings.</Text>
           </Pressable>
         ) : null}
@@ -977,7 +981,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                         }
                         label={currentModelOption?.label ?? currentModelSelection.model}
                         maxWidth="100%"
-                        onPress={openSettings}
+                        onPress={props.selectedThread.agent ? undefined : openSettings}
                       />
                     </View>
                   </View>

@@ -107,13 +107,15 @@ export function HardwareKeyboardCommandProvider({
     }
     if (pathname !== "/" || navigation.canGoBack()) commands.add("back");
     if (activeThreadRef !== null) {
-      commands.add("files");
-      commands.add("terminal");
-      commands.add("review");
+      if (!activeThread?.agent) {
+        commands.add("files");
+        commands.add("terminal");
+        commands.add("review");
+      }
       if (pathname.split("/")[4] !== "terminal") commands.add("copyThreadReference");
     }
     return [...commands];
-  }, [activeThreadRef, pathname, registrationVersion, navigation]);
+  }, [activeThread?.agent, activeThreadRef, pathname, registrationVersion, navigation]);
 
   const onCommand = useCallback(
     (command: HardwareKeyboardCommand) => {
@@ -161,7 +163,7 @@ export function HardwareKeyboardCommandProvider({
       }
 
       const thread = parseActiveThreadPath(pathname);
-      if (!thread) return;
+      if (!thread || activeThread?.agent) return;
       if (command === "files" && !/\/files(?:\/|$)/.test(pathname)) {
         navigation.navigate("ThreadFiles", thread);
       }
@@ -172,7 +174,7 @@ export function HardwareKeyboardCommandProvider({
         navigation.navigate("ThreadReview", thread);
       }
     },
-    [copyTarget, navigation, pathname, showCopyFeedback],
+    [activeThread?.agent, copyTarget, navigation, pathname, showCopyFeedback],
   );
 
   const palette = useMemo(

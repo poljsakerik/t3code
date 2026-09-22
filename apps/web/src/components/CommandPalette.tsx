@@ -1,4 +1,8 @@
 "use client";
+import {
+  useAgentConversationNavigation,
+  requestNewAgentConversation,
+} from "../agentConversationNavigation";
 
 import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-request-compatibility";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
@@ -1638,9 +1642,22 @@ function OpenCommandPaletteDialog(props: {
     pushPaletteView,
   ]);
 
+  const conversationMode = useAgentConversationNavigation((state) => state.mode);
   const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [];
+  if (conversationMode === "agents")
+    actionItems.push({
+      kind: "action",
+      value: "action:new-agent-conversation",
+      title: "New agent conversation",
+      searchTerms: ["new", "chat", "agent", "conversation"],
+      icon: <SquarePenIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "chat.new",
+      run: async () => {
+        requestNewAgentConversation();
+      },
+    });
 
-  if (projects.length > 0) {
+  if (projects.length > 0 && conversationMode === "code") {
     const activeProjectTitle =
       projectPickerEntries.find((entry) => entry.isPreferred)?.group.displayName ??
       (currentProjectId ? (projectTitleById.get(currentProjectId) ?? null) : null);

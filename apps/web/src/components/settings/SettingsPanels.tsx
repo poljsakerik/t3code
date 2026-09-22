@@ -3188,7 +3188,9 @@ export function ArchivedThreadsPanel() {
 
     const archivedProjects = Array.from(projectsByEnvironmentAndId.values());
     const groups: Array<{
-      readonly project: (typeof archivedProjects)[number];
+      readonly project: (typeof archivedProjects)[number] | null;
+      readonly key: string;
+      readonly title: string;
       readonly threads: Array<(typeof threads)[number]>;
     }> = [];
     for (const project of archivedProjects) {
@@ -3201,6 +3203,8 @@ export function ArchivedThreadsPanel() {
       if (projectThreads.length > 0) {
         groups.push({
           project,
+          key: `${project.environmentId}:${project.id}`,
+          title: project.title,
           threads: projectThreads.toSorted((left, right) => {
             const leftKey = left.archivedAt ?? left.createdAt;
             const rightKey = right.archivedAt ?? right.createdAt;
@@ -3208,6 +3212,22 @@ export function ArchivedThreadsPanel() {
           }),
         });
       }
+    }
+    for (const thread of threads) {
+      if (!thread.agent || thread.archivedAt === null || thread.deletedAt !== null) continue;
+      if (
+        selectedProjectKeys !== null &&
+        !selectedProjectKeys.has(`${thread.environmentId}:${thread.agent.sourceProjectId}`)
+      )
+        continue;
+      const key = JSON.stringify([
+        thread.environmentId,
+        thread.agent.sourceProjectId,
+        thread.agent.agentId,
+      ]);
+      const existing = groups.find((group) => group.key === key);
+      if (existing) existing.threads.push(thread);
+      else groups.push({ project: null, key, title: thread.agent.name, threads: [thread] });
     }
     return groups;
   }, [archivedSnapshots, scope]);
@@ -3290,12 +3310,12 @@ export function ArchivedThreadsPanel() {
           />
         </SettingsSection>
       ) : (
-        archivedGroups.map(({ project, threads: projectThreads }, index) => (
+        archivedGroups.map(({ project, key, title, threads: projectThreads }, index) => (
           <SettingsSection
-            key={`${project.environmentId}:${project.id}`}
+            key={key}
             id={index === 0 ? searchableSetting("archive").id : undefined}
-            title={project.title}
-            icon={<ProjectFavicon project={project} />}
+            title={title}
+            icon={project ? <ProjectFavicon project={project} /> : undefined}
           >
             {projectThreads.map((thread) => (
               <SettingsRow

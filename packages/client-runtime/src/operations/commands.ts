@@ -622,6 +622,13 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
     const existingProjection =
       bootstrap === undefined ? yield* getProjection(input.threadId) : null;
     const thread = bootstrap ?? existingProjection!.thread;
+    if (thread.projectId === null)
+      return yield* Effect.fail(
+        new OrchestrationV2CheckpointUnavailableError({
+          threadId: input.threadId,
+          target: "project workspace",
+        }),
+      );
     const workspaceStrategy =
       prepareWorktree !== undefined
         ? {

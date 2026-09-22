@@ -6396,3 +6396,30 @@ describe("ClaudeAdapterV2 query message stream", () => {
     }),
   );
 });
+
+it("isolates detached Claude configuration from global integrations and project instructions", () => {
+  const options = makeClaudeQueryOptions({
+    nativeThreadId: "writer-session",
+    resume: false,
+    cwd: "/managed/writer",
+    detachedConversation: true,
+    agentInstructions: "Write clearly.",
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "claude-sonnet-4-6",
+    },
+    mcpServers: { unrelated: { command: "unrelated-server" } },
+    allowedTools: ["mcp__unrelated__*"],
+    permissionMode: "bypassPermissions",
+    allowDangerouslySkipPermissions: true,
+  });
+  assert.equal(options.systemPrompt, "Write clearly.");
+  assert.deepEqual(options.settingSources, []);
+  assert.deepEqual(options.mcpServers, {});
+  assert.deepEqual(options.additionalDirectories, []);
+  assert.deepEqual(options.allowedTools, []);
+  assert.equal(options.permissionMode, "default");
+  assert.isFalse(options.allowDangerouslySkipPermissions);
+  assert.isTrue(options.sandbox?.failIfUnavailable);
+  assert.isFalse(options.sandbox?.allowUnsandboxedCommands);
+});

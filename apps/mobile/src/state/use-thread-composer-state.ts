@@ -255,7 +255,9 @@ export function useThreadComposerState() {
   const draftAttachments = selectedDraft?.attachments ?? [];
   const selectedThreadQueueCount = selectedThreadQueuedMessages.length;
   const selectedThread = selectedThreadShell;
-  const modelSelection = selectedDraft?.modelSelection ?? selectedThread?.modelSelection ?? null;
+  const modelSelection = selectedThread?.agent
+    ? selectedThread.modelSelection
+    : (selectedDraft?.modelSelection ?? selectedThread?.modelSelection ?? null);
   const runtimeMode = selectedDraft?.runtimeMode ?? selectedThread?.runtimeMode ?? null;
   const selectedProvider = selectedEnvironmentRuntime?.serverConfig?.providers.find(
     (provider) => provider.instanceId === modelSelection?.instanceId,
@@ -376,7 +378,9 @@ export function useThreadComposerState() {
       return null;
     }
 
-    const modelSelection = draft.modelSelection ?? thread.modelSelection;
+    const modelSelection = thread.agent
+      ? thread.modelSelection
+      : (draft.modelSelection ?? thread.modelSelection);
     const serverConfig = selectedEnvironmentRuntime?.serverConfig;
     if (
       selectedEnvironmentRuntime?.connectionState === "connected" &&
@@ -445,7 +449,7 @@ export function useThreadComposerState() {
       attachments,
       context: draft.context,
       modelSelection,
-      runtimeMode: draft.runtimeMode ?? thread.runtimeMode,
+      runtimeMode: thread.agent ? thread.runtimeMode : (draft.runtimeMode ?? thread.runtimeMode),
       interactionMode: resolveProviderInteractionMode(
         provider,
         draft.interactionMode ?? thread.interactionMode,
@@ -745,7 +749,7 @@ export function useThreadComposerState() {
 
   const onUpdateModelSelection = useCallback(
     (value: ModelSelection) => {
-      if (!selectedThreadKey) {
+      if (!selectedThreadKey || selectedThread?.agent) {
         return;
       }
       const provider = selectedEnvironmentRuntime?.serverConfig?.providers.find(
@@ -758,22 +762,22 @@ export function useThreadComposerState() {
           : {}),
       });
     },
-    [selectedEnvironmentRuntime?.serverConfig, selectedThreadKey],
+    [selectedThread?.agent, selectedEnvironmentRuntime?.serverConfig, selectedThreadKey],
   );
 
   const onUpdateRuntimeMode = useCallback(
     (value: RuntimeMode) => {
-      if (!selectedThreadKey) {
+      if (!selectedThreadKey || selectedThread?.agent) {
         return;
       }
       updateComposerDraftSettings(selectedThreadKey, { runtimeMode: value });
     },
-    [selectedThreadKey],
+    [selectedThread?.agent, selectedThreadKey],
   );
 
   const onUpdateInteractionMode = useCallback(
     (value: ProviderInteractionMode) => {
-      if (!selectedThreadKey) {
+      if (!selectedThreadKey || selectedThread?.agent) {
         return;
       }
       const modelSelection =
@@ -786,7 +790,12 @@ export function useThreadComposerState() {
         interactionMode: resolveProviderInteractionMode(provider, value),
       });
     },
-    [selectedEnvironmentRuntime?.serverConfig, selectedThread?.modelSelection, selectedThreadKey],
+    [
+      selectedThread?.agent,
+      selectedEnvironmentRuntime?.serverConfig,
+      selectedThread?.modelSelection,
+      selectedThreadKey,
+    ],
   );
 
   return {

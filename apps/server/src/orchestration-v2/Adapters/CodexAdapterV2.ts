@@ -1,3 +1,4 @@
+import { retainConversationAttachments } from "../../agents/AgentConversationResources.ts";
 import {
   mcpToolPresentation,
   type McpToolPresentation,
@@ -668,7 +669,8 @@ export function buildCodexTurnStartParams(input: {
       selectedEffort === undefined ? undefined : yield* decodeTurnReasoningEffort(selectedEffort);
     const serviceTier = getCodexServiceTierOptionValue(input.modelSelection);
     const developerInstructions =
-      input.hasT3Mcp !== true
+      input.runtimePolicy.agentInstructions ??
+      (input.hasT3Mcp !== true
         ? undefined
         : buildCodexDeveloperInstructions(
             input.runtimePolicy.interactionMode,
@@ -680,7 +682,7 @@ export function buildCodexTurnStartParams(input: {
               browser: input.browserToolsAvailable ?? true,
               device: input.deviceToolsAvailable ?? false,
             },
-          );
+          ));
     const collaborationMode: CodexSchema.ClientRequest__CollaborationMode | undefined =
       input.runtimePolicy.interactionMode !== "plan" && developerInstructions === undefined
         ? undefined
@@ -704,7 +706,9 @@ export function buildCodexTurnStartParams(input: {
       // reviewer sticky after switching away from Auto mode.
       approvalsReviewer: runtimeModeDefaults.approvalsReviewer,
       ...(approvalPolicy === undefined ? {} : { approvalPolicy }),
-      ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
+      ...(input.runtimePolicy.detachedConversation || sandboxPolicy === undefined
+        ? {}
+        : { sandboxPolicy }),
       ...(effort === undefined ? {} : { effort }),
       ...(serviceTier === undefined ? {} : { serviceTier }),
       ...(collaborationMode === undefined ? {} : { collaborationMode }),
@@ -1248,7 +1252,9 @@ export function codexThreadRuntimeParams(input: {
   readonly config?: Readonly<Record<string, unknown>>;
 } {
   const mcpSession =
-    input.threadId === null ? undefined : McpProviderSession.readMcpProviderSession(input.threadId);
+    input.threadId === null || input.runtimePolicy?.detachedConversation
+      ? undefined
+      : McpProviderSession.readMcpProviderSession(input.threadId);
   const config = {
     ...input.workflowSkillConfig,
     ...(mcpSession === undefined
@@ -1280,7 +1286,7 @@ export function codexWorkflowSkillConfig(
   if (missing.length > 0) {
     throw new ProviderAdapterProtocolError({
       driver: CODEX_PROVIDER,
-      detail: `Assigned Codex reviewer skills are unavailable: ${missing.join(", ")}`,
+      detail: `Assigned Codex skills are unavailable: ${missing.join(", ")}`,
     });
   }
   const selected = new Set(allowlist);
@@ -1455,7 +1461,30 @@ export const codexAppServerClientFactoryFromSettingsLayer: Layer.Layer<
           };
           const command = yield* makeCodexAppServerSpawnCommand({
             command: input.settings.binaryPath || "codex",
-            args: ["app-server"],
+            args: [
+              "app-server",
+              ...(input.runtimePolicy.detachedConversation
+                ? [
+                    "-c",
+                    'default_permissions="t3-agent-conversation"',
+                    "-c",
+                    'approval_policy="never"',
+                    "-c",
+                    'permissions.t3-agent-conversation.filesystem={ ":root"="deny", ":minimal"="read", ":workspace_roots"={"."="write"}, ":tmpdir"="deny", ":slash_tmp"="deny" }',
+                    "-c",
+                    "permissions.t3-agent-conversation.network.enabled=false",
+                    "-c",
+                    "project_doc_max_bytes=0",
+                    "-c",
+                    "features.hooks=false",
+                    "-c",
+                    "features.apps=false",
+                    "-c",
+                    "features.multi_agent=false",
+                  ]
+                : []),
+            ],
+            ...(input.runtimePolicy.cwd === null ? {} : { cwd: input.runtimePolicy.cwd }),
             env: environment,
           });
           const handle = yield* spawner.spawn(command).pipe(
@@ -1615,6 +1644,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           settings: adapterOptions.settings,
           environment: adapterOptions.environment,
         });
+        let detachedConfig: Readonly<Record<string, unknown>> = {};
         const initialized = yield* Ref.make(false);
         const ensureInitialized = Effect.gen(function* () {
           const alreadyInitialized = yield* Ref.get(initialized);
@@ -1627,6 +1657,41 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             capabilities: CODEX_CLIENT_CAPABILITIES,
           });
           yield* client.notify("initialized", undefined);
+          if (input.runtimePolicy.detachedConversation) {
+            const profiles = yield* client.request("permissionProfile/list", {
+              cwd: input.runtimePolicy.cwd,
+              limit: 100,
+            });
+            if (
+              !profiles.data.some(
+                (profile) => profile.id === "t3-agent-conversation" && profile.allowed,
+              )
+            ) {
+              return yield* new ProviderAdapterProtocolError({
+                driver: CODEX_PROVIDER,
+                detail:
+                  "This Codex runtime cannot enforce agent conversation permissions. Update Codex before retrying.",
+              });
+            }
+            const { config } = yield* client.request("config/read", {
+              includeLayers: false,
+              cwd: input.runtimePolicy.cwd,
+            });
+            const record = Schema.Record(Schema.String, Schema.Unknown);
+            const disabledEntries = (value: unknown) =>
+              Schema.is(record)(value)
+                ? Object.fromEntries(Object.keys(value).map((key) => [key, { enabled: false }]))
+                : {};
+            detachedConfig = {
+              default_permissions: "t3-agent-conversation",
+              project_doc_max_bytes: 0,
+              developer_instructions: input.runtimePolicy.agentInstructions,
+              mcp_servers: disabledEntries(config.mcp_servers),
+              plugins: disabledEntries(config.plugins),
+              apps: { ...disabledEntries(config.apps), _default: { enabled: false } },
+              features: { apps: false, multi_agent: false, hooks: false },
+            };
+          }
           yield* Ref.set(initialized, true);
         });
         const resolveThreadRuntimeParams = Effect.fnUntraced(function* (threadInput: {
@@ -1657,9 +1722,34 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                     payload: cause,
                   }),
           });
+          const nativeSkillPaths = skills
+            .filter((skill) => allowlist.includes(skill.name))
+            .map((skill) => skill.path.replace(/[\\/][^\\/]+$/, ""));
           return codexThreadRuntimeParams({
             ...threadInput,
-            workflowSkillConfig,
+            workflowSkillConfig: {
+              ...workflowSkillConfig,
+              ...detachedConfig,
+              ...(threadInput.runtimePolicy?.detachedConversation
+                ? {
+                    permissions: {
+                      "t3-agent-conversation": {
+                        filesystem: {
+                          ":root": "deny",
+                          ":minimal": "read",
+                          ":workspace_roots": { ".": "write" },
+                          ":tmpdir": "deny",
+                          ":slash_tmp": "deny",
+                          ...Object.fromEntries(
+                            nativeSkillPaths.map((directory) => [directory, "read"]),
+                          ),
+                        },
+                        network: { enabled: false },
+                      },
+                    },
+                  }
+                : {}),
+            },
           });
         });
         const now = yield* DateTime.now;
@@ -2743,10 +2833,23 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         ) =>
           Effect.gen(function* () {
             const inputItems: Array<CodexSchema.V2TurnStartParams__UserInput> = [];
+            const attachmentsDir =
+              input.runtimePolicy.detachedConversation && input.runtimePolicy.cwd !== null
+                ? yield* retainConversationAttachments(
+                    fileSystem,
+                    turnInput.message.attachments,
+                    serverConfig.attachmentsDir,
+                    input.runtimePolicy.cwd,
+                  ).pipe(
+                    Effect.mapError((cause) =>
+                      toProtocolError("Could not prepare conversation attachments.", cause),
+                    ),
+                  )
+                : serverConfig.attachmentsDir;
             const text = providerMessageTextWithAttachmentPaths({
               text: turnInput.message.text,
               attachments: turnInput.message.attachments,
-              attachmentsDir: serverConfig.attachmentsDir,
+              attachmentsDir,
             });
             if (text.length > 0) {
               inputItems.push({

@@ -1,3 +1,9 @@
+import { useAtomValue } from "@effect/atom-react";
+import {
+  AgentConversations,
+  AgentModeTabs,
+  conversationModeAtom,
+} from "../agents/AgentConversations";
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
 import {
   StackActions,
@@ -82,7 +88,19 @@ function deriveProjectEmptyState(catalogState: WorkspaceState): {
   };
 }
 
-export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRouteParams | undefined>) {
+export function NewTaskRouteScreen(props: StaticScreenProps<NewTaskRouteParams | undefined>) {
+  const mode = useAtomValue(conversationModeAtom);
+  return mode === "agents" && !props.route.params?.incomingShareId ? (
+    <View className="flex-1 bg-screen">
+      <AgentModeTabs restoreSelection={false} />
+      <AgentConversations />
+    </View>
+  ) : (
+    <CodeNewTaskRouteScreen {...props} />
+  );
+}
+
+function CodeNewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRouteParams | undefined>) {
   const projects = useProjects();
   const { projectScopes, selectedEnvironmentId, setProject } = useNewTaskFlow();
   const { state: catalogState } = useWorkspaceState();

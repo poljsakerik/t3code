@@ -76,7 +76,7 @@ describe("V2 client presentation", () => {
 
   it("preserves active ordering and both pull-request sources", () => {
     const linkedPullRequest = {
-      projectId: v2ThreadShell.projectId,
+      projectId: v2ThreadShell.projectId!,
       repository: "pingdotgg/t3code",
       number: 42,
       url: "https://github.com/pingdotgg/t3code/pull/42",

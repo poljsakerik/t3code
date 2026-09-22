@@ -1308,7 +1308,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     );
     for (const thread of projectThreads) {
       const member = memberProjectByScopedKey.get(
-        scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
+        thread.projectId === null
+          ? ""
+          : scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
       );
       if (!member) {
         continue;
@@ -2237,7 +2239,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       const thread = sidebarThreadByKeyRef.current.get(threadKey) ?? null;
       if (!thread) return;
       const threadProject = memberProjectByScopedKey.get(
-        scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
+        thread.projectId === null
+          ? ""
+          : scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
       );
       const threadWorkspacePath =
         thread.worktreePath ?? threadProject?.workspaceRoot ?? project.workspaceRoot ?? null;
@@ -2266,10 +2270,11 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       }
 
       if (clicked === "new-thread-on-branch") {
+        if (thread.projectId === null) return;
         // Explicit branch carry-over: reuse the thread's worktree when it
         // has one, otherwise its branch on the local checkout.
         const result = await settlePromise(() =>
-          handleNewThread(scopeProjectRef(thread.environmentId, thread.projectId), {
+          handleNewThread(scopeProjectRef(thread.environmentId, thread.projectId!), {
             branch: thread.branch,
             worktreePath: thread.worktreePath,
             envMode: thread.worktreePath ? "worktree" : "local",
@@ -3294,8 +3299,13 @@ export default function LegacySidebar() {
     if (!activeThread) return null;
     const physicalKey =
       projectPhysicalKeyByScopedRef.get(
-        scopedProjectKey(scopeProjectRef(activeThread.environmentId, activeThread.projectId)),
-      ) ?? scopedProjectKey(scopeProjectRef(activeThread.environmentId, activeThread.projectId));
+        activeThread.projectId === null
+          ? ""
+          : scopedProjectKey(scopeProjectRef(activeThread.environmentId, activeThread.projectId)),
+      ) ??
+      (activeThread.projectId === null
+        ? ""
+        : scopedProjectKey(scopeProjectRef(activeThread.environmentId, activeThread.projectId)));
     return physicalToLogicalKey.get(physicalKey) ?? physicalKey;
   }, [routeThreadKey, sidebarThreadByKey, physicalToLogicalKey, projectPhysicalKeyByScopedRef]);
 
@@ -3306,8 +3316,13 @@ export default function LegacySidebar() {
     for (const thread of sidebarThreads) {
       const physicalKey =
         projectPhysicalKeyByScopedRef.get(
-          scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
-        ) ?? scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId));
+          thread.projectId === null
+            ? ""
+            : scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
+        ) ??
+        (thread.projectId === null
+          ? ""
+          : scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)));
       const logicalKey = physicalToLogicalKey.get(physicalKey) ?? physicalKey;
       const existing = next.get(logicalKey);
       if (existing) {
@@ -3437,8 +3452,13 @@ export default function LegacySidebar() {
     const sortableThreads = visibleThreads.map((thread) => {
       const physicalKey =
         projectPhysicalKeyByScopedRef.get(
-          scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
-        ) ?? scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId));
+          thread.projectId === null
+            ? ""
+            : scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
+        ) ??
+        (thread.projectId === null
+          ? ""
+          : scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)));
       return {
         ...thread,
         projectId: (physicalToLogicalKey.get(physicalKey) ?? physicalKey) as ProjectId,

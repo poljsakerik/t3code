@@ -255,13 +255,15 @@ export function CommandPalette(props: {
         ["copyThreadReference", "Copy PR link or thread ID", ["reference", "clipboard"]],
       ] as const;
       actions.push(
-        ...threadActions.map(([command, title, searchTerms]) => ({
-          key: command,
-          kind: "action" as const,
-          title,
-          searchTerms,
-          run: () => runCommand(command),
-        })),
+        ...threadActions
+          .filter(([command]) => !activeThread?.agent || command === "copyThreadReference")
+          .map(([command, title, searchTerms]) => ({
+            key: command,
+            kind: "action" as const,
+            title,
+            searchTerms,
+            run: () => runCommand(command),
+          })),
       );
     }
     const projectItems: CommandPaletteItem[] = projects.map((project) => ({

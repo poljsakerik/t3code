@@ -1,3 +1,7 @@
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as Layer from "effect/Layer";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   ContextTransferId,
@@ -144,5 +148,81 @@ it.effect("keeps a fork awake when its source thread is snoozed", () =>
       threadId: sourceThreadId,
       runId: sourceRunId,
     });
-  }).pipe(Effect.provide(layer)),
+  }).pipe(Effect.provide(layer.pipe(Layer.provide(NodeServices.layer)))),
+);
+
+it.effect("gives an agent fork independent files while retaining its saved setup", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-agent-fork-" });
+    const sourceDirectory = yield* fs.realPath(root);
+    const directory = path.join(sourceDirectory, "original");
+    yield* fs.makeDirectory(path.join(directory, "skills/writer"), { recursive: true });
+    yield* fs.writeFileString(
+      path.join(directory, "skills/writer/reference.md"),
+      "Original guidance",
+    );
+    const sourceThread = {
+      ...makeSourceThread(),
+      projectId: null,
+      branch: null,
+      worktreePath: null,
+      agent: {
+        owner: { agentId: ".t3/agents/writer", sourceProjectId: null, name: "Writer" },
+        definition: {
+          id: ".t3/agents/writer",
+          name: "Writer",
+          instructions: `Use ${directory}/skills/writer/reference.md`,
+          skills: [],
+          modelSelection,
+        },
+        directory,
+      },
+    };
+    const sourceRun = makeCompletedSourceRun();
+    const sourceProjection: OrchestrationV2ThreadProjection = {
+      thread: sourceThread,
+      runs: [sourceRun],
+      attempts: [],
+      nodes: [],
+      subagents: [],
+      providerSessions: [],
+      providerThreads: [],
+      providerTurns: [],
+      runtimeRequests: [],
+      messages: [],
+      plans: [],
+      turnItems: [],
+      checkpointScopes: [],
+      checkpoints: [],
+      contextHandoffs: [],
+      contextTransfers: [],
+      visibleTurnItems: [],
+      updatedAt: snoozedAt,
+    };
+    const service = yield* ThreadForkServiceV2;
+    const { targetThread } = yield* service.plan({
+      sourceProjection,
+      sourceRun,
+      sourceProviderThread: undefined,
+      canonicalSourcePoint: { threadId: sourceThreadId, runId: sourceRunId },
+      transferId: ContextTransferId.make("agent-fork"),
+      targetThreadId,
+      createdBy: "user",
+      creationSource: "web",
+      createdAt: forkCreatedAt,
+    });
+    assert.deepEqual(targetThread.agent?.owner, sourceThread.agent.owner);
+    assert.isNull(targetThread.projectId);
+    assert.notEqual(targetThread.agent?.directory, directory);
+    assert.notInclude(targetThread.agent!.definition.instructions, directory);
+    const forkResource = path.join(targetThread.agent!.directory, "skills/writer/reference.md");
+    assert.equal(yield* fs.readFileString(forkResource), "Original guidance");
+    yield* fs.writeFileString(forkResource, "Fork guidance");
+    assert.equal(
+      yield* fs.readFileString(path.join(directory, "skills/writer/reference.md")),
+      "Original guidance",
+    );
+  }).pipe(Effect.provide(layer.pipe(Layer.provideMerge(NodeServices.layer))), Effect.scoped),
 );

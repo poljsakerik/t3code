@@ -1,3 +1,4 @@
+import { selectConversationMode, rememberConversation } from "../agents/AgentConversations";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import {
   StackActions,
@@ -143,6 +144,22 @@ export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
   const { state: workspaceState } = useWorkspaceState();
   const { connectionState } = useRemoteConnectionStatus();
   const { selectedThread } = useThreadSelection();
+  const selectedConversationMode = selectedThread
+    ? selectedThread.agent
+      ? "agents"
+      : "code"
+    : null;
+  const selectedConversationId = selectedThread?.id;
+  const selectedConversationEnvironment = selectedThread?.environmentId;
+  useEffect(() => {
+    if (selectedConversationMode && selectedConversationId && selectedConversationEnvironment) {
+      selectConversationMode(selectedConversationMode);
+      rememberConversation(selectedConversationMode, {
+        environmentId: selectedConversationEnvironment,
+        threadId: selectedConversationId,
+      });
+    }
+  }, [selectedConversationMode, selectedConversationId, selectedConversationEnvironment]);
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
   const threadIdRaw = firstRouteParam(params.threadId);
@@ -325,7 +342,7 @@ function ThreadRouteContent(
   /* ─── Native header theming ──────────────────────────────────────── */
   const usesNativeHeaderGlass = NATIVE_LIQUID_GLASS_SUPPORTED;
   const headerSubtitle = [
-    selectedThreadProject?.title ?? null,
+    selectedThread?.agent?.name ?? selectedThreadProject?.title ?? null,
     selectedEnvironmentConnection?.environmentLabel ?? null,
   ]
     .filter(Boolean)
@@ -640,7 +657,8 @@ function ThreadRouteContent(
         : undefined,
     onOpenFilesInspector:
       fileInspector.supported && selectedThreadCwd !== null ? handleOpenFilesInspector : undefined,
-    onOpenGitInspector: fileInspector.supported ? handleOpenGitInspector : undefined,
+    onOpenGitInspector:
+      fileInspector.supported && !selectedThread?.agent ? handleOpenGitInspector : undefined,
     currentBranch: selectedThread?.branch ?? null,
     gitStatus: gitStatus.data,
     gitOperationLabel: gitState.gitOperationLabel,
@@ -660,8 +678,10 @@ function ThreadRouteContent(
     onPull: gitActions.onPullSelectedThreadBranch,
     onRunAction: gitActions.onRunSelectedThreadGitAction,
   };
-  const threadCenterHeaderItems = useThreadGitCenterHeaderItems(threadGitControlProps);
-  const compactRightHeaderItems = useThreadGitRightHeaderItems(threadGitControlProps);
+  const codeCenterHeaderItems = useThreadGitCenterHeaderItems(threadGitControlProps);
+  const codeRightHeaderItems = useThreadGitRightHeaderItems(threadGitControlProps);
+  const threadCenterHeaderItems = selectedThread?.agent ? [] : codeCenterHeaderItems;
+  const compactRightHeaderItems = selectedThread?.agent ? [] : codeRightHeaderItems;
   const splitLeftHeaderItems = useMemo<NativeHeaderItems>(
     () => [
       {
@@ -728,11 +748,12 @@ function ThreadRouteContent(
         onPress: () => handleOpenTerminal(null),
       });
     }
-    actions.push({
-      accessibilityLabel: "Open git controls",
-      icon: "point.topleft.down.curvedto.point.bottomright.up",
-      onPress: handleOpenGitInspector,
-    });
+    if (!selectedThread?.agent)
+      actions.push({
+        accessibilityLabel: "Open git controls",
+        icon: "point.topleft.down.curvedto.point.bottomright.up",
+        onPress: handleOpenGitInspector,
+      });
     if (fileInspector.supported && selectedThreadCwd !== null) {
       actions.push({
         accessibilityLabel: "Toggle inspector",
@@ -750,6 +771,7 @@ function ThreadRouteContent(
     props.onReturnToThread,
     selectedThreadCwd,
     selectedThreadProject?.workspaceRoot,
+    selectedThread?.agent,
   ]);
 
   const handleEditFailedCreation = useCallback(async () => {
@@ -840,7 +862,9 @@ function ThreadRouteContent(
   const serverConfig = routeEnvironmentRuntime?.serverConfig ?? null;
   const renderThreadRouteBody = (showActionControls: boolean) => (
     <>
-      <ThreadGitControls {...threadGitControlProps} showActionControls={showActionControls} />
+      {selectedThread?.agent ? null : (
+        <ThreadGitControls {...threadGitControlProps} showActionControls={showActionControls} />
+      )}
 
       <GitActionProgressOverlay progress={gitActionProgress} onDismiss={dismissGitActionResult} />
 

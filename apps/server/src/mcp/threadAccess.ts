@@ -33,7 +33,12 @@ export const readCaller = Effect.fn("mcp.readCaller")(function* () {
       message: "The calling thread was not found.",
     });
   }
-  return { scope, threads, caller };
+  if (caller.projectId === null)
+    return yield* new OrchestratorMcpFailure({
+      code: "capability_denied",
+      message: "Project tools are unavailable in agent conversations.",
+    });
+  return { scope, threads, caller: { ...caller, projectId: caller.projectId } };
 });
 
 function assertLiveCaller({

@@ -1,3 +1,11 @@
+import AgentConversationSidebar, {
+  AgentConversationCommandHandler,
+} from "./AgentConversationSidebar";
+import { agentConversationRefFromHref } from "../agentConversationNavigation.logic";
+import { useAgentConversationNavigation } from "../agentConversationNavigation";
+import { useThreadShell } from "../state/entities";
+import { resolveThreadRouteTarget } from "../threadRoutes";
+import { useParams } from "@tanstack/react-router";
 import { useAtomValue } from "@effect/atom-react";
 import * as Schema from "effect/Schema";
 import {
@@ -144,6 +152,10 @@ function ProjectProjectionRetention() {
 
 export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
+  const params = useParams({ strict: false });
+  const routeTarget = resolveThreadRouteTarget(params);
+  const shell = useThreadShell(routeTarget?.kind === "server" ? routeTarget.threadRef : null);
+  const mode = useAgentConversationNavigation((state) => state.mode);
   const legacySidebarEnabled = useLegacySidebarEnabled();
   const { active: panelAnimationsActive, durationMs: panelAnimationDurationMs } =
     usePanelAnimationSettings();
@@ -152,6 +164,31 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   // Seeds server-side visited tracking from this browser's localStorage the
   useThreadVisitedMigration();
   const pathname = useLocation({ select: (location) => location.pathname });
+  useEffect(() => {
+    const pathnameThread = agentConversationRefFromHref(pathname);
+    // Location can advance before the matched route's shell subscription changes.
+    // Never save the new URL under the previous thread's conversation mode.
+    if (
+      shell &&
+      pathnameThread?.environmentId === shell.environmentId &&
+      pathnameThread.threadId === shell.id
+    ) {
+      const mode = shell.agent ? "agents" : "code";
+      useAgentConversationNavigation.setState({
+        mode,
+        ...(shell.agent
+          ? {
+              selected: { environmentId: shell.environmentId, owner: shell.agent },
+              lastAgentsHref: pathname,
+            }
+          : { lastCodeHref: pathname }),
+      });
+    } else if (pathname === "/agents") {
+      useAgentConversationNavigation.setState({ mode: "agents", lastAgentsHref: pathname });
+    } else if (routeTarget?.kind === "draft" && pathname.startsWith("/draft/")) {
+      useAgentConversationNavigation.setState({ mode: "code", lastCodeHref: pathname });
+    }
+  }, [shell, pathname, routeTarget?.kind]);
   const panelAnimationsSuppressed = usePanelNavigationSuppression(pathname);
   const routePanelAnimationsActive = panelAnimationsActive && !panelAnimationsSuppressed;
   const isOnSettings = pathname === "/settings" || pathname.startsWith("/settings/");
@@ -230,6 +267,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
         style={sidebarProviderStyle}
       >
         <ProjectProjectionRetention />
+        <AgentConversationCommandHandler />
         <Sidebar
           side="left"
           collapsible="offcanvas"
@@ -250,6 +288,8 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
               <SidebarChromeHeader isElectron={isElectron} />
               <SettingsSidebarNav pathname={pathname} />
             </>
+          ) : mode === "agents" ? (
+            <AgentConversationSidebar />
           ) : legacySidebarEnabled ? (
             <LegacyThreadSidebar />
           ) : (

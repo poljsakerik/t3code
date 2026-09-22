@@ -60,6 +60,22 @@ it("copies a reviewer's exclusive skill allowlist into the provider runtime poli
   );
 });
 
+it("keeps the frozen conversation policy across follow-ups and provider recovery", () => {
+  const base = ProviderAdapterV2RuntimePolicy.make({
+    runtimeMode: "approval-required",
+    interactionMode: "default",
+    cwd: "/managed/conversation",
+    detachedConversation: true,
+    agentInstructions: "Write clearly.",
+    approvalPolicy: "never",
+    workflowSkillAllowlist: ["writing"],
+  });
+  expect(
+    ProviderTurnStart.providerRuntimePolicyForRun(base, { workflowSkillAllowlist: ["other"] }),
+  ).toEqual(base);
+  expect(ProviderTurnStart.providerRuntimePolicyForRun(base, {})).toEqual(base);
+});
+
 it("does not commit running state when inherited background routing cannot be read", async () => {
   const threadId = ThreadId.make("thread_provider_turn_start_projection_failure");
   const runId = RunId.make("run_provider_turn_start_projection_failure");

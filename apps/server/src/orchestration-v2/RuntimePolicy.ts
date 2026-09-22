@@ -86,7 +86,7 @@ export const layerFromProjectRepository: Layer.Layer<
             interactionMode: "default",
             agentInstructions: input.thread.agent.definition.instructions,
             detachedConversation: true,
-            approvalPolicy: "never",
+            approvalPolicy: "on-request",
             workflowSkillAllowlist: [...input.thread.agent.definition.skills],
           });
         }

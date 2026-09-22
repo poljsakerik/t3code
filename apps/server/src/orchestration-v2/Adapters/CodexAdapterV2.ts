@@ -1468,11 +1468,11 @@ export const codexAppServerClientFactoryFromSettingsLayer: Layer.Layer<
                     "-c",
                     'default_permissions="t3-agent-conversation"',
                     "-c",
-                    'approval_policy="never"',
+                    'approval_policy="on-request"',
                     "-c",
-                    'permissions.t3-agent-conversation.filesystem={ ":root"="deny", ":minimal"="read", ":workspace_roots"={"."="write"}, ":tmpdir"="deny", ":slash_tmp"="deny" }',
+                    'permissions.t3-agent-conversation.filesystem={ ":root"="read", ":minimal"="read", ":workspace_roots"={"."="write"}, ":tmpdir"="write", ":slash_tmp"="write" }',
                     "-c",
-                    "permissions.t3-agent-conversation.network.enabled=false",
+                    "permissions.t3-agent-conversation.network.enabled=true",
                     "-c",
                     "project_doc_max_bytes=0",
                     "-c",
@@ -1735,16 +1735,16 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                     permissions: {
                       "t3-agent-conversation": {
                         filesystem: {
-                          ":root": "deny",
+                          ":root": "read",
                           ":minimal": "read",
                           ":workspace_roots": { ".": "write" },
-                          ":tmpdir": "deny",
-                          ":slash_tmp": "deny",
+                          ":tmpdir": "write",
+                          ":slash_tmp": "write",
                           ...Object.fromEntries(
                             nativeSkillPaths.map((directory) => [directory, "read"]),
                           ),
                         },
-                        network: { enabled: false },
+                        network: { enabled: true },
                       },
                     },
                   }

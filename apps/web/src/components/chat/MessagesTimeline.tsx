@@ -353,11 +353,22 @@ const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FADE_HEADER = (
   <div className="h-[var(--workspace-titlebar-scroll-fade-height)]" />
 );
-function TimelineListFooter({ composerInset }: { readonly composerInset: number }) {
+function TimelineListFooter({
+  composerInset,
+  children,
+}: {
+  readonly composerInset: number;
+  readonly children?: ReactNode;
+}) {
   return (
-    <div aria-hidden>
-      <div style={{ height: composerInset }} />
-      <div className="h-3 sm:h-4" />
+    <div>
+      {children ? (
+        <div className="messages-timeline-row-frame">
+          <div className="chat-content-lane">{children}</div>
+        </div>
+      ) : null}
+      <div aria-hidden style={{ height: composerInset }} />
+      <div aria-hidden className="h-3 sm:h-4" />
     </div>
   );
 }
@@ -396,6 +407,7 @@ export interface MessagesTimelineHistoryControls {
 
 interface MessagesTimelineProps {
   agentName?: string | undefined;
+  bottomAccessory?: ReactNode;
   citationRequest?: AssistantCitationRequest | null;
   citationHistoryLoading?: boolean;
   onCiteAssistantText?: (
@@ -482,6 +494,7 @@ interface MessagesTimelineProps {
 
 export const MessagesTimeline = memo(function MessagesTimeline({
   agentName,
+  bottomAccessory,
   citationRequest = null,
   citationHistoryLoading = false,
   onCiteAssistantText,
@@ -959,8 +972,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [shouldRestoreVisibleContentPosition],
   );
   const timelineListFooter = useMemo(
-    () => <TimelineListFooter composerInset={anchoredEndSpace ? 0 : contentInsetEndAdjustment} />,
-    [anchoredEndSpace, contentInsetEndAdjustment],
+    () => (
+      <TimelineListFooter composerInset={anchoredEndSpace ? 0 : contentInsetEndAdjustment}>
+        {bottomAccessory}
+      </TimelineListFooter>
+    ),
+    [anchoredEndSpace, contentInsetEndAdjustment, bottomAccessory],
   );
 
   const measureContentOverflow = useCallback(
@@ -2762,7 +2779,11 @@ function WorkflowVerificationCard({
   const ctx = use(TimelineRowCtx);
   const phasePresentation =
     item.phase === "approved"
-      ? { label: "Verified", className: "text-success-foreground", dot: "bg-success" }
+      ? {
+          label: item.reviewOnly ? "Approved" : "Verified",
+          className: "text-success-foreground",
+          dot: "bg-success",
+        }
       : item.phase === "changes_requested"
         ? {
             label: "Changes requested",
@@ -2771,7 +2792,7 @@ function WorkflowVerificationCard({
           }
         : item.phase === "needs_human"
           ? {
-              label: "Needs human",
+              label: item.reviewOnly ? "Review failed" : "Needs human",
               className: "text-destructive-foreground",
               dot: "bg-destructive",
             }
@@ -2798,7 +2819,9 @@ function WorkflowVerificationCard({
         <ShieldCheckIcon aria-hidden className={cn("size-4", phasePresentation.className)} />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-            <span className="text-sm font-medium">Verification · revision {item.revision}</span>
+            <span className="text-sm font-medium">
+              {item.reviewOnly ? "Review · round" : "Verification · revision"} {item.revision}
+            </span>
             <span
               className={cn("inline-flex items-center gap-1 text-xs", phasePresentation.className)}
             >
@@ -2809,8 +2832,8 @@ function WorkflowVerificationCard({
           <p className="truncate text-xs text-muted-foreground">{item.profileName}</p>
         </div>
         <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
-          {passedChecks}/{item.configuredChecks.length} checks · {approvedReviews}/
-          {item.reviewerLabels.length} approvals
+          {!item.reviewOnly && `${passedChecks}/${item.configuredChecks.length} checks · `}
+          {approvedReviews}/{item.reviewerLabels.length} approvals
         </span>
       </div>
 

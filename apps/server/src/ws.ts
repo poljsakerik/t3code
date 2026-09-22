@@ -2963,6 +2963,10 @@ const makeWsRpcLayer = (
         [WS_METHODS.agentSkillsSearch]: (input) => searchAgentSkills(input),
         [WS_METHODS.agentSkillsInstall]: (input) => agentDefinitions.installSkill(input),
         [WS_METHODS.agentSkillsRemove]: (input) => agentDefinitions.removeSkill(input),
+        [WS_METHODS.agentDefinitionsCatalog]: (input) =>
+          observeRpcEffect(WS_METHODS.agentDefinitionsCatalog, agentDefinitions.catalog(input), {
+            "rpc.aggregate": "workspace",
+          }),
         [WS_METHODS.agentDefinitionsList]: (input) =>
           observeRpcEffect(WS_METHODS.agentDefinitionsList, agentDefinitions.list(input), {
             "rpc.aggregate": "workspace",

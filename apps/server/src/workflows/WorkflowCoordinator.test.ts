@@ -17,7 +17,9 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
+import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
+import { OrchestratorDispatchError } from "../orchestration-v2/Orchestrator.ts";
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
 import { ProcessRunner } from "../processRunner.ts";
 import { allWorkflowReviewsApprove, evaluateWorkflowFailure, live } from "./WorkflowCoordinator.ts";
@@ -121,10 +123,11 @@ it("requires every configured review result to approve", () => {
   );
 });
 
-for (const completedAtStartup of [false, true]) {
+for (const startup of ["running", "completed", "unstarted"] as const) {
+  const completedAtStartup = startup === "completed";
   for (const verdict of ["approve", "request_changes"] as const) {
     it.effect(
-      `collects ${completedAtStartup ? "already completed" : "running"} reviewer completions and advances to ${verdict === "approve" ? "done" : "revising"}`,
+      `collects ${startup} reviewer completions and advances to ${verdict === "approve" ? "done" : "revising"}`,
       () =>
         Effect.gen(function* () {
           const parentId = ThreadId.make("workflow-parent");
@@ -134,7 +137,6 @@ for (const completedAtStartup of [false, true]) {
           const events = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
           const reads = yield* Queue.unbounded<ThreadId>();
           const commands = yield* Queue.unbounded<OrchestrationV2Command>();
-          const starts = yield* Queue.unbounded<ThreadId>();
           let current: ThreadWorkflowState = {
             ...workflow,
             status: "reviewing",
@@ -148,6 +150,7 @@ for (const completedAtStartup of [false, true]) {
               error: null,
             })),
           };
+          let started = startup !== "unstarted";
           const completed = new Set<ThreadId>(completedAtStartup ? reviewerIds : []);
           const threads = Layer.mock(ThreadManagementService)({
             getShellSnapshot: () =>
@@ -177,12 +180,14 @@ for (const completedAtStartup of [false, true]) {
                             relationshipToParent: "subagent",
                           },
                         },
-                        runs: [
-                          {
-                            id: RunId.make(`run-${id}`),
-                            status: completed.has(id) ? "completed" : "running",
-                          },
-                        ],
+                        runs: !started
+                          ? []
+                          : [
+                              {
+                                id: RunId.make(`run-${id}`),
+                                status: completed.has(id) ? "completed" : "running",
+                              },
+                            ],
                         messages: [
                           {
                             runId: RunId.make(`run-${id}`),
@@ -220,11 +225,20 @@ for (const completedAtStartup of [false, true]) {
                 if (command.type === "thread.create")
                   return yield* Effect.die("Reviewers must not create top-level threads");
                 if (command.type === "workflow.update") {
+                  if (command.commandId.endsWith(":resume-reviewers")) {
+                    if (started) return { sequence: 1, storedEvents: [] };
+                    started = true;
+                    yield* Queue.offer(events, {
+                      type: "thread.workflow-updated",
+                      threadId: parentId,
+                    } as OrchestrationV2DomainEvent);
+                  }
                   current = command.workflow;
                   yield* Queue.offer(commands, command);
                 } else if (command.type === "message.dispatch" && command.threadId !== parentId) {
-                  assert.deepEqual(command.workflowSkillAllowlist, []);
-                  yield* Queue.offer(starts, command.threadId);
+                  return yield* Effect.die(
+                    "Reviewer startup belongs to workflow.update, not the coordinator",
+                  );
                 } else {
                   yield* Queue.offer(commands, command);
                 }
@@ -247,9 +261,12 @@ for (const completedAtStartup of [false, true]) {
           });
 
           yield* Effect.gen(function* () {
-            // Resume the idempotent reviewer turns from persisted subagent state.
-            yield* Queue.take(starts);
-            yield* Queue.take(starts);
+            if (startup === "unstarted") {
+              const resumed = yield* Queue.take(commands);
+              assert.equal(resumed.type, "workflow.update");
+              assert.isTrue(resumed.commandId.endsWith(":resume-reviewers"));
+            }
+            // Existing reviewer runs are collected without dispatching another turn.
             for (let index = 0; index < 2; index++) yield* Queue.take(reads);
             if (!completedAtStartup) {
               completed.add(reviewerIds[0]!);
@@ -290,3 +307,59 @@ for (const completedAtStartup of [false, true]) {
     );
   }
 }
+
+it.effect("marks workflow launch failures as needs-human without launching a repair turn", () =>
+  Effect.gen(function* () {
+    const threadId = ThreadId.make("workflow-launch-failed");
+    const commands = yield* Queue.unbounded<OrchestrationV2Command>();
+    const threads = Layer.mock(ThreadManagementService)({
+      getShellSnapshot: () =>
+        Effect.succeed({
+          threads: [{ id: threadId, workflow }],
+          archivedThreads: [],
+        } as unknown as OrchestrationV2ThreadShellSnapshot),
+      getThreadProjection: () =>
+        Effect.succeed({
+          thread: { id: threadId, workflow },
+          runs: [{ id: workflow.candidateRunId, status: "completed" }],
+          plans: [
+            { id: workflow.approvedPlanId, kind: "proposed_plan", markdown: "Approved plan" },
+          ],
+        } as unknown as OrchestrationV2ThreadProjection),
+      dispatch: (command) => {
+        if (command.type === "workflow.update" && command.workflow.status === "reviewing") {
+          return Effect.fail(
+            new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "Reviewer provider unavailable",
+            }),
+          );
+        }
+        return Queue.offer(commands, command).pipe(Effect.as({ sequence: 1, storedEvents: [] }));
+      },
+      streamDomainEvents: Stream.never,
+    });
+    const processes = Layer.mock(ProcessRunner)({
+      run: () =>
+        Effect.succeed({
+          stdout: "",
+          stderr: "",
+          code: ChildProcessSpawner.ExitCode(0),
+          timedOut: false,
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          stdoutInvalidUtf8: false,
+          stderrInvalidUtf8: false,
+        }),
+    });
+    yield* Effect.gen(function* () {
+      const result = yield* Queue.take(commands);
+      assert.equal(result.type, "workflow.update");
+      if (result.type !== "workflow.update") return;
+      assert.equal(result.workflow.status, "needs_human");
+      assert.include(result.workflow.terminalReason ?? "", "Could not start reviewers");
+      assert.isEmpty(result.workflow.reviews);
+    }).pipe(Effect.provide(live.pipe(Layer.provide(Layer.mergeAll(threads, processes)))));
+  }),
+);

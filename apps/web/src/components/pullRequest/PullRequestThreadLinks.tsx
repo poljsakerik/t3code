@@ -196,6 +196,10 @@ function ThreadPicker({
   const search = query.trim().toLocaleLowerCase();
   const candidates = threads
     .filter(
+      (thread): thread is typeof thread & { projectId: NonNullable<typeof thread.projectId> } =>
+        thread.projectId !== null,
+    )
+    .filter(
       (thread) =>
         thread.environmentId === environmentId &&
         thread.archivedAt === null &&

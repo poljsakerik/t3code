@@ -500,7 +500,11 @@ function latestStableRun(
 ): OrchestrationV2Run | null {
   return (
     projection.runs
-      .filter((run) => run.status === "completed" && run.checkpointId !== null)
+      .filter(
+        (run) =>
+          run.status === "completed" &&
+          (projection.thread.agent !== undefined || run.checkpointId !== null),
+      )
       .toSorted((left, right) => right.ordinal - left.ordinal)[0] ?? null
   );
 }
@@ -1395,29 +1399,32 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : null;
       const activeHandoff = handoff ?? legacyImportRecoveryHandoff;
       const checkpointScope =
-        storedCheckpointScope ??
-        (yield* runtimePolicy
-          .resolve({ thread: projection.thread, modelSelection: queuedRun.modelSelection })
-          .pipe(
-            Effect.flatMap((resolvedRuntimePolicy) =>
-              checkpointService.prepareRootRunScope({
-                threadId,
-                runId: queuedRun.id,
-                rootNodeId: rootNode.id,
-                providerThreadId: queuedProviderThread.id,
-                cwd: resolvedRuntimePolicy.cwd ?? projection.thread.worktreePath ?? process.cwd(),
-                createdAt: now,
-              }),
-            ),
-            Effect.mapError(
-              (cause) =>
-                new OrchestratorDispatchError({
-                  commandId,
-                  commandType: "message.dispatch",
-                  cause,
-                }),
-            ),
-          ));
+        projection.thread.agent !== undefined
+          ? null
+          : (storedCheckpointScope ??
+            (yield* runtimePolicy
+              .resolve({ thread: projection.thread, modelSelection: queuedRun.modelSelection })
+              .pipe(
+                Effect.flatMap((resolvedRuntimePolicy) =>
+                  checkpointService.prepareRootRunScope({
+                    threadId,
+                    runId: queuedRun.id,
+                    rootNodeId: rootNode.id,
+                    providerThreadId: queuedProviderThread.id,
+                    cwd:
+                      resolvedRuntimePolicy.cwd ?? projection.thread.worktreePath ?? process.cwd(),
+                    createdAt: now,
+                  }),
+                ),
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestratorDispatchError({
+                      commandId,
+                      commandType: "message.dispatch",
+                      cause,
+                    }),
+                ),
+              )));
       const providerSessionId =
         (!canResumeAcrossInstances &&
         queuedProviderThread.providerSessionId !== null &&
@@ -1534,7 +1541,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               summary: activeHandoff.summaryText,
             };
       const checkpointEvents: ReadonlyArray<Omit<OrchestrationV2DomainEvent, "id">> =
-        storedCheckpointScope === undefined
+        storedCheckpointScope === undefined && checkpointScope !== null
           ? [
               {
                 type: "checkpoint-scope.created",
@@ -2036,9 +2043,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       "orchestration_v2.driver": command.modelSelection.instanceId,
     });
 
+    if (
+      (command.projectId === null) !== (command.agent !== undefined) ||
+      (command.agent !== undefined &&
+        (command.branch !== null ||
+          command.worktreePath !== null ||
+          command.workflowProfileId !== undefined))
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause:
+          "A thread must have exactly one owner; agent conversations cannot have a project workspace or workflow.",
+      });
+    }
     const now = yield* DateTime.now;
     const workflowConfig =
-      command.workflowProfileId === undefined
+      command.workflowProfileId === undefined || command.projectId === null
         ? undefined
         : yield* Option.match(workflowConfigs, {
             onNone: () =>
@@ -2052,7 +2073,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             onSome: (service) =>
               service
                 .resolveProfile({
-                  projectId: command.projectId,
+                  projectId: command.projectId!,
                   profileId: command.workflowProfileId!,
                 })
                 .pipe(mapDispatchError(command)),
@@ -2064,6 +2085,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       creationSource: command.creationSource,
       id: command.threadId,
       projectId: command.projectId,
+      ...(command.agent === undefined ? {} : { agent: command.agent }),
       title: command.title,
       providerInstanceId: plannerSelection.instanceId,
       modelSelection: plannerSelection,
@@ -2516,6 +2538,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Thread ${command.threadId} is deleted.`,
       });
     }
+    if (
+      thread.agent !== undefined &&
+      (command.type === "thread.model-selection.set" ||
+        command.type === "provider.switch" ||
+        command.type === "thread.runtime-mode.set" ||
+        command.type === "thread.interaction-mode.set" ||
+        command.type.startsWith("thread.pull-request") ||
+        (command.type === "thread.metadata.update" &&
+          (command.branch !== undefined ||
+            command.worktreePath !== undefined ||
+            command.linkedPullRequest !== undefined)))
+    )
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause:
+          "Agent conversations keep their saved model and execution policy and have no project workspace.",
+      });
     if (
       command.type === "thread.metadata.update" &&
       command.expectedWorktreePath !== undefined &&
@@ -4178,38 +4218,44 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               }),
           ),
         );
-      const checkpointScope = yield* checkpointService
-        .prepareRootRunScope({
-          threadId: input.command.threadId,
-          runId: targetRun.id,
-          rootNodeId: nextRootNodeId,
-          providerThreadId: restartProviderThread.id,
-          cwd:
-            resolvedRuntimePolicy.cwd ??
-            input.projection.thread.worktreePath ??
-            session.providerSession.cwd,
-          createdAt: now,
-        })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new OrchestratorDispatchError({
-                commandId: input.command.commandId,
-                commandType: input.command.type,
-                cause,
-              }),
-          ),
-        );
-      const ensuredCheckpointScope = yield* checkpointService.ensureScope(checkpointScope).pipe(
-        Effect.mapError(
-          (cause) =>
-            new OrchestratorDispatchError({
-              commandId: input.command.commandId,
-              commandType: input.command.type,
-              cause,
-            }),
-        ),
-      );
+      const checkpointScope =
+        input.projection.thread.agent !== undefined
+          ? null
+          : yield* checkpointService
+              .prepareRootRunScope({
+                threadId: input.command.threadId,
+                runId: targetRun.id,
+                rootNodeId: nextRootNodeId,
+                providerThreadId: restartProviderThread.id,
+                cwd:
+                  resolvedRuntimePolicy.cwd ??
+                  input.projection.thread.worktreePath ??
+                  session.providerSession.cwd,
+                createdAt: now,
+              })
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestratorDispatchError({
+                      commandId: input.command.commandId,
+                      commandType: input.command.type,
+                      cause,
+                    }),
+                ),
+              );
+      const ensuredCheckpointScope =
+        checkpointScope === null
+          ? null
+          : yield* checkpointService.ensureScope(checkpointScope).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestratorDispatchError({
+                    commandId: input.command.commandId,
+                    commandType: input.command.type,
+                    cause,
+                  }),
+              ),
+            );
       const restartedRun: OrchestrationV2Run = {
         ...targetRun,
         providerInstanceId: input.modelSelection.instanceId,
@@ -4247,7 +4293,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerTurnId: null,
         nativeItemRef: null,
         runtimeRequestId: null,
-        checkpointScopeId: ensuredCheckpointScope.id,
+        checkpointScopeId: ensuredCheckpointScope?.id ?? null,
         startedAt: null,
         completedAt: null,
       };
@@ -4346,15 +4392,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         occurredAt: now,
         payload: nextRootNode,
       });
-      yield* emitEvent({
-        type: "checkpoint-scope.created",
-        threadId: input.command.threadId,
-        runId: targetRun.id,
-        nodeId: nextRootNodeId,
-        providerInstanceId: input.modelSelection.instanceId,
-        occurredAt: now,
-        payload: ensuredCheckpointScope,
-      });
+      if (ensuredCheckpointScope !== null) {
+        yield* emitEvent({
+          type: "checkpoint-scope.created",
+          threadId: input.command.threadId,
+          runId: targetRun.id,
+          nodeId: nextRootNodeId,
+          providerInstanceId: input.modelSelection.instanceId,
+          occurredAt: now,
+          payload: ensuredCheckpointScope,
+        });
+      }
       yield* appendSteeringMessage({
         runId: targetRun.id,
         nodeId: nextRootNodeId,
@@ -4570,7 +4618,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (review) => review.reviewerThreadId === command.threadId,
       )?.reviewerId;
       const reviewer = parentWorkflow?.profile?.reviewers.find((agent) => agent.id === reviewerId);
-      const workflowSkillAllowlist = reviewer?.skills ?? command.workflowSkillAllowlist;
+      const workflowSkillAllowlist =
+        projection.thread.agent?.definition.skills ??
+        reviewer?.skills ??
+        command.workflowSkillAllowlist;
       const workflowAgent =
         reviewer ??
         (workflow?.profile === undefined
@@ -4579,7 +4630,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ? workflow.profile.planner
             : workflow.profile.implementer);
       const modelSelection =
-        workflowAgent?.modelSelection ?? command.modelSelection ?? projection.thread.modelSelection;
+        projection.thread.agent?.definition.modelSelection ??
+        workflowAgent?.modelSelection ??
+        command.modelSelection ??
+        projection.thread.modelSelection;
       if (workflow !== null && workflow.profile !== undefined) {
         if (workflow.status === "draft") {
           const now = yield* DateTime.now;
@@ -5026,7 +5080,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const attemptId = idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 });
         const rootNodeId = idAllocator.derive.rootNode({ runId });
         const checkpointScope =
-          activeRun.status === "preparing"
+          activeRun.status === "preparing" || projection.thread.agent !== undefined
             ? null
             : yield* runtimePolicy.resolve({ thread: projection.thread, modelSelection }).pipe(
                 Effect.flatMap((resolvedRuntimePolicy) =>
@@ -5384,7 +5438,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const attemptId = idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 });
         const rootNodeId = idAllocator.derive.rootNode({ runId });
         const checkpointScope =
-          dispatchMode.type === "defer_start"
+          dispatchMode.type === "defer_start" || projection.thread.agent !== undefined
             ? null
             : yield* runtimePolicy
                 .resolve({
@@ -6077,29 +6131,32 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     }),
                 ),
               );
-      const checkpointScope = yield* checkpointService
-        .prepareRootRunScope({
-          threadId: command.threadId,
-          runId,
-          rootNodeId,
-          providerThreadId: providerThread.id,
-          cwd:
-            resolvedRuntimePolicy.cwd ??
-            existingProviderSession?.cwd ??
-            projection.thread.worktreePath ??
-            process.cwd(),
-          createdAt: now,
-        })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new OrchestratorDispatchError({
-                commandId: command.commandId,
-                commandType: command.type,
-                cause,
-              }),
-          ),
-        );
+      const checkpointScope =
+        projection.thread.agent !== undefined
+          ? null
+          : yield* checkpointService
+              .prepareRootRunScope({
+                threadId: command.threadId,
+                runId,
+                rootNodeId,
+                providerThreadId: providerThread.id,
+                cwd:
+                  resolvedRuntimePolicy.cwd ??
+                  existingProviderSession?.cwd ??
+                  projection.thread.worktreePath ??
+                  process.cwd(),
+                createdAt: now,
+              })
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestratorDispatchError({
+                      commandId: command.commandId,
+                      commandType: command.type,
+                      cause,
+                    }),
+                ),
+              );
       const run: OrchestrationV2Run = {
         id: runId,
         threadId: command.threadId,
@@ -6156,7 +6213,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerTurnId: null,
         nativeItemRef: null,
         runtimeRequestId: null,
-        checkpointScopeId: checkpointScope.id,
+        checkpointScopeId: checkpointScope?.id ?? null,
         startedAt: null,
         completedAt: null,
       };
@@ -6476,24 +6533,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         occurredAt: now,
         payload: rootNode,
       });
-      yield* emitEvent({
-        type: "checkpoint-scope.created",
-        threadId: command.threadId,
-        runId,
-        nodeId: rootNodeId,
-        providerInstanceId: modelSelection.instanceId,
-        occurredAt: now,
-        payload: yield* checkpointService.ensureScope(checkpointScope).pipe(
-          Effect.mapError(
-            (cause) =>
-              new OrchestratorDispatchError({
-                commandId: command.commandId,
-                commandType: command.type,
-                cause,
-              }),
+      if (checkpointScope !== null) {
+        yield* emitEvent({
+          type: "checkpoint-scope.created",
+          threadId: command.threadId,
+          runId,
+          nodeId: rootNodeId,
+          providerInstanceId: modelSelection.instanceId,
+          occurredAt: now,
+          payload: yield* checkpointService.ensureScope(checkpointScope).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestratorDispatchError({
+                  commandId: command.commandId,
+                  commandType: command.type,
+                  cause,
+                }),
+            ),
           ),
-        ),
-      });
+        });
+      }
       if (handoffTurnItem !== null) {
         yield* emitEvent({
           type: "turn-item.updated",

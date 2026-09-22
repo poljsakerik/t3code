@@ -137,11 +137,14 @@ export function useThreadActionMenu(input: {
           autoSettleOptOut: readEnvironmentSupportsAutoSettleOptOut(threadRef.environmentId),
           snooze: readEnvironmentSupportsSnooze(threadRef.environmentId),
           pinning: readEnvironmentSupportsPinning(threadRef.environmentId),
-          titleRegeneration: readEnvironmentSupportsTitleRegeneration(threadRef.environmentId),
+          titleRegeneration:
+            thread.agent === undefined &&
+            readEnvironmentSupportsTitleRegeneration(threadRef.environmentId),
         };
         const isRegeneratingTitle = thread.titleRegeneration != null;
         const snoozePresets = resolveSnoozePresets(now, timestampFormat);
         const items = buildThreadActionMenuItems({
+          agentConversation: thread.agent !== undefined,
           branch: thread.branch ?? null,
           projectFilter: null,
           isPinned: thread.pinnedAt != null,
@@ -196,10 +199,11 @@ export function useThreadActionMenu(input: {
             return;
           }
           case "new-thread-on-branch": {
+            if (thread.projectId === null) return;
             // Explicit branch carry-over: reuse the thread's worktree when it
             // has one, otherwise its branch on the local checkout.
             const result = await settlePromise(() =>
-              handleNewThread(scopeProjectRef(threadRef.environmentId, thread.projectId), {
+              handleNewThread(scopeProjectRef(threadRef.environmentId, thread.projectId!), {
                 branch: thread.branch,
                 worktreePath: thread.worktreePath,
                 envMode: thread.worktreePath ? "worktree" : "local",

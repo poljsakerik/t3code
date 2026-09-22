@@ -69,7 +69,7 @@ export const linkCreatedPullRequest = <E>(input: {
     const thread = yield* engine
       .getThreadShell(input.threadId)
       .pipe(Effect.map(Option.fromNullishOr));
-    if (Option.isNone(thread)) return;
+    if (Option.isNone(thread) || thread.value.projectId === null) return;
     const project = Option.getOrUndefined(
       yield* snapshots.getProjectShellById(thread.value.projectId),
     );

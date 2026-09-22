@@ -53,6 +53,48 @@ function makeSnapshot(
 }
 
 describe("buildArchivedThreadGroups", () => {
+  it("keeps same-named agent histories separate after their source projects disappear", () => {
+    const conversation = makeThread({
+      id: ThreadId.make("agent-first"),
+      projectId: null,
+      title: "Essay",
+    });
+    const owner = {
+      agentId: ".t3/agents/writer",
+      sourceProjectId: ProjectId.make("removed-source"),
+      name: "Writer",
+    };
+    const result = buildArchivedThreadGroups({
+      snapshots: [
+        makeSnapshot(
+          [],
+          [
+            { ...conversation, agent: owner },
+            {
+              ...conversation,
+              id: ThreadId.make("agent-second"),
+              agent: { ...owner, sourceProjectId: null },
+            },
+          ],
+        ),
+        makeSnapshot(
+          [],
+          [{ ...conversation, agent: owner }],
+          EnvironmentId.make("other-environment"),
+        ),
+      ],
+      environmentLabels: {},
+      environmentId: null,
+      searchQuery: "writer",
+      sortOrder: "newest",
+    });
+    expect(result).toHaveLength(3);
+    expect(result.every((group) => group.project === null && group.threads.length === 1)).toBe(
+      true,
+    );
+    expect(new Set(result.map((group) => group.key)).size).toBe(3);
+  });
+
   it("groups archived threads by project and sorts newest first", () => {
     const project = makeProject({ id: ProjectId.make("project-1"), title: "T3 Code" });
     const older = makeThread({
@@ -110,7 +152,7 @@ describe("buildArchivedThreadGroups", () => {
     });
 
     expect(result).toHaveLength(1);
-    expect(result[0]?.project.environmentId).toBe(environmentId);
+    expect(result[0]?.project?.environmentId).toBe(environmentId);
     expect(result[0]?.threads.map((thread) => thread.id)).toEqual(["thread-1"]);
   });
 

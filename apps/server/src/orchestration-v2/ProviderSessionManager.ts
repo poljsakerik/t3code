@@ -325,6 +325,8 @@ export const layerWithOptions = (
           return yield* Effect.gen(function* () {
             const settings = yield* serverSettings.value.getSettings;
             const thread = yield* projectionStore.getThread(threadId);
+            if (thread.agent !== undefined || thread.projectId === null)
+              return { browser: false, device: false };
             const entries = Object.values(settings.projectSettingsOverrides);
             const browserOverridden = entries.some(
               (entry) => entry.enableAgentBrowserAccess !== undefined,

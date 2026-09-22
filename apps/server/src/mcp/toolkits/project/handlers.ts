@@ -86,7 +86,7 @@ export const ProjectHandlersLive = ProjectToolkit.toLayer({
       const run = result.projection.runs.find((run) => run.userMessageId === messageId);
       return {
         threadId: thread.id,
-        projectId: thread.projectId,
+        projectId: input.projectId ?? caller.projectId,
         modelSelection: thread.modelSelection,
         runId: run?.id ?? null,
         status: run?.status ?? null,

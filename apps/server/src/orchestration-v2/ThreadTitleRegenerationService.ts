@@ -77,7 +77,10 @@ const make = Effect.gen(function* () {
         return { type: "stale" as const };
       }
 
-      const project = yield* projects.getById({ projectId: projection.thread.projectId });
+      const project =
+        projection.thread.projectId === null
+          ? Option.none()
+          : yield* projects.getById({ projectId: projection.thread.projectId });
       if (Option.isNone(project)) {
         return { type: "complete" as const };
       }

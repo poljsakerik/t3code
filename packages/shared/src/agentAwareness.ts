@@ -37,9 +37,10 @@ function buildAgentAwarenessDeepLink(input: {
 
 export interface ProjectThreadAwarenessV2Input {
   readonly environmentId: EnvironmentId;
-  readonly project: Pick<Project, "title">;
+  readonly project: Pick<Project, "title"> | null;
   readonly thread: Pick<
     OrchestrationV2ThreadShell,
+    | "agent"
     | "activityRunStatus"
     | "id"
     | "lineage"
@@ -70,7 +71,7 @@ export function projectThreadAwarenessV2(
   return {
     environmentId,
     threadId: thread.id,
-    projectTitle: project.title,
+    projectTitle: thread.agent?.name ?? project?.title ?? "Agent",
     threadTitle: thread.title,
     phase,
     headline: headlineForPhase(phase),

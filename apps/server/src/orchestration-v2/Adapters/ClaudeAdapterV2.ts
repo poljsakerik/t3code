@@ -1,6 +1,7 @@
 import * as NodeCrypto from "node:crypto";
 
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
+import { retainConversationAttachments } from "../../agents/AgentConversationResources.ts";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import { normalizeClaudeTurnTokenUsage } from "../../provider/ClaudeTurnTokenUsage.ts";
 import {
@@ -715,6 +716,10 @@ export const claudeAgentSdkQueryRunnerLiveLayer: Layer.Layer<
 );
 
 export function makeClaudeQueryOptions(input: {
+  readonly detachedConversation?: boolean;
+  readonly conversationSkillDirectories?: ReadonlyArray<string>;
+  readonly agentInstructions?: string | undefined;
+  readonly conversationFilesystemRoot?: string;
   readonly modelSelection: ModelSelection;
   readonly nativeThreadId: string;
   readonly resume: boolean;
@@ -829,6 +834,49 @@ export function makeClaudeQueryOptions(input: {
     },
     ...(Object.keys(extraArgs).length === 0 ? {} : { extraArgs }),
   };
+  if (input.detachedConversation && input.cwd !== null) {
+    return {
+      ...options,
+      cwd: input.cwd,
+      additionalDirectories: [],
+      settingSources: [],
+      mcpServers: {},
+      strictMcpConfig: true,
+      plugins: [],
+      extraArgs: {},
+      systemPrompt: input.agentInstructions ?? "",
+      permissionMode: "default",
+      allowDangerouslySkipPermissions: false,
+      allowedTools: [],
+      tools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Skill", "AskUserQuestion"],
+      settings: { disableAllHooks: true },
+      sandbox: {
+        enabled: true,
+        failIfUnavailable: true,
+        allowUnsandboxedCommands: false,
+        autoAllowBashIfSandboxed: true,
+        filesystem: {
+          denyRead: [input.conversationFilesystemRoot ?? "/"],
+          allowRead: [
+            input.cwd,
+            ...(input.conversationSkillDirectories ?? []),
+            "/usr",
+            "/bin",
+            "/System",
+            "/Library",
+          ],
+          allowWrite: [input.cwd],
+        },
+        network: {
+          allowedDomains: [],
+          deniedDomains: ["*"],
+          strictAllowlist: true,
+          allowAllUnixSockets: false,
+          allowLocalBinding: false,
+        },
+      },
+    };
+  }
   const additionalDirectories = [
     ...(input.cwd === null ? [] : [input.cwd]),
     ...(input.attachmentsDir === undefined ? [] : [input.attachmentsDir]),
@@ -5717,6 +5765,7 @@ export function makeClaudeAdapterV2(
           yield* handleRoutedSdkMessage(input);
         });
 
+        let conversationSkillDirectories: ReadonlyArray<string> = [];
         const canUseToolEffect = Effect.fn("ClaudeAdapterV2.canUseTool")(function* (
           toolName: Parameters<CanUseTool>[0],
           toolInput: Parameters<CanUseTool>[1],
@@ -5731,6 +5780,57 @@ export function makeClaudeAdapterV2(
             } satisfies PermissionResult;
           }
 
+          if (
+            context.input.runtimePolicy.detachedConversation &&
+            !["AskUserQuestion", "Skill", "Bash"].includes(toolName)
+          ) {
+            const cwd = context.input.runtimePolicy.cwd;
+            const requested = firstStringInputField(claudeNativeToolInputFromRecord(toolInput), [
+              "file_path",
+              "path",
+            ]);
+            const requestedPath = cwd === null ? null : path.resolve(cwd, requested ?? ".");
+            const target =
+              requestedPath === null
+                ? null
+                : yield* fileSystem.realPath(requestedPath).pipe(
+                    Effect.catch(() =>
+                      fileSystem
+                        .realPath(path.dirname(requestedPath))
+                        .pipe(
+                          Effect.map((parent) => path.join(parent, path.basename(requestedPath))),
+                        ),
+                    ),
+                    Effect.orElseSucceed(() => null),
+                  );
+            const roots = [
+              cwd,
+              ...(["Read", "Glob", "Grep"].includes(toolName) ? conversationSkillDirectories : []),
+            ];
+            const allowed =
+              target !== null &&
+              roots.some((root) => {
+                if (root === null) return false;
+                const relative = path.relative(root, target);
+                return (
+                  relative !== ".." &&
+                  !relative.startsWith(`..${path.sep}`) &&
+                  !path.isAbsolute(relative)
+                );
+              });
+            if (!allowed) {
+              return {
+                behavior: "deny",
+                message: "Agent conversations can access only their own files and retained skills.",
+                toolUseID: callbackOptions.toolUseID,
+              } satisfies PermissionResult;
+            }
+            return {
+              behavior: "allow",
+              updatedInput: toolInput,
+              toolUseID: callbackOptions.toolUseID,
+            } satisfies PermissionResult;
+          }
           const nativeRequestId = callbackOptions.toolUseID;
           const nativeToolInput = claudeNativeToolInputFromRecord(toolInput);
           // While root output awaits its prompt echo, the tool's streamed
@@ -6037,6 +6137,39 @@ export function makeClaudeAdapterV2(
                   .map((skill) => encodeURIComponent(skill))
                   .join(",")
           }`;
+          if (turnInput.runtimePolicy.detachedConversation) {
+            const skills = yield* discoverClaudeSkills(
+              adapterOptions.settings,
+              turnInput.runtimePolicy.cwd ?? undefined,
+              adapterOptions.environment,
+            ).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, path),
+            );
+            const selected = turnInput.runtimePolicy.workflowSkillAllowlist ?? [];
+            const missing = selected.filter(
+              (name) => !skills.some((skill) => skill.name === name && skill.enabled),
+            );
+            if (missing.length > 0)
+              return yield* new ProviderAdapterProtocolError({
+                driver: CLAUDE_PROVIDER,
+                detail: `Assigned Claude skills are unavailable: ${missing.join(", ")}`,
+              });
+            conversationSkillDirectories = yield* Effect.forEach(
+              skills.filter((skill) => selected.includes(skill.name)),
+              (skill) =>
+                fileSystem.realPath(path.dirname(skill.path)).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderAdapterProtocolError({
+                        driver: CLAUDE_PROVIDER,
+                        detail: `Could not open skill ${skill.name}`,
+                        payload: cause,
+                      }),
+                  ),
+                ),
+            );
+          }
           const compiledSelection = compileClaudeModelSelection(turnInput.modelSelection);
           const resumeSessionAt = yield* getNativeConversationHeadId(turnInput.providerThread);
           const existing = yield* Ref.get(queryContext);
@@ -6084,6 +6217,15 @@ export function makeClaudeAdapterV2(
                 resume: shouldResume,
                 ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
                 cwd: turnInput.runtimePolicy.cwd,
+                ...(turnInput.runtimePolicy.detachedConversation
+                  ? {
+                      detachedConversation: true,
+                      conversationSkillDirectories,
+                      agentInstructions: turnInput.runtimePolicy.agentInstructions,
+                      conversationFilesystemRoot: path.parse(turnInput.runtimePolicy.cwd ?? "/")
+                        .root,
+                    }
+                  : {}),
                 attachmentsDir,
                 settings: adapterOptions.settings,
                 environment: adapterOptions.environment,
@@ -6259,7 +6401,25 @@ export function makeClaudeAdapterV2(
                     compileClaudeModelSelection(turnInput.modelSelection).promptEffort,
                   ),
                   attachments: turnInput.message.attachments,
-                  attachmentsDir,
+                  attachmentsDir:
+                    turnInput.runtimePolicy.detachedConversation &&
+                    turnInput.runtimePolicy.cwd !== null
+                      ? yield* retainConversationAttachments(
+                          fileSystem,
+                          turnInput.message.attachments,
+                          attachmentsDir,
+                          turnInput.runtimePolicy.cwd,
+                        ).pipe(
+                          Effect.mapError(
+                            (cause) =>
+                              new ProviderAdapterProtocolError({
+                                driver: CLAUDE_PROVIDER,
+                                detail: "Could not prepare conversation attachments.",
+                                payload: cause,
+                              }),
+                          ),
+                        )
+                      : attachmentsDir,
                   fileSystem,
                   skillNames: yield* userInvocableSkillNames(turnInput.runtimePolicy.cwd),
                   uuid: claudePromptUuid(turnInput.attemptId),

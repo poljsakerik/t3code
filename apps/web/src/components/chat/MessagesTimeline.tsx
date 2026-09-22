@@ -395,6 +395,7 @@ export interface MessagesTimelineHistoryControls {
 }
 
 interface MessagesTimelineProps {
+  agentName?: string | undefined;
   citationRequest?: AssistantCitationRequest | null;
   citationHistoryLoading?: boolean;
   onCiteAssistantText?: (
@@ -480,6 +481,7 @@ interface MessagesTimelineProps {
 // ---------------------------------------------------------------------------
 
 export const MessagesTimeline = memo(function MessagesTimeline({
+  agentName,
   citationRequest = null,
   citationHistoryLoading = false,
   onCiteAssistantText,
@@ -1273,10 +1275,28 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       return <div className="h-full min-h-0 bg-background" data-timeline-loading="true" />;
     }
     return (
-      <div className="flex h-full items-center justify-center">
-        <p className="text-sm text-muted-foreground/30">
-          Send a message to start the conversation.
-        </p>
+      <div
+        className={
+          agentName
+            ? "flex h-full items-center justify-center px-6 pb-24"
+            : "flex h-full items-center justify-center"
+        }
+      >
+        {agentName ? (
+          <div className="max-w-sm space-y-2 text-center">
+            <h2 className="text-xl font-medium tracking-tight text-foreground">
+              Chat with {agentName}
+            </h2>
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              Start with a question or a task. {agentName} brings its instructions and skills to
+              this conversation.
+            </p>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground/30">
+            Send a message to start the conversation.
+          </p>
+        )}
       </div>
     );
   }

@@ -78,6 +78,37 @@ const TestLayer = layerFromProjectRepository.pipe(
 );
 
 it.layer(TestLayer)("RuntimePolicyV2", (it) => {
+  it.effect("uses only the saved agent configuration for detached conversations", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      const definition = {
+        id: "writer",
+        name: "Writer",
+        instructions: "Write clearly.",
+        skills: ["writing"],
+        modelSelection,
+      };
+      const resolved = yield* policy.resolve({
+        thread: {
+          ...makeThread({ now, worktreePath: null }),
+          projectId: null,
+          agent: {
+            owner: { agentId: "writer", sourceProjectId: projectId, name: "Writer" },
+            definition,
+            directory: "/managed/writer",
+          },
+        },
+        modelSelection,
+      });
+      assert.equal(resolved.cwd, "/managed/writer");
+      assert.equal(resolved.agentInstructions, "Write clearly.");
+      assert.deepEqual(resolved.workflowSkillAllowlist, ["writing"]);
+      assert.isTrue(resolved.detachedConversation);
+      assert.equal(resolved.approvalPolicy, "never");
+    }),
+  );
+
   it.effect("uses the project root for local-checkout threads", () =>
     Effect.gen(function* () {
       const policy = yield* RuntimePolicyV2;

@@ -1,5 +1,11 @@
 import { MaterialListRow } from "../../components/MaterialListRow";
 import { ScreenHeader } from "../../components/ScreenHeader";
+import { useAtomValue } from "@effect/atom-react";
+import {
+  AgentConversations,
+  AgentModeTabs,
+  conversationModeAtom,
+} from "../agents/AgentConversations";
 import {
   StackActions,
   useIsFocused,
@@ -125,7 +131,19 @@ function NewTaskHeader(props: {
   );
 }
 
-export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRouteParams | undefined>) {
+export function NewTaskRouteScreen(props: StaticScreenProps<NewTaskRouteParams | undefined>) {
+  const mode = useAtomValue(conversationModeAtom);
+  return mode === "agents" && !props.route.params?.incomingShareId ? (
+    <View className="flex-1 bg-screen">
+      <AgentModeTabs restoreSelection={false} />
+      <AgentConversations />
+    </View>
+  ) : (
+    <CodeNewTaskRouteScreen {...props} />
+  );
+}
+
+function CodeNewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRouteParams | undefined>) {
   const projects = useProjects();
   const [searchText, setSearchText] = useState("");
   const { projectScopes, selectedEnvironmentId, setProject } = useNewTaskFlow();

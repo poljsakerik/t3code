@@ -122,7 +122,10 @@ export function FirstRunGate({
     bootstrapProjectCreated: serverWelcome?.bootstrapProjectCreated,
     bootstrapThreadCreated: serverWelcome?.bootstrapThreadCreated,
     projects,
-    threads,
+    threads: threads.filter(
+      (thread): thread is typeof thread & { projectId: NonNullable<typeof thread.projectId> } =>
+        thread.projectId !== null,
+    ),
   });
 
   const { decision: nextDecision, persistCompletion } = hostedStatic

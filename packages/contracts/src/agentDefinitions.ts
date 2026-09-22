@@ -153,3 +153,19 @@ export class AgentDefinitionError extends Schema.TaggedError<AgentDefinitionErro
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}
+
+/** Catalog identity survives deletion of the source project or definition. */
+export const AgentConversationOwner = Schema.Struct({
+  agentId: TrimmedNonEmptyString,
+  sourceProjectId: Schema.NullOr(ProjectId),
+  name: TrimmedNonEmptyString,
+});
+export type AgentConversationOwner = typeof AgentConversationOwner.Type;
+
+/** Server-owned snapshot. Authoring paths are never execution workspaces. */
+export const AgentConversation = Schema.Struct({
+  owner: AgentConversationOwner,
+  definition: ResolvedAgentDefinition,
+  directory: TrimmedNonEmptyString,
+});
+export type AgentConversation = typeof AgentConversation.Type;

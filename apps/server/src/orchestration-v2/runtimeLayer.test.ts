@@ -1,7 +1,14 @@
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import {
+  AgentConversationLauncher,
+  layer as agentConversationLauncherLayer,
+} from "../agents/AgentConversationLaunch.ts";
+import { layer as agentReceiptLayer } from "./CommandReceiptStore.ts";
+import { layer as agentIdsLayer } from "./IdAllocator.ts";
 import { agentDefinitionKey } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import * as FileSystem from "effect/FileSystem";
 import { SourceControlProviderRegistry } from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -187,6 +194,12 @@ const TestProviderInstanceRegistry = Layer.succeed(ProviderInstanceRegistry, {
 });
 
 const TestLayer = Layer.mergeAll(
+  agentConversationLauncherLayer.pipe(
+    Layer.provide(OrchestrationV2LayerLive),
+    Layer.provide(ProjectionProjectRepositoryLive),
+    Layer.provide(agentReceiptLayer),
+    Layer.provide(agentIdsLayer),
+  ),
   OrchestrationV2LayerLive,
   OrchestrationV2EventSinkLayerLive,
   ProjectionProjectRepositoryLive,
@@ -200,7 +213,7 @@ const TestLayer = Layer.mergeAll(
   Layer.provide(TestProviderInstanceRegistry),
   Layer.provide(GitWorkflowTestLayer),
   Layer.provide(ProjectServiceTestLayer),
-  Layer.provide(PlatformTestLayer),
+  Layer.provideMerge(PlatformTestLayer),
 );
 
 const LegacyImportTestLayer = OrchestrationV2LayerLive.pipe(
@@ -389,6 +402,231 @@ const SharedApplicationDataPlaneTestLayer = Layer.merge(
 );
 
 it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
+  it.effect(
+    "rejects an instructions-only agent with an actionable error and creates no thread",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const projects = yield* ProjectionProjectRepository;
+        const launcher = yield* AgentConversationLauncher;
+        const orchestrator = yield* OrchestratorV2;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-unconfigured-agent-" });
+        const projectId = ProjectId.make("unconfigured-agent-project");
+        const threadId = ThreadId.make("unconfigured-agent-thread");
+        yield* fs.makeDirectory(path.join(root, ".t3/agents/writer"), { recursive: true });
+        yield* fs.writeFileString(
+          path.join(root, ".t3/agents/writer/instructions.md"),
+          "Write clearly.",
+        );
+        const now = "2026-09-22T00:00:00.000Z";
+        yield* projects.upsert({
+          projectId,
+          title: "Unconfigured agent",
+          workspaceRoot: root,
+          defaultModelSelection: null,
+          defaultThreadEnvMode: null,
+          autoPull: false,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+          deletedAt: null,
+        });
+        const failure = yield* launcher
+          .launch({
+            commandId: CommandId.make("launch-unconfigured-agent"),
+            threadId,
+            agent: { sourceProjectId: projectId, agentId: ".t3/agents/writer" },
+            title: "Writing",
+            createdBy: "user",
+            creationSource: "web",
+          })
+          .pipe(Effect.flip);
+        assert.include(failure.message, "agent.ts");
+        assert.include(failure.message, "model");
+        assert.isNull(yield* orchestrator.getThreadShell(threadId));
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "launches from an authored definition, retries idempotently, and keeps its snapshot after source edits",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const projects = yield* ProjectionProjectRepository;
+        const launcher = yield* AgentConversationLauncher;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-agent-launch-" });
+        const projectId = ProjectId.make("agent-source-project");
+        const threadId = ThreadId.make("agent-launched-thread");
+        yield* fs.makeDirectory(path.join(root, ".t3/agents/writer"), { recursive: true });
+        yield* fs.writeFileString(
+          path.join(root, ".t3/agents/writer/agent.ts"),
+          'export default { model: "anthropic/claude-sonnet-4-6" };',
+        );
+        yield* fs.writeFileString(
+          path.join(root, ".t3/agents/writer/instructions.md"),
+          "Write clearly.",
+        );
+        const now = "2026-09-21T00:00:00.000Z";
+        yield* projects.upsert({
+          projectId,
+          title: "Source",
+          workspaceRoot: root,
+          defaultModelSelection: null,
+          defaultThreadEnvMode: null,
+          autoPull: false,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+          deletedAt: null,
+        });
+        const input = {
+          commandId: CommandId.make("launch-agent"),
+          threadId,
+          agent: { sourceProjectId: projectId, agentId: ".t3/agents/writer" },
+          title: "Writing",
+          createdBy: "user",
+          creationSource: "web",
+          initialMessage: { text: "Help with an essay.", attachments: [] },
+        } as const;
+        const first = yield* launcher.launch(input);
+        assert.deepEqual(first.projection.thread.modelSelection, claudeModelSelection);
+        assert.equal(first.projection.thread.agent?.definition.instructions, "Write clearly.");
+        assert.isNull(first.projection.thread.projectId);
+        assert.deepEqual(first.projection.checkpointScopes, []);
+        assert.equal(first.projection.messages.length, 1);
+        yield* fs.writeFileString(
+          path.join(root, ".t3/agents/writer/instructions.md"),
+          "Use the revised style.",
+        );
+        const second = yield* launcher.launch({
+          ...input,
+          commandId: CommandId.make("launch-agent-second"),
+          threadId: ThreadId.make("agent-second-thread"),
+        });
+        assert.equal(
+          second.projection.thread.agent?.definition.instructions,
+          "Use the revised style.",
+        );
+        assert.notEqual(
+          second.projection.thread.agent?.directory,
+          first.projection.thread.agent?.directory,
+        );
+        yield* fs.remove(path.join(root, ".t3"), { recursive: true });
+        yield* projects.upsert({
+          projectId,
+          title: "Source",
+          workspaceRoot: root,
+          defaultModelSelection: null,
+          defaultThreadEnvMode: null,
+          autoPull: false,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+          deletedAt: now,
+        });
+        const retry = yield* launcher.launch(input);
+        assert.isTrue(retry.resumed);
+        assert.equal(retry.projection.messages.length, 1);
+        assert.equal(
+          retry.projection.thread.agent?.directory,
+          first.projection.thread.agent?.directory,
+        );
+        assert.equal(retry.projection.thread.agent?.definition.instructions, "Write clearly.");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("preserves an agent owner and fixed setup without a project or checkpoint scope", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* OrchestratorV2;
+      const threadId = ThreadId.make("detached-writer");
+      const agent = {
+        owner: { agentId: ".t3/agents/writer", sourceProjectId: null, name: "Writer" },
+        definition: {
+          id: ".t3/agents/writer",
+          name: "Writer",
+          instructions: "Write clearly.",
+          skills: [],
+          modelSelection: claudeModelSelection,
+        },
+        directory: "/managed/conversations/writer",
+      };
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("create-detached-writer"),
+        threadId,
+        projectId: null,
+        agent,
+        title: "A writing conversation",
+        modelSelection: claudeModelSelection,
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("send-detached-writer"),
+        threadId,
+        messageId: MessageId.make("writer-message"),
+        text: "Help with an essay.",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(projection.thread.agent, agent);
+      assert.isNull(projection.thread.projectId);
+      assert.deepEqual(projection.runs[0]?.modelSelection, claudeModelSelection);
+      assert.deepEqual(projection.checkpointScopes, []);
+      const shell = yield* orchestrator.getThreadShell(threadId);
+      assert.deepEqual(shell?.agent, agent.owner);
+      assert.isNull(shell?.projectId);
+      const rejected = yield* orchestrator
+        .dispatch({
+          type: "thread.model-selection.set",
+          commandId: CommandId.make("change-detached-model"),
+          threadId,
+          modelSelection,
+        })
+        .pipe(Effect.flip);
+      assert.equal(rejected._tag, "OrchestratorDispatchError");
+      const sink = yield* EventSinkV2;
+      const now = yield* DateTime.now;
+      const run = projection.runs[0]!;
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("detached-writer-completed"),
+            type: "run.updated",
+            threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: { ...run, status: "completed", completedAt: now },
+          },
+        ],
+      });
+      const reviewRejected = yield* orchestrator
+        .dispatch({
+          type: "thread.review",
+          commandId: CommandId.make("review-detached-writer"),
+          threadId,
+          runId: run.id,
+          agents: [{ projectId: ProjectId.make("source-project"), agentId: ".t3/agents/writer" }],
+          createdBy: "user",
+          creationSource: "web",
+        })
+        .pipe(Effect.flip);
+      assert.equal(reviewRejected._tag, "OrchestratorDispatchError");
+      assert.deepEqual((yield* orchestrator.getThreadProjection(threadId)).subagents, []);
+    }),
+  );
+
   it.effect(
     "starts selected reviewers atomically and collects results without restarting completed work",
     () =>

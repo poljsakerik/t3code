@@ -1,3 +1,4 @@
+import { AgentConversationLauncher } from "../agents/AgentConversationLaunch.ts";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
@@ -57,7 +58,7 @@ export type ThreadLaunchWorkspaceStrategy =
     };
 
 export interface ThreadLaunchInitialMessage {
-  readonly messageId?: MessageId;
+  readonly messageId?: MessageId | undefined;
   readonly scheduledTaskId?: ScheduledTaskId;
   readonly senderThreadId?: ThreadId;
   readonly text: string;
@@ -65,7 +66,7 @@ export interface ThreadLaunchInitialMessage {
   readonly context?: import("@t3tools/contracts").OrchestrationMessageContext | undefined;
 }
 
-export interface ThreadLaunchInput {
+export interface ProjectThreadLaunchInput {
   readonly commandId: CommandId;
   readonly threadId?: ThreadId;
   readonly reuseExistingThread?: boolean;
@@ -90,6 +91,16 @@ export interface ThreadLaunchInput {
   readonly creationSource: OrchestrationV2CreationSource;
 }
 
+export type ThreadLaunchInput =
+  | ProjectThreadLaunchInput
+  | (Omit<
+      typeof import("@t3tools/contracts").AgentConversationLaunchInput.Type,
+      "creationSource"
+    > & {
+      readonly createdBy: OrchestrationV2Actor;
+      readonly creationSource: OrchestrationV2CreationSource;
+    });
+
 export interface ThreadLaunchResult {
   readonly threadId: ThreadId;
   readonly projection: OrchestrationV2ThreadProjection;
@@ -112,13 +123,15 @@ export class ThreadLaunchError extends Schema.TaggedError<ThreadLaunchError>()(
       "fail-run",
     ]),
     commandId: CommandId,
-    projectId: ProjectId,
+    projectId: Schema.NullOr(ProjectId),
     threadId: Schema.optional(ThreadId),
     cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
-    return `Thread launch ${this.commandId} failed during ${this.operation}.`;
+    return this.projectId === null && this.cause instanceof Error
+      ? `Could not start the agent conversation: ${this.cause.message}`
+      : `Thread launch ${this.commandId} failed during ${this.operation}.`;
   }
 }
 
@@ -144,6 +157,7 @@ function failureDetail(error: unknown): string {
 
 const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
+  const agentLauncher = yield* Effect.serviceOption(AgentConversationLauncher);
   const setupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
   const cloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
   const terminals = yield* TerminalManager.TerminalManager;
@@ -160,7 +174,11 @@ const make = Effect.gen(function* () {
   yield* Effect.addFinalizer(() => Scope.close(preparationScope, Exit.void));
 
   const mapError =
-    (input: ThreadLaunchInput, operation: ThreadLaunchError["operation"], threadId?: ThreadId) =>
+    (
+      input: ProjectThreadLaunchInput,
+      operation: ThreadLaunchError["operation"],
+      threadId?: ThreadId,
+    ) =>
     (cause: unknown) =>
       new ThreadLaunchError({
         operation,
@@ -170,13 +188,13 @@ const make = Effect.gen(function* () {
         cause,
       });
 
-  const readReceipt = (input: ThreadLaunchInput, commandId: CommandId) =>
+  const readReceipt = (input: ProjectThreadLaunchInput, commandId: CommandId) =>
     receipts
       .getByCommandId(commandId)
       .pipe(Effect.mapError(mapError(input, "read-receipt", input.threadId)));
 
   const validateReusableThread = Effect.fn("ThreadLaunchService.validateReusableThread")(function* (
-    input: ThreadLaunchInput,
+    input: ProjectThreadLaunchInput,
     threadId: ThreadId,
   ) {
     const projection = yield* threads
@@ -200,7 +218,7 @@ const make = Effect.gen(function* () {
   });
 
   const prepareInBackground = Effect.fn("ThreadLaunchService.prepareInBackground")(function* (
-    input: ThreadLaunchInput,
+    input: ProjectThreadLaunchInput,
     threadId: ThreadId,
     runId: RunId | null,
   ) {
@@ -539,7 +557,7 @@ const make = Effect.gen(function* () {
   });
 
   const failPreparedRun = (
-    input: ThreadLaunchInput,
+    input: ProjectThreadLaunchInput,
     threadId: ThreadId,
     runId: RunId | null,
     cause: unknown,
@@ -591,7 +609,7 @@ const make = Effect.gen(function* () {
     });
 
   const schedulePreparation = Effect.fn("ThreadLaunchService.schedulePreparation")(function* (
-    input: ThreadLaunchInput,
+    input: ProjectThreadLaunchInput,
     threadId: ThreadId,
     runId: RunId | null,
   ) {
@@ -612,6 +630,16 @@ const make = Effect.gen(function* () {
 
   const launch: ThreadLaunchService["Service"]["launch"] = Effect.fn("ThreadLaunchService.launch")(
     function* (input) {
+      if ("agent" in input) {
+        if (Option.isNone(agentLauncher))
+          return yield* new ThreadLaunchError({
+            operation: "create-thread",
+            commandId: input.commandId,
+            projectId: null,
+            cause: "Agent conversations are unavailable on this server.",
+          });
+        return yield* agentLauncher.value.launch(input);
+      }
       yield* ProjectCloneTracker.rejectCommandsDuringClone(cloneTracker, {
         type: "thread.create",
         projectId: input.projectId,

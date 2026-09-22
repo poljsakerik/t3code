@@ -1,3 +1,6 @@
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import { retainAgentSkill } from "../agents/AgentConversationResources.ts";
 import {
   ContextTransferId,
   OrchestrationV2Actor,
@@ -50,71 +53,113 @@ export class ThreadForkServiceV2 extends Context.Service<
   ThreadForkServiceV2Shape
 >()("t3/orchestration-v2/ThreadForkService/ThreadForkServiceV2") {}
 
-export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
+export const layer = Layer.effect(
   ThreadForkServiceV2,
-  ThreadForkServiceV2.of({
-    plan: (input) =>
-      Effect.gen(function* () {
-        if (input.sourceRun.status !== "completed") {
-          return yield* new ThreadForkPlanError({
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    return ThreadForkServiceV2.of({
+      plan: (input) =>
+        Effect.gen(function* () {
+          if (input.sourceRun.status !== "completed") {
+            return yield* new ThreadForkPlanError({
+              sourceThreadId: input.sourceProjection.thread.id,
+              targetThreadId: input.targetThreadId,
+              cause: `Fork source run ${input.sourceRun.id} is ${input.sourceRun.status}.`,
+            });
+          }
+          const sourceAgent = input.sourceProjection.thread.agent;
+          const agent =
+            sourceAgent === undefined
+              ? undefined
+              : yield* Effect.gen(function* () {
+                  const directory = yield* fs.makeTempDirectory({
+                    directory: path.dirname(sourceAgent.directory),
+                    prefix: "conversation-",
+                  });
+                  yield* retainAgentSkill(sourceAgent.directory, directory).pipe(
+                    Effect.provideService(FileSystem.FileSystem, fs),
+                    Effect.provideService(Path.Path, path),
+                    Effect.onError(() =>
+                      fs.remove(directory, { recursive: true }).pipe(Effect.ignore),
+                    ),
+                  );
+                  return {
+                    ...sourceAgent,
+                    directory,
+                    definition: {
+                      ...sourceAgent.definition,
+                      instructions: sourceAgent.definition.instructions.replaceAll(
+                        sourceAgent.directory,
+                        directory,
+                      ),
+                    },
+                  };
+                }).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ThreadForkPlanError({
+                        sourceThreadId: input.sourceProjection.thread.id,
+                        targetThreadId: input.targetThreadId,
+                        cause,
+                      }),
+                  ),
+                );
+          const targetThread: OrchestrationV2AppThread = {
+            ...input.sourceProjection.thread,
+            ...(agent === undefined ? {} : { agent }),
+            createdBy: input.createdBy,
+            creationSource: input.creationSource,
+            id: input.targetThreadId,
+            title: input.title ?? `${input.sourceProjection.thread.title} fork`,
+            activeProviderThreadId: null,
+            // A fork is an ordinary exploratory thread unless a workflow is
+            // explicitly created for it. Reviewer forks must never recursively
+            // run the source workflow.
+            workflow: null,
+            lineage: {
+              parentThreadId: input.sourceProjection.thread.id,
+              relationshipToParent: "fork",
+              rootThreadId: input.sourceProjection.thread.lineage.rootThreadId,
+            },
+            forkedFrom: {
+              type: "run",
+              threadId: input.sourceProjection.thread.id,
+              runId: input.sourceRun.id,
+            },
+            createdAt: input.createdAt,
+            updatedAt: input.createdAt,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            snoozedUntil: null,
+            snoozedAt: null,
+            lastVisitedAt: null,
+            deletedAt: null,
+          };
+          const transfer: OrchestrationV2ContextTransfer = {
+            id: input.transferId,
+            type: "fork",
             sourceThreadId: input.sourceProjection.thread.id,
             targetThreadId: input.targetThreadId,
-            cause: `Fork source run ${input.sourceRun.id} is ${input.sourceRun.status}.`,
-          });
-        }
-        const targetThread: OrchestrationV2AppThread = {
-          ...input.sourceProjection.thread,
-          createdBy: input.createdBy,
-          creationSource: input.creationSource,
-          id: input.targetThreadId,
-          title: input.title ?? `${input.sourceProjection.thread.title} fork`,
-          activeProviderThreadId: null,
-          // A fork is an ordinary exploratory thread unless a workflow is
-          // explicitly created for it. Reviewer forks must never recursively
-          // run the source workflow.
-          workflow: null,
-          lineage: {
-            parentThreadId: input.sourceProjection.thread.id,
-            relationshipToParent: "fork",
-            rootThreadId: input.sourceProjection.thread.lineage.rootThreadId,
-          },
-          forkedFrom: {
-            type: "run",
-            threadId: input.sourceProjection.thread.id,
-            runId: input.sourceRun.id,
-          },
-          createdAt: input.createdAt,
-          updatedAt: input.createdAt,
-          archivedAt: null,
-          settledOverride: null,
-          settledAt: null,
-          snoozedUntil: null,
-          snoozedAt: null,
-          lastVisitedAt: null,
-          deletedAt: null,
-        };
-        const transfer: OrchestrationV2ContextTransfer = {
-          id: input.transferId,
-          type: "fork",
-          sourceThreadId: input.sourceProjection.thread.id,
-          targetThreadId: input.targetThreadId,
-          sourcePoint: input.canonicalSourcePoint,
-          basePoint: null,
-          sourceProviderInstanceId: input.sourceRun.providerInstanceId,
-          targetProviderInstanceId: null,
-          targetRunId: null,
-          status: "pending",
-          resolution: null,
-          createdBy: input.createdBy,
-          error:
-            input.sourceProviderThread?.nativeThreadRef?.strength === "strong"
-              ? null
-              : "Source provider thread does not expose a strong native thread ref.",
-          createdAt: input.createdAt,
-          updatedAt: input.createdAt,
-          consumedAt: null,
-        };
-        return { targetThread, transfer };
-      }),
+            sourcePoint: input.canonicalSourcePoint,
+            basePoint: null,
+            sourceProviderInstanceId: input.sourceRun.providerInstanceId,
+            targetProviderInstanceId: null,
+            targetRunId: null,
+            status: "pending",
+            resolution: null,
+            createdBy: input.createdBy,
+            error:
+              input.sourceProviderThread?.nativeThreadRef?.strength === "strong"
+                ? null
+                : "Source provider thread does not expose a strong native thread ref.",
+            createdAt: input.createdAt,
+            updatedAt: input.createdAt,
+            consumedAt: null,
+          };
+          return { targetThread, transfer };
+        }),
+    });
   }),
 );

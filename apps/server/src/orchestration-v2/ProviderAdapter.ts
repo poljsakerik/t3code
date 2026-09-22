@@ -45,6 +45,8 @@ import type {
 } from "./ProviderSelectionTransition.ts";
 
 export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
+  detachedConversation: Schema.optional(Schema.Boolean),
+  agentInstructions: Schema.optional(Schema.String),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   cwd: Schema.NullOr(Schema.String),

@@ -163,7 +163,7 @@ export function usePullRequestHandoffs({
    * after preparing it, so there is one path from "a task" to "a thread holding it".
    */
   const openThreadWithTask = async (
-    projectRef: ReturnType<typeof scopeProjectRef>,
+    projectRef: NonNullable<ReturnType<typeof scopeProjectRef>>,
     task: PullRequestThreadTask | null,
     opened?: { draftId: DraftId },
   ): Promise<{ draftId: DraftId } | null> => {

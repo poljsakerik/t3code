@@ -154,7 +154,7 @@ export const make = Effect.gen(function* () {
       (group) =>
         Effect.gen(function* () {
           const first = group[0]!;
-          const project = projects.get(first.projectId);
+          const project = first.projectId === null ? undefined : projects.get(first.projectId);
           if (project === undefined) return finishBackfill(group);
           const { project: resolvedProject, repository } =
             yield* resolveProjectForPullRequestDiscovery(project, repositoryIdentities);

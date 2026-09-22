@@ -269,6 +269,8 @@ const resolveFileManagerRevealKindForConfig = <E, R>(
 export function buildThreadLaunchServiceInput(
   input: OrchestrationV2ThreadLaunchInput,
 ): ThreadLaunchService.ThreadLaunchInput {
+  if ("agent" in input)
+    return { ...input, createdBy: "user", creationSource: input.creationSource ?? "web" };
   return {
     commandId: input.commandId,
     ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
@@ -1682,6 +1684,7 @@ const makeWsRpcLayer = (
             },
             settings,
             shellResumeCompletionMarker: true,
+            agentConversations: true,
             ...(fileManagerRevealKind === undefined
               ? {}
               : {
@@ -1771,50 +1774,61 @@ const makeWsRpcLayer = (
 
       const handlers = ServerWsRpcGroup.of({
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
-          observeRpcEffect(
-            ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
-            startup
-              .enqueueCommand(
-                ThreadMessageIntake.dispatchCommand(
-                  ThreadManagementService.withCreationProvenance(command, {
-                    createdBy: "user",
-                    creationSource: "creationSource" in command ? command.creationSource : "web",
-                  }),
-                ).pipe(Effect.provide(intakeContext)),
-              )
-              .pipe(
-                Effect.tap(() => recordClientCommandAnalytics(command)),
-                Effect.map((result) => ({ sequence: result.sequence })),
-                Effect.mapError((cause) => {
-                  const detail = userFacingDispatchErrorMessage(cause);
-                  return new OrchestrationV2DispatchCommandError({
-                    commandId: command.commandId,
-                    commandType: command.type,
-                    message: detail ?? "Failed to dispatch orchestration V2 command",
-                    ...(detail === undefined ? {} : { detail }),
-                    cause,
-                  });
+          command.type === "thread.create" &&
+          (command.agent !== undefined || command.projectId === null)
+            ? Effect.fail(
+                new OrchestrationV2DispatchCommandError({
+                  commandId: command.commandId,
+                  commandType: command.type,
+                  message:
+                    "Start agent conversations through launchThread so their configuration is resolved by the server.",
                 }),
+              )
+            : observeRpcEffect(
+                ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+                startup
+                  .enqueueCommand(
+                    ThreadMessageIntake.dispatchCommand(
+                      ThreadManagementService.withCreationProvenance(command, {
+                        createdBy: "user",
+                        creationSource:
+                          "creationSource" in command ? command.creationSource : "web",
+                      }),
+                    ).pipe(Effect.provide(intakeContext)),
+                  )
+                  .pipe(
+                    Effect.tap(() => recordClientCommandAnalytics(command)),
+                    Effect.map((result) => ({ sequence: result.sequence })),
+                    Effect.mapError((cause) => {
+                      const detail = userFacingDispatchErrorMessage(cause);
+                      return new OrchestrationV2DispatchCommandError({
+                        commandId: command.commandId,
+                        commandType: command.type,
+                        message: detail ?? "Failed to dispatch orchestration V2 command",
+                        ...(detail === undefined ? {} : { detail }),
+                        cause,
+                      });
+                    }),
+                  ),
+                {
+                  "rpc.aggregate": "orchestrationV2",
+                  "orchestration_v2.command_id": command.commandId,
+                  "orchestration_v2.command_type": command.type,
+                  "orchestration_v2.thread_id":
+                    command.type === "thread.fork" || command.type === "thread.merge_back"
+                      ? command.targetThreadId
+                      : command.type === "delegated_task.request" ||
+                          command.type === "delegated_task.wake-policy" ||
+                          command.type === "delegated_task.completion-delivery.acknowledge" ||
+                          command.type === "delegated_task.completion-delivery.dispose" ||
+                          command.type === "thread.created.record"
+                        ? command.parentThreadId
+                        : command.threadId,
+                  ...(command.type === "thread.fork" || command.type === "thread.merge_back"
+                    ? { "orchestration_v2.source_thread_id": command.sourceThreadId }
+                    : {}),
+                },
               ),
-            {
-              "rpc.aggregate": "orchestrationV2",
-              "orchestration_v2.command_id": command.commandId,
-              "orchestration_v2.command_type": command.type,
-              "orchestration_v2.thread_id":
-                command.type === "thread.fork" || command.type === "thread.merge_back"
-                  ? command.targetThreadId
-                  : command.type === "delegated_task.request" ||
-                      command.type === "delegated_task.wake-policy" ||
-                      command.type === "delegated_task.completion-delivery.acknowledge" ||
-                      command.type === "delegated_task.completion-delivery.dispose" ||
-                      command.type === "thread.created.record"
-                    ? command.parentThreadId
-                    : command.threadId,
-              ...(command.type === "thread.fork" || command.type === "thread.merge_back"
-                ? { "orchestration_v2.source_thread_id": command.sourceThreadId }
-                : {}),
-            },
-          ),
         [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_V2_WS_METHODS.getWorkflowScript,
@@ -1931,21 +1945,21 @@ const makeWsRpcLayer = (
                   AttachmentClaimError: (cause) =>
                     new OrchestrationV2ThreadLaunchError({
                       commandId: input.commandId,
-                      projectId: input.projectId,
+                      projectId: "agent" in input ? null : input.projectId,
                       message: cause.message,
                       cause,
                     }),
                   ThreadLaunchError: (cause) =>
                     new OrchestrationV2ThreadLaunchError({
                       commandId: input.commandId,
-                      projectId: input.projectId,
-                      message: "Failed to launch thread",
+                      projectId: "agent" in input ? null : input.projectId,
+                      message: cause.message,
                       cause,
                     }),
                   ServerRuntimeStartupError: (cause) =>
                     new OrchestrationV2ThreadLaunchError({
                       commandId: input.commandId,
-                      projectId: input.projectId,
+                      projectId: "agent" in input ? null : input.projectId,
                       message: "Failed to launch thread",
                       cause,
                     }),
@@ -1954,7 +1968,7 @@ const makeWsRpcLayer = (
             {
               "rpc.aggregate": "orchestration",
               "orchestration_v2.command_id": input.commandId,
-              "orchestration_v2.project_id": input.projectId,
+              "orchestration_v2.project_id": "agent" in input ? null : input.projectId,
             },
           ),
         [ORCHESTRATION_V2_WS_METHODS.subscribeArchivedShell]: (_input) =>
@@ -3134,6 +3148,12 @@ const makeWsRpcLayer = (
                       }),
                   ),
                 );
+              if (thread.thread.projectId === null) {
+                return yield* new AssetWorkspaceContextResolutionError({
+                  resource: input.resource,
+                  cause: "Agent conversations have no project workspace.",
+                });
+              }
               const project = yield* projectService.getById(thread.thread.projectId).pipe(
                 Effect.mapError(
                   (cause) =>

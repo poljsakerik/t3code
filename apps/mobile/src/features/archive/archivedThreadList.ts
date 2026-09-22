@@ -15,7 +15,9 @@ export type ArchivedThreadSortOrder = "newest" | "oldest";
 
 export interface ArchivedThreadGroup {
   readonly key: string;
-  readonly project: EnvironmentProject;
+  readonly project: EnvironmentProject | null;
+  readonly title: string;
+  readonly environmentId: EnvironmentId;
   readonly threads: ReadonlyArray<EnvironmentThreadShell>;
 }
 
@@ -46,7 +48,7 @@ export function buildArchivedThreadGroups(input: {
     const environmentLabel = input.environmentLabels[entry.environmentId] ?? null;
     const threadsByProjectId = new Map<string, EnvironmentThreadShell[]>();
     for (const thread of entry.snapshot.threads) {
-      if (thread.archivedAt === null) {
+      if (thread.archivedAt === null || thread.projectId === null) {
         continue;
       }
       const threads = threadsByProjectId.get(thread.projectId) ?? [];
@@ -54,6 +56,36 @@ export function buildArchivedThreadGroups(input: {
       threadsByProjectId.set(thread.projectId, threads);
     }
 
+    const agentGroups = new Map<string, EnvironmentThreadShell[]>();
+    for (const thread of entry.snapshot.threads) {
+      if (!thread.agent || thread.archivedAt === null) continue;
+      if (
+        query &&
+        ![thread.title, thread.agent.name, environmentLabel].some((text) =>
+          matchesQuery(text, query),
+        )
+      )
+        continue;
+      const key = JSON.stringify([
+        entry.environmentId,
+        thread.agent.sourceProjectId,
+        thread.agent.agentId,
+      ]);
+      const group = agentGroups.get(key) ?? [];
+      group.push(scopeThreadShell(entry.environmentId, thread));
+      agentGroups.set(key, group);
+    }
+    for (const [key, threads] of agentGroups)
+      groups.push({
+        key,
+        project: null,
+        environmentId: entry.environmentId,
+        title: threads[0]!.agent!.name,
+        threads: [...threads].sort(
+          (a, b) =>
+            (input.sortOrder === "newest" ? -1 : 1) * (archiveTimestamp(a) - archiveTimestamp(b)),
+        ),
+      });
     for (const rawProject of entry.snapshot.projects) {
       const project = scopeProject(entry.environmentId, rawProject);
       const projectThreads = threadsByProjectId.get(project.id) ?? [];
@@ -76,6 +108,8 @@ export function buildArchivedThreadGroups(input: {
       groups.push({
         key: scopedProjectKey(project.environmentId, project.id),
         project,
+        title: project.title,
+        environmentId: entry.environmentId,
         threads: Arr.sort(
           matchingThreads,
           Order.mapInput(
@@ -98,7 +132,7 @@ export function buildArchivedThreadGroups(input: {
       Order.Struct({ timestamp: timestampOrder, title: Order.String, key: Order.String }),
       (group: ArchivedThreadGroup) => ({
         timestamp: group.threads[0] ? archiveTimestamp(group.threads[0]) : 0,
-        title: group.project.title,
+        title: group.title,
         key: group.key,
       }),
     ),

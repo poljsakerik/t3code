@@ -584,7 +584,7 @@ function listItemFromShell(shell: OrchestrationV2ThreadShell): OrchestratorMcpTh
 }
 
 function threadDetail(
-  projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "runtimeRequests">,
+  projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "runtimeRequests"> & { readonly thread: { readonly projectId: import("@t3tools/contracts").ProjectId } },
   itemCount: number,
 ): OrchestratorMcpThreadDetail {
   const latest = latestRun(projection);
@@ -789,6 +789,16 @@ const make = Effect.gen(function* () {
         { turnItemTypes: [], messageRoles: ["user"] },
       )
       .pipe(
+      Effect.flatMap((projection) =>
+        projection.thread.projectId === null
+          ? Effect.fail(
+              failure("capability_denied", "Project tools are unavailable in agent conversations."),
+            )
+          : Effect.succeed({
+              ...projection,
+              thread: { ...projection.thread, projectId: projection.thread.projectId },
+            }),
+      ),
         Effect.mapError((error) =>
           failure(
             "orchestration_error",
@@ -798,7 +808,7 @@ const make = Effect.gen(function* () {
       );
 
   const loadProjectThread = (
-    projectId: OrchestrationV2ThreadProjection["thread"]["projectId"],
+    projectId: import("@t3tools/contracts").ProjectId,
     threadId: ThreadId,
   ) =>
     threadManagement

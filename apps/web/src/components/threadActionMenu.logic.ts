@@ -41,6 +41,7 @@ export interface ThreadActionMenuState {
     /** True when the list is already scoped to this thread's project. */
     readonly isActive: boolean;
   } | null;
+  readonly agentConversation?: boolean;
   readonly isPinned: boolean;
   readonly isSettled: boolean;
   /** False while the user has turned automatic settlement off for this thread. */
@@ -169,14 +170,18 @@ export function buildThreadActionMenuItems(
       icon: "copy",
       separatorBefore: true,
       children: [
-        { id: "copy-path", label: "Path", icon: "folder" },
+        ...(!state.agentConversation
+          ? [{ id: "copy-path" as const, label: "Path", icon: "folder" }]
+          : []),
         ...(state.branch
           ? [{ id: "copy-branch" as const, label: "Branch", icon: "git-branch" }]
           : []),
         { id: "copy-thread-id", label: "Thread ID", icon: "hash" },
       ],
     },
-    { id: "project-settings", label: "Project settings", icon: "settings" },
+    ...(!state.agentConversation
+      ? [{ id: "project-settings" as const, label: "Project settings", icon: "settings" }]
+      : []),
     // Archive removes the thread from the sidebar while keeping its
     // conversation under Settings > Archived threads — distinct from Settle
     // (stays visible in the Settled shelf) and Delete (clears history for

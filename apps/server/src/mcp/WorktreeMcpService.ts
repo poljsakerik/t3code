@@ -79,6 +79,16 @@ const make = Effect.gen(function* () {
 
   const loadThread = (scope: McpInvocationScope) =>
     threadManagement.getThreadRecords(scope.threadId, []).pipe(
+      Effect.flatMap((projection) =>
+        projection.thread.projectId === null
+          ? Effect.fail(
+              failure("capability_denied", "Agent conversations have no project workspace."),
+            )
+          : Effect.succeed({
+              ...projection,
+              thread: { ...projection.thread, projectId: projection.thread.projectId },
+            }),
+      ),
       Effect.mapError((error) =>
         error._tag === "OrchestratorProjectionError"
           ? failure("thread_not_found", `Thread '${scope.threadId}' was not found.`)

@@ -18,7 +18,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
-import { collectReviewerResult, reviewerPrompt } from "./Reviewer.ts";
+import { collectReviewerResult } from "./Reviewer.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { makeKeyedSerialExecutor } from "../orchestration-v2/KeyedSerialExecutor.ts";
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
@@ -44,21 +44,6 @@ function reviewThreadId(threadId: ThreadId, revision: number, reviewerId: string
   return ThreadId.make(
     `workflow-review:${encodeURIComponent(threadId)}:${revision}:${encodeURIComponent(reviewerId)}`,
   );
-}
-
-function reviewPrompt(input: {
-  readonly reviewer: ResolvedWorkflowProfile["reviewers"][number];
-  readonly workflow: ThreadWorkflowState;
-  readonly planMarkdown: string;
-}): string {
-  const checks = input.workflow.checks
-    .map((check) => `${check.name}: ${check.passed ? "passed" : "failed"}`)
-    .join("\n");
-  return reviewerPrompt({
-    instructions: input.reviewer.instructions,
-    task: `Review revision ${input.workflow.revision} of this verified workflow.`,
-    context: `Approved plan:\n${input.planMarkdown}\n\nDeterministic checks:\n${checks}`,
-  });
 }
 
 function revisionFeedback(input: {
@@ -323,37 +308,6 @@ export const live = Layer.effectDiscard(
       });
     });
 
-    const startReviewer = Effect.fn("WorkflowCoordinator.startReviewer")(function* (input: {
-      readonly projection: OrchestrationV2ThreadProjection;
-      readonly workflow: ThreadWorkflowState;
-      readonly reviewer: ResolvedWorkflowProfile["reviewers"][number];
-      readonly planMarkdown: string;
-    }) {
-      const childThreadId = reviewThreadId(
-        input.projection.thread.id,
-        input.workflow.revision,
-        input.reviewer.id,
-      );
-      const base = `workflow:${encodeURIComponent(input.projection.thread.id)}:${input.workflow.revision}:review:${encodeURIComponent(input.reviewer.id)}`;
-      yield* threads.dispatch({
-        type: "message.dispatch",
-        commandId: CommandId.make(`command:${base}:start`),
-        threadId: childThreadId,
-        messageId: MessageId.make(`message:${base}`),
-        text: reviewPrompt({
-          reviewer: input.reviewer,
-          workflow: input.workflow,
-          planMarkdown: input.planMarkdown,
-        }),
-        attachments: [],
-        modelSelection: input.reviewer.modelSelection ?? input.projection.thread.modelSelection,
-        workflowSkillAllowlist: input.reviewer.skills,
-        dispatchMode: { type: "start_immediately" },
-        createdBy: "agent",
-        creationSource: "server",
-      });
-    });
-
     const launchReviews = Effect.fn("WorkflowCoordinator.launchReviews")(function* (input: {
       readonly projection: OrchestrationV2ThreadProjection;
       readonly workflow: ThreadWorkflowState;
@@ -396,17 +350,15 @@ export const live = Layer.effectDiscard(
         currentStatus: input.workflow.status,
         workflow: reviewing,
         key: "reviewing",
-      });
-      yield* Effect.forEach(
-        profile.reviewers,
-        (reviewer) =>
-          startReviewer({
-            projection: input.projection,
-            workflow: reviewing,
-            reviewer,
-            planMarkdown: plan.markdown,
+      }).pipe(
+        Effect.catch((cause) =>
+          markNeedsHuman({
+            threadId: input.projection.thread.id,
+            workflow: input.workflow,
+            reason: `Could not start reviewers: ${String(cause)}`,
+            key: "review-start-failed",
           }),
-        { concurrency: "unbounded", discard: true },
+        ),
       );
     });
 
@@ -414,30 +366,25 @@ export const live = Layer.effectDiscard(
       readonly projection: OrchestrationV2ThreadProjection;
       readonly workflow: ThreadWorkflowState;
     }) {
-      const profile = input.workflow.profile;
-      const plan = input.projection.plans.find(
-        (candidate) => candidate.id === input.workflow.approvedPlanId,
-      );
       const results = yield* Effect.forEach(
         input.workflow.reviews,
         Effect.fnUntraced(function* (pending) {
           if (pending.status !== "running") return pending;
-          const reviewer = profile?.reviewers.find(
-            (candidate) => candidate.id === pending.reviewerId,
-          );
-          if (reviewer !== undefined && plan?.kind === "proposed_plan") {
-            yield* startReviewer({
-              projection: input.projection,
-              workflow: input.workflow,
-              reviewer,
-              planMarkdown: plan.markdown,
-            });
-          }
           const childId = pending.reviewerThreadId;
           const child = yield* Effect.option(threads.getThreadProjection(childId));
-          if (child._tag === "None") return pending;
-          const run = child.value.runs.at(-1);
-          if (run === undefined || !terminalRun(run.status)) return pending;
+          if (child._tag === "None" || child.value.runs.length === 0) {
+            // Resume reviewers persisted by servers that created children before
+            // queuing their turns. New review rounds launch atomically in workflow.update.
+            yield* updateWorkflow({
+              threadId: input.projection.thread.id,
+              currentStatus: "reviewing",
+              workflow: input.workflow,
+              key: "resume-reviewers",
+            });
+            return pending;
+          }
+          const run = child.value.runs.at(-1)!;
+          if (!terminalRun(run.status)) return pending;
           return yield* collectReviewerResult({
             pending,
             runStatus: run.status,

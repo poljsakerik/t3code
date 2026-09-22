@@ -64,7 +64,6 @@ import * as Schema from "effect/Schema";
 import { ProviderAdapterRegistryV2 } from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import {
   subagentResultForRun,
-  APP_OWNED_SUBAGENT_MODES,
   delegatedTaskProgress,
 } from "../orchestration-v2/SubagentProjection.ts";
 import {
@@ -1382,6 +1381,11 @@ const make = Effect.gen(function* () {
           target: input.target,
           providers,
         });
+        const runtimeMode = yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode);
+        const interactionMode = yield* resolveInteractionMode(
+          parent.thread.interactionMode,
+          input.interactionMode,
+        );
         const key = yield* requestKey(input.clientRequestId);
         const commandId = stableCommandId({
           scope,
@@ -1400,7 +1404,8 @@ const make = Effect.gen(function* () {
             task: taskPrompt(input),
             ...(input.title === undefined ? {} : { title: input.title }),
             modelSelection: target.modelSelection,
-            ...APP_OWNED_SUBAGENT_MODES,
+            runtimeMode,
+            interactionMode,
             // Async delegations wake the parent on every child terminal; wait
             // delegations deliver through the blocking tool call, so a wake is
             // only needed if the parent settled first (timeout, disconnect).

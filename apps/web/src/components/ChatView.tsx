@@ -9840,7 +9840,7 @@ export default function ChatView(props: ChatViewProps) {
                   activeThreadRef &&
                   serverProjection &&
                   reviewableRun(serverProjection) ? (
-                    <div className="mx-auto w-full max-w-3xl py-3">
+                    <div className="py-3">
                       <Button
                         variant="outline"
                         size="sm"

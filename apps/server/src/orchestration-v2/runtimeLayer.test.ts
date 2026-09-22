@@ -606,7 +606,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
                   role: "assistant",
                   text:
                     index === 0
-                      ? yield* encodeReviewJson({
+                      ? `Completed the full critique.\n\n\`\`\`json\n${yield* encodeReviewJson({
                           verdict: "request_changes",
                           summary: "Blocking: login still accepts expired tokens.",
                           findings: [
@@ -620,7 +620,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
                               evidence: "An expired token still authenticates.",
                             },
                           ],
-                        })
+                        })}\n\`\`\``
                       : "Review could not finish.",
                   streaming: false,
                 },
@@ -702,14 +702,38 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
           terminalReason: null,
           updatedAt: DateTime.formatIso(now),
         };
+        for (const status of ["reviewing", "done", "needs_human"] as const) {
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make(`review-workflow-${status}`),
+                type: "thread.workflow-updated",
+                threadId,
+                occurredAt: now,
+                payload: { ...completed.thread, workflow: { ...workflow, status } },
+              },
+            ],
+          });
+          assert.equal(
+            (yield* Effect.exit(
+              orchestrator.dispatch({
+                ...request,
+                commandId: CommandId.make(`review-rejected-workflow-${status}`),
+              }),
+            ))._tag,
+            "Failure",
+          );
+          const rejected = yield* orchestrator.getThreadProjection(threadId);
+          assert.lengthOf(rejected.subagents, 2);
+        }
         yield* sink.write({
           events: [
             {
-              id: EventId.make("review-completed-workflow"),
+              id: EventId.make("review-clear-workflow"),
               type: "thread.workflow-updated",
               threadId,
               occurredAt: now,
-              payload: { ...completed.thread, workflow },
+              payload: { ...completed.thread, workflow: null },
             },
           ],
         });

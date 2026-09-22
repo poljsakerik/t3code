@@ -22,7 +22,7 @@ The thread moves to **Needs human** when the revision limit is exhausted, the sa
 
 ## Request a review after a task
 
-After a task and its agents finish, choose **Request review** in the thread. Web and desktop also offer **Request review** in the command palette. Select one or more agents and start the reviews; they run in parallel using their configured models, instructions, and skills. The picker includes Global agents and agents from every project in the connected environment, with the current project first. An agent from another project still reviews the current task’s workspace.
+Outside a verified workflow, after a task and its agents finish, choose **Request review** below the conversation. Web and desktop also offer **Request review** in the command palette. Select one or more agents and start the reviews; they run in parallel using their configured models, instructions, and skills. The picker includes Global agents and agents from every project in the connected environment, with the current project first. An agent from another project still reviews the current task’s workspace.
 
 The review card shows each agent’s verdict, blocking and advisory findings, evidence, and file references. Reviewers return their findings directly instead of creating separate report files. An invalid or missing response is shown as a failed review. Open a reviewer’s thread from the card or Agents panel to inspect its work or stop its run. You can close the selection dialog and disconnect while reviews run. After they finish, you can request another review.
 

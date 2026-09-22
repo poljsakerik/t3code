@@ -1460,13 +1460,12 @@ export function reviewableRun(
   projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "subagents">,
 ): OrchestrationV2Run | null {
   const run = projection.runs.at(-1);
-  const workflow = projection.thread.workflow;
   if (
     run?.status !== "completed" ||
     run.rootNodeId === null ||
     projection.thread.archivedAt !== null ||
     projection.thread.deletedAt !== null ||
-    (workflow != null && workflow.status !== "done" && workflow.status !== "needs_human") ||
+    projection.thread.workflow != null ||
     projection.subagents.some((task) => ["pending", "running", "waiting"].includes(task.status))
   )
     return null;

@@ -926,13 +926,6 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   return (
     <View className="flex-1">
       {showContent ? (
-        <RequestReviewControl
-          key={selectedThreadKey}
-          environmentId={props.environmentId}
-          threadId={props.selectedThread.id}
-        />
-      ) : null}
-      {showContent ? (
         <BlurTargetView
           ref={feedBlurTarget}
           style={{ flex: 1 }}
@@ -950,6 +943,13 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             }
           />
           <ThreadFeed
+            bottomAccessory={
+              <RequestReviewControl
+                key={selectedThreadKey}
+                environmentId={props.environmentId}
+                threadId={props.selectedThread.id}
+              />
+            }
             key={selectedThreadKey}
             environmentId={props.environmentId}
             threadId={props.selectedThread.id}

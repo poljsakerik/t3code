@@ -1,5 +1,3 @@
-import { openRequestReviewDialog } from "../RequestReviewDialog";
-import { Button } from "../ui/button";
 import { type EnvironmentId, type ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
@@ -40,7 +38,6 @@ interface ChatHeaderProps {
   activeThreadTitle: string;
   /** Drafts have no server thread yet, so the title carries no action menu. */
   isServerThread: boolean;
-  canRequestReview: boolean;
   activeProject: EnvironmentProject | null;
   workflowProfileName: string | null;
   rightPanelOpen: boolean;
@@ -74,7 +71,6 @@ export const ChatHeader = memo(function ChatHeader({
   activeThreadId,
   activeThreadTitle,
   isServerThread,
-  canRequestReview,
   activeProject,
   workflowProfileName,
   rightPanelOpen,
@@ -334,16 +330,6 @@ export const ChatHeader = memo(function ChatHeader({
           )}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
-      {isServerThread ? (
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={!canRequestReview}
-          onClick={() => openRequestReviewDialog(activeThreadRef)}
-        >
-          Request review
-        </Button>
-      ) : null}
       {workflowProfileName !== null ? (
         <Badge
           variant="success"

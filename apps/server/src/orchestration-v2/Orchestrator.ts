@@ -5974,7 +5974,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,
-        cause: "Wait for the latest task and its agents to finish before requesting a review.",
+        cause:
+          projection.thread.workflow != null
+            ? "Verified workflows manage their own reviews."
+            : "Wait for the latest task and its agents to finish before requesting a review.",
       });
     }
     if (Option.isNone(agentDefinitions)) {

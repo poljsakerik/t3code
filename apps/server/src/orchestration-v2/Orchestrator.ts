@@ -628,7 +628,7 @@ function nextQueuedRun(
 }
 
 function latestStableRun(
-  projection: Pick<OrchestrationV2ThreadProjection, "runs">,
+  projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs">,
 ): OrchestrationV2Run | null {
   return (
     projection.runs
@@ -642,7 +642,7 @@ function latestStableRun(
 }
 
 function runForSourcePoint(
-  projection: Pick<OrchestrationV2ThreadProjection, "runs" | "checkpoints">,
+  projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "checkpoints">,
   sourcePoint: Extract<
     OrchestrationV2Command,
     { readonly type: "thread.fork" | "thread.merge_back" }
@@ -965,7 +965,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           "checkpointScopes",
           "contextTransfers",
         ],
-        { turnItemTypes: ["user_message", "error"], messageRoles: ["user"] },
+        {
+          turnItemTypes: ["user_message", "error", "workflow_verification"],
+          messageRoles: ["user"],
+        },
       )
       .pipe(
         Effect.map((records): OrchestrationV2ThreadProjection => ({
@@ -4239,8 +4242,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           };
           const turnItem = makeMessageInputTurnItem({
             base: {
-            ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
-            ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
+              ...(input.scheduledTaskId === undefined
+                ? {}
+                : { scheduledTaskId: input.scheduledTaskId }),
+              ...(input.senderThreadId === undefined
+                ? {}
+                : { senderThreadId: input.senderThreadId }),
               id: idAllocator.derive.userTurnItem({ messageId: input.messageId }),
               threadId: input.command.threadId,
               runId: messageInput.runId,
@@ -5924,8 +5931,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         };
         const turnItem = makeMessageInputTurnItem({
           base: {
-            ...(command.scheduledTaskId === undefined ? {} : { scheduledTaskId: command.scheduledTaskId }),
-            ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
+            ...(command.scheduledTaskId === undefined
+              ? {}
+              : { scheduledTaskId: command.scheduledTaskId }),
+            ...(command.senderThreadId === undefined
+              ? {}
+              : { senderThreadId: command.senderThreadId }),
             id: idAllocator.derive.userTurnItem({ messageId: command.messageId }),
             threadId: command.threadId,
             runId,
@@ -6624,8 +6635,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       };
       const turnItem = makeMessageInputTurnItem({
         base: {
-            ...(command.scheduledTaskId === undefined ? {} : { scheduledTaskId: command.scheduledTaskId }),
-            ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
+          ...(command.scheduledTaskId === undefined
+            ? {}
+            : { scheduledTaskId: command.scheduledTaskId }),
+          ...(command.senderThreadId === undefined
+            ? {}
+            : { senderThreadId: command.senderThreadId }),
           id: idAllocator.derive.userTurnItem({ messageId: command.messageId }),
           threadId: command.threadId,
           runId,
@@ -7524,7 +7539,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerTurnId: null,
         nativeItemRef: null,
         parentItemId: null,
-        ordinal: nextTurnItemOrdinal(pendingProjection),
+        ordinal: yield* nextTurnItemOrdinal(pendingProjection),
         status: "running",
         title: "Agent review",
         startedAt: now,

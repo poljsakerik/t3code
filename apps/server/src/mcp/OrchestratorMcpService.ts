@@ -592,7 +592,9 @@ function listItemFromShell(shell: OrchestrationV2ThreadShell): OrchestratorMcpTh
 }
 
 function threadDetail(
-  projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "runtimeRequests"> & { readonly thread: { readonly projectId: import("@t3tools/contracts").ProjectId } },
+  projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "runtimeRequests"> & {
+    readonly thread: { readonly projectId: import("@t3tools/contracts").ProjectId };
+  },
   itemCount: number,
 ): OrchestratorMcpThreadDetail {
   const latest = ThreadManagementService.latestRun(projection);
@@ -798,16 +800,19 @@ const make = Effect.gen(function* () {
         { turnItemTypes: [], messageRoles: ["user"] },
       )
       .pipe(
-      Effect.flatMap((projection) =>
-        projection.thread.projectId === null
-          ? Effect.fail(
-              failure("capability_denied", "Project tools are unavailable in agent conversations."),
-            )
-          : Effect.succeed({
-              ...projection,
-              thread: { ...projection.thread, projectId: projection.thread.projectId },
-            }),
-      ),
+        Effect.flatMap((projection) =>
+          projection.thread.projectId === null
+            ? Effect.fail(
+                failure(
+                  "capability_denied",
+                  "Project tools are unavailable in agent conversations.",
+                ),
+              )
+            : Effect.succeed({
+                ...projection,
+                thread: { ...projection.thread, projectId: projection.thread.projectId },
+              }),
+        ),
         Effect.mapError((error) =>
           failure(
             "orchestration_error",
@@ -1785,6 +1790,12 @@ const make = Effect.gen(function* () {
     readThread: (scope, input) =>
       Effect.gen(function* () {
         const { parent, target } = yield* loadReadableThread(scope, input.threadId);
+        if (target.thread.projectId === null) {
+          return yield* failure(
+            "capability_denied",
+            "Project tools are unavailable in agent conversations.",
+          );
+        }
         const view = input.view ?? "messages";
         const afterPosition = input.afterPosition ?? -1;
         const limit = input.limit ?? DEFAULT_THREAD_READ_LIMIT;
@@ -1846,7 +1857,10 @@ const make = Effect.gen(function* () {
           }
         }
         return {
-          thread: threadDetail(target, timeline.totalItems),
+          thread: threadDetail(
+            { ...target, thread: { ...target.thread, projectId: target.thread.projectId } },
+            timeline.totalItems,
+          ),
           recentRuns: target.runs
             .toSorted((left, right) => right.ordinal - left.ordinal)
             .slice(0, input.runLimit ?? DEFAULT_THREAD_RUN_LIMIT)

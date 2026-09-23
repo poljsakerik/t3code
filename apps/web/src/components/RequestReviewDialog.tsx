@@ -47,7 +47,7 @@ function RequestReviewDialog({ threadRef }: { threadRef: ScopedThreadRef }) {
   const projection = useThreadProjection(threadRef)?.projection;
   const run = projection ? reviewableRun(projection) : null;
   const catalog = useEnvironmentQuery(
-    projection
+    projection && projection.thread.projectId !== null
       ? projectEnvironment.agentCatalog({
           environmentId: threadRef.environmentId,
           input: { projectId: projection.thread.projectId },

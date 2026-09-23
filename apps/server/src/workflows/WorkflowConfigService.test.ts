@@ -31,7 +31,6 @@ const projectRepositoryLayer = Layer.succeed(ProjectionProjectRepository, {
       }),
     ),
   listAll: () => Effect.succeed([]),
-  deleteById: () => Effect.void,
 });
 
 const testLayer = layer.pipe(

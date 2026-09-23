@@ -9072,7 +9072,7 @@ export default function ChatView(props: ChatViewProps) {
         };
       }),
     );
-    if (multipleModelSelections !== null) {
+    if (multipleModelSelections !== null && activeProject) {
       const failedSelections: ModelSelection[] = [];
       let clearedDraft = false;
       let releasedComposer = false;
@@ -9568,7 +9568,7 @@ export default function ChatView(props: ChatViewProps) {
           createdAt: messageCreatedAt,
         },
       });
-      if (backgroundThreadRef) {
+      if (backgroundThreadRef && activeProject) {
         markPromotedDraftThreadByRef(backgroundThreadRef);
         try {
           backgroundDraftOpened = Boolean(

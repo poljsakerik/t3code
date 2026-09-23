@@ -34,7 +34,7 @@ export function RequestReviewControl(props: { environmentId: EnvironmentId; thre
           <AppText className="text-sm text-foreground-secondary">Request review</AppText>
         </Pressable>
       ) : null}
-      {open && projection ? (
+      {open && projection && projection.thread.projectId !== null ? (
         <RequestReviewModal
           {...props}
           projectId={projection.thread.projectId}

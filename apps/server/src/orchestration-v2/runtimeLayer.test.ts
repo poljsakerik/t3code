@@ -1430,6 +1430,8 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
 
   it.effect("rejects non-ready rollback targets before persisting events or effects", () =>
     Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const worktreePath = yield* fs.makeTempDirectoryScoped({ prefix: "t3-rollback-readiness-" });
       const orchestrator = yield* OrchestratorV2;
       const eventSink = yield* EventSinkV2;
       const outbox = yield* EffectOutboxV2;
@@ -1446,7 +1448,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         runtimeMode: "full-access",
         interactionMode: "default",
         branch: null,
-        worktreePath: process.cwd(),
+        worktreePath,
       });
       yield* orchestrator.dispatch({
         type: "message.dispatch",
@@ -1557,7 +1559,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
           assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
         }
       }
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.effect("resolves delivery intent against the active run and starts after it completes", () =>

@@ -783,7 +783,10 @@ export const layer: Layer.Layer<
               : undefined;
           // Startup failure and stream shutdown can report the same attempt.
           const refreshAfterTurn = yield* Effect.cached(
-            (input.appThread.projectId === null ? Effect.void : finalizationObserver.refreshAfterTurn(input.appThread.projectId)).pipe(
+            (input.appThread.projectId === null
+              ? Effect.void
+              : finalizationObserver.refreshAfterTurn(input.appThread.projectId)
+            ).pipe(
               Effect.catchCause((cause) =>
                 Effect.logWarning("failed to refresh pull requests after run termination", {
                   threadId: input.run.threadId,
@@ -820,21 +823,22 @@ export const layer: Layer.Layer<
                     .responseStreamingMode,
               ),
             );
-            if (input.checkpointScope !== null) yield* checkpointService
-              .captureBaseline({
-                scope: input.checkpointScope,
-                ordinalWithinScope: Math.max(0, input.run.ordinal - 1),
-              })
-              .pipe(
-                Effect.catchCause((cause) =>
-                  Cause.hasInterruptsOnly(cause)
-                    ? Effect.failCause(cause)
-                    : Effect.logWarning(
-                        "orchestration V2 checkpoint baseline capture failed; starting provider without a baseline",
-                        { runId: input.run.id },
-                      ),
-                ),
-              );
+            if (input.checkpointScope !== null)
+              yield* checkpointService
+                .captureBaseline({
+                  scope: input.checkpointScope,
+                  ordinalWithinScope: Math.max(0, input.run.ordinal - 1),
+                })
+                .pipe(
+                  Effect.catchCause((cause) =>
+                    Cause.hasInterruptsOnly(cause)
+                      ? Effect.failCause(cause)
+                      : Effect.logWarning(
+                          "orchestration V2 checkpoint baseline capture failed; starting provider without a baseline",
+                          { runId: input.run.id },
+                        ),
+                  ),
+                );
             if (
               input.shouldStartProviderTurn !== undefined &&
               !(yield* input.shouldStartProviderTurn())

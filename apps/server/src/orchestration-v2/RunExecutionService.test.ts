@@ -3244,7 +3244,9 @@ function captureRootRunTermination(input: {
         commandId: CommandId.make(`command:${input.key}`),
         appThread: {
           id: ids.threadId,
-          ...(input.detached ? { agent: { directory: "/managed/conversation" } } : {}),
+          ...(input.detached
+            ? { projectId: null, agent: { directory: "/managed/conversation" } }
+            : {}),
         } as OrchestrationV2AppThread,
         providerSessionId: ProviderSessionId.make(`session:${input.key}`),
         session: {

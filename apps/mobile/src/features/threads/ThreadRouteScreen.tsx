@@ -125,11 +125,12 @@ function ThreadHeader(
         onPress: () => onOpenTerminal(null),
       });
     }
-    if (!props.agentConversation) actions.push({
-      accessibilityLabel: "Open git controls",
-      icon: "point.topleft.down.curvedto.point.bottomright.up",
-      onPress: props.onOpenGitInspector,
-    });
+    if (!props.agentConversation)
+      actions.push({
+        accessibilityLabel: "Open git controls",
+        icon: "point.topleft.down.curvedto.point.bottomright.up",
+        onPress: props.onOpenGitInspector,
+      });
     if (onMergeBack) {
       actions.push({
         accessibilityLabel: "Merge back to source",
@@ -827,7 +828,8 @@ function ThreadRouteContent(
         : undefined,
     onOpenFilesInspector:
       fileInspector.supported && selectedThreadCwd !== null ? handleOpenFilesInspector : undefined,
-    onOpenGitInspector: fileInspector.supported && !selectedThread?.agent ? handleOpenGitInspector : undefined,
+    onOpenGitInspector:
+      fileInspector.supported && !selectedThread?.agent ? handleOpenGitInspector : undefined,
     onMergeBack:
       mergeBackTargetThreadId !== null && mergeBackRun !== null
         ? () => void handleMergeBack()
@@ -915,7 +917,13 @@ function ThreadRouteContent(
   const localResendBusy = useRef(false);
   const setupMessage = selectedThreadDetail?.messages.find((message) => message.role === "user");
   const handleWorkLocally = useCallback(async () => {
-    if (!selectedThread || !selectedThreadProject || !setupMessage || localResendBusy.current)
+    if (
+      !selectedThread ||
+      selectedThread.projectId === null ||
+      !selectedThreadProject ||
+      !setupMessage ||
+      localResendBusy.current
+    )
       return;
     localResendBusy.current = true;
     try {

@@ -55,7 +55,7 @@ export function providerRuntimePolicyForRun(
   base: ProviderAdapterV2RuntimePolicy,
   run: Pick<OrchestrationV2Run, "workflowSkillAllowlist">,
 ): ProviderAdapterV2RuntimePolicy {
-  if (base.detachedConversation) return base;
+  if (base.detachedConversation || run.workflowSkillAllowlist === undefined) return base;
   return ProviderAdapterV2RuntimePolicy.make({
     ...base,
     ...(run.workflowSkillAllowlist === undefined

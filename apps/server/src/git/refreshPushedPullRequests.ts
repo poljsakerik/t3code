@@ -15,7 +15,7 @@ export const refreshPushedPullRequests = Effect.fn("refreshPushedPullRequests")(
     if (input.threadId !== undefined) {
       const engine = yield* OrchestratorV2.OrchestratorV2;
       const thread = yield* engine.getThreadShell(input.threadId);
-      if (thread !== null) {
+      if (thread !== null && thread.projectId !== null) {
         yield* pullRequests.refreshAfterTurn(thread.projectId);
         return;
       }

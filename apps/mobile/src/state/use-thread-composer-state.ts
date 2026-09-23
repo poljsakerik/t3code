@@ -584,7 +584,9 @@ export function useThreadComposerState() {
         return null;
       }
 
-      const modelSelection = thread.agent ? thread.modelSelection : (draft.modelSelection ?? thread.modelSelection);
+      const modelSelection = thread.agent
+        ? thread.modelSelection
+        : (draft.modelSelection ?? thread.modelSelection);
       const serverConfig = selectedEnvironmentRuntime?.serverConfig;
       if (
         selectedEnvironmentRuntime?.connectionState === "connected" &&

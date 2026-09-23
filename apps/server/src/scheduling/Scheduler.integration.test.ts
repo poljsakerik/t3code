@@ -122,7 +122,7 @@ it.effect.each(["on time", "after restart"])(
           prompt: "Run scheduled work",
           enabled: true,
           schedule: { type: "interval", everyMs: 60_000 },
-          projectId: thread.projectId,
+          projectId: ProjectId.make("project:test"),
           workspaceStrategy: { type: "root" },
           modelSelection: thread.modelSelection,
           runtimeMode: thread.runtimeMode,

@@ -9,6 +9,7 @@
  */
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
+import { collectNamedSlotCandidates } from "./slots.ts";
 import { classifyAgentRootEntry, getSupportedModuleBaseName } from "./filesystem.ts";
 import {
   discoverFlatModuleSource,
@@ -58,6 +59,41 @@ export async function discoverAgent(input: {
     rootPath: agentRoot,
     source,
   });
+  const connections: { readonly name: string; readonly logicalPath: string }[] = [];
+  const connectionEntry = rootEntries.find((entry) => entry.name === "connections");
+  if (connectionEntry !== undefined) {
+    if (!connectionEntry.isDirectory()) throw new Error("Expected connections to be a directory.");
+    const directory = NodePath.join(agentRoot, "connections");
+    const entries = await readSortedDirectoryEntries(source, directory);
+    for (const candidate of collectNamedSlotCandidates(entries, {
+      allowMarkdown: false,
+      allowModules: true,
+    })) {
+      if (candidate.moduleFileNames.length !== 1)
+        throw new Error(`Conflicting connection modules: ${candidate.slotName}`);
+      connections.push({
+        name: candidate.slotName,
+        logicalPath: NodePath.posix.join("connections", candidate.moduleFileNames[0]!),
+      });
+    }
+    for (const entry of entries.filter((entry) => entry.isDirectory())) {
+      if (connections.some((connection) => connection.name === entry.name))
+        throw new Error(`Connection defined as both file and folder: ${entry.name}`);
+      const rootPath = NodePath.join(directory, entry.name);
+      const module = discoverFlatModuleSource({
+        rootPath,
+        rootEntries: await readSortedDirectoryEntries(source, rootPath),
+        slotName: "connection",
+      });
+      if (module === undefined)
+        throw new Error(`Connection folder ${entry.name} requires connection.ts.`);
+      connections.push({
+        name: entry.name,
+        logicalPath: NodePath.posix.join("connections", entry.name, module.logicalPath),
+      });
+    }
+    connections.sort((a, b) => a.name.localeCompare(b.name));
+  }
   const capabilities: AgentCapabilitySource[] = [];
   const skills: AgentSkillSource[] = [];
   for (const entry of rootEntries) {
@@ -93,9 +129,13 @@ export async function discoverAgent(input: {
       }
     } else if (
       entryType === "directory" &&
-      !["unknown", "ignored-directory", "instructions-directory", "subagents-directory"].includes(
-        kind,
-      )
+      ![
+        "unknown",
+        "ignored-directory",
+        "instructions-directory",
+        "subagents-directory",
+        "connections-directory",
+      ].includes(kind)
     ) {
       for (const child of await source.readDirectory(NodePath.join(agentRoot, entry.name))) {
         capabilities.push({
@@ -105,7 +145,7 @@ export async function discoverAgent(input: {
       }
     }
   }
-  return { agentRoot, configModule, instructions, skills, capabilities };
+  return { agentRoot, configModule, instructions, skills, connections, capabilities };
 }
 
 export type AgentSourceManifest = Awaited<ReturnType<typeof discoverAgent>>;

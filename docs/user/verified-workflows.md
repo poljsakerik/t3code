@@ -89,7 +89,7 @@ Skills added through **Agents → Edit agent → Skills**, or placed in `skills/
 
 Legacy Markdown entries directly under `skills/`, and skill folders without a `SKILL.md`, name native provider skills. These references are supported only for reviewers, where they form an exclusive allowlist. An omitted or empty list disables native provider skills for that reviewer. Planner and implementer roles retain the provider's normal native skill configuration.
 
-Authored Eve tools, connections, hooks, extensions, sandbox configuration, and other executable capability slots are rejected for workflow agents. The provider harness remains responsible for tools and permissions. Markdown `instructions/` directories are supported; executable instruction modules are not.
+Agents can attach [MCP connections](agents.md#mcp-connections) through their `connections/` directory. Authored Eve tools, hooks, extensions, sandbox configuration, and other executable capability slots are rejected for workflow agents. The provider harness remains responsible for tools and permissions. Markdown `instructions/` directories are supported; executable instruction modules are not.
 
 Workflow and manual reviewers run with full access and no approval prompts regardless of the parent thread’s mode. Other delegated agents inherit their parent’s modes unless the delegation requests a more restrictive mode, including plan mode. Reviewers are instructed to inspect and report findings without modifying files.
 

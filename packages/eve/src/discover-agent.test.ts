@@ -92,10 +92,10 @@ describe("Eve explicit-root discovery", () => {
       { name: "native", logicalPath: "skills/native", sourceKind: "directory" },
       { name: "review", logicalPath: "skills/review.md", sourceKind: "markdown" },
     ]);
-    expect(manifest.capabilities).toEqual([
-      { slot: "connections", logicalPath: "connections/service.ts" },
-      { slot: "tools", logicalPath: "tools/search.ts" },
+    expect(manifest.connections).toEqual([
+      { name: "service", logicalPath: "connections/service.ts" },
     ]);
+    expect(manifest.capabilities).toEqual([{ slot: "tools", logicalPath: "tools/search.ts" }]);
   });
 
   for (const files of [
@@ -133,3 +133,17 @@ describe("Eve explicit-root discovery", () => {
     }
   });
 });
+
+for (const files of [
+  { "connections/service.ts": "", "connections/service.mjs": "" },
+  { "connections/service.ts": "", "connections/service/connection.ts": "" },
+  { "connections/service/README.md": "" },
+  { "connections/service/connection.ts": "", "connections/service/connection.mjs": "" },
+  { connections: "not a directory" },
+]) {
+  it("rejects ambiguous or invalid connection sources without executing them", async () => {
+    await expect(
+      discoverAgent({ agentRoot: "/selected", source: source(files) }),
+    ).rejects.toThrow();
+  });
+}

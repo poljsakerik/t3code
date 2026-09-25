@@ -41,6 +41,7 @@ import {
   formatClaudeResumeCompactionQuestion,
 } from "@t3tools/shared/claudeCompaction";
 import {
+  AgentMcpConnections,
   type ChatAttachment,
   ClaudeSettings,
   defaultInstanceIdForDriver,
@@ -801,10 +802,13 @@ export const claudeAgentSdkQueryRunnerLiveLayer: Layer.Layer<
   }),
 );
 
+const encodeAgentMcpConnections = Schema.encodeSync(Schema.fromJsonString(AgentMcpConnections));
+
 export function makeClaudeQueryOptions(input: {
   readonly detachedConversation?: boolean;
   readonly conversationSkillDirectories?: ReadonlyArray<string>;
   readonly agentInstructions?: string | undefined;
+  readonly agentMcpConnections?: ProviderAdapterV2RuntimePolicy["agentMcpConnections"];
   readonly modelSelection: ModelSelection;
   readonly nativeThreadId: string;
   readonly resume: boolean;
@@ -864,6 +868,16 @@ export function makeClaudeQueryOptions(input: {
           ...(typeof querySettings === "object" && querySettings !== null ? querySettings : {}),
           autoCompactWindow: Number(input.settings.autoCompactWindow),
         } as ClaudeSdkSettings);
+  const agentMcpServers = Object.fromEntries(
+    Object.entries(input.agentMcpConnections ?? {}).map(([name, connection]) => [
+      name,
+      {
+        type: "http" as const,
+        url: connection.url,
+        ...(connection.headers === undefined ? {} : { headers: { ...connection.headers } }),
+      },
+    ]),
+  );
   const options: ClaudeAgentSdkQueryOptions = {
     model: compiledSelection.apiModelId,
     tools: claudeAgentSdkQueryToolsForSdk(selectedTools),
@@ -909,7 +923,9 @@ export function makeClaudeQueryOptions(input: {
       ? { pathToClaudeCodeExecutable: input.settings.binaryPath }
       : {}),
     ...(input.environment === undefined ? {} : { env: input.environment }),
-    ...(input.mcpServers === undefined ? {} : { mcpServers: input.mcpServers }),
+    ...(input.mcpServers === undefined && input.agentMcpConnections === undefined
+      ? {}
+      : { mcpServers: { ...agentMcpServers, ...input.mcpServers } }),
     systemPrompt: {
       type: "preset" as const,
       preset: "claude_code" as const,
@@ -925,7 +941,7 @@ export function makeClaudeQueryOptions(input: {
       cwd: input.cwd,
       additionalDirectories: [],
       settingSources: [],
-      mcpServers: {},
+      mcpServers: agentMcpServers,
       strictMcpConfig: true,
       plugins: [],
       extraArgs: {},
@@ -6964,7 +6980,7 @@ export function makeClaudeAdapterV2(
               : turnInput.runtimePolicy.workflowSkillAllowlist
                   .map((skill) => encodeURIComponent(skill))
                   .join(",")
-          }`;
+          }\nagent-mcp:${encodeAgentMcpConnections(turnInput.runtimePolicy.agentMcpConnections ?? {})}`;
           if (turnInput.runtimePolicy.detachedConversation) {
             const skills = yield* discoverClaudeSkills(
               adapterOptions.settings,
@@ -7078,6 +7094,7 @@ export function makeClaudeAdapterV2(
                   agentInstructions: turnInput.runtimePolicy.agentInstructions,
                 }
               : {}),
+            agentMcpConnections: turnInput.runtimePolicy.agentMcpConnections,
             attachmentsDir,
             settings: adapterOptions.settings,
             environment: adapterOptions.environment,

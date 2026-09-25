@@ -11,8 +11,13 @@ const requireAgent = NodeModule.createRequire(import.meta.url);
 /** Loads only the selected configuration export, independently of any model runtime. */
 export async function loadAgentConfiguration(manifest: AgentSourceManifest): Promise<unknown> {
   if (manifest.configModule === undefined) throw new Error("Agent has no configuration module.");
-  const configPath = NodePath.join(manifest.agentRoot, manifest.configModule.logicalPath);
-  const source = await createDiskProjectSource({ boundaryRoot: manifest.agentRoot }).readTextFile(
+  return loadAgentModule(manifest.agentRoot, manifest.configModule.logicalPath);
+}
+
+/** Loads a selected authored module without invoking Eve's runtime. */
+export async function loadAgentModule(agentRoot: string, logicalPath: string): Promise<unknown> {
+  const configPath = NodePath.join(agentRoot, logicalPath);
+  const source = await createDiskProjectSource({ boundaryRoot: agentRoot }).readTextFile(
     configPath,
   );
 

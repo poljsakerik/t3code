@@ -1,3 +1,4 @@
+import * as Option from "effect/Option";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -23,6 +24,26 @@ export const AgentSkillName = TrimmedNonEmptyString.check(
   Schema.isPattern(/^[A-Za-z][A-Za-z0-9:_-]*$/),
 );
 
+const decodeMcpUrl = Schema.decodeUnknownOption(Schema.URLFromString);
+
+/** Static Eve MCP connections supported by T3's provider runners. */
+export const AgentMcpConnection = Schema.Struct({
+  url: TrimmedNonEmptyString.check(
+    Schema.isPattern(/^https?:\/\/[^\s]+$/),
+    Schema.makeFilter((url) => Option.isSome(decodeMcpUrl(url)), {
+      expected: "a valid HTTP(S) URL",
+    }),
+  ),
+  description: TrimmedNonEmptyString,
+  headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+});
+export type AgentMcpConnection = typeof AgentMcpConnection.Type;
+export const AgentMcpConnections = Schema.Record(
+  TrimmedNonEmptyString.check(Schema.isPattern(/^(?!t3-code$)[a-zA-Z][a-zA-Z0-9_-]*$/)),
+  AgentMcpConnection,
+);
+export type AgentMcpConnections = typeof AgentMcpConnections.Type;
+
 /** Frozen, provider-independent input to T3's agent harnesses. */
 export const ResolvedAgentDefinition = Schema.Struct({
   id: TrimmedNonEmptyString,
@@ -30,6 +51,7 @@ export const ResolvedAgentDefinition = Schema.Struct({
   skills: Schema.Array(AgentSkillName)
     .check(Schema.isMaxLength(20), Schema.isUnique())
     .pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  mcpConnections: Schema.optional(AgentMcpConnections),
   instructions: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
 });

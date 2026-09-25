@@ -13,6 +13,7 @@ import {
 } from "@t3tools/shared/threadPullRequests";
 import {
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+  AgentMcpConnections,
   type ChatAttachment,
   reviewableRun,
   CommandId,
@@ -249,6 +250,8 @@ export function isProposedPlanImplementable(input: {
   if (input.planStatus === "active") return true;
   return input.workflowStatus === "planned" && input.planStatus === "completed";
 }
+
+const agentMcpConnectionsEqual = Schema.toEquivalence(Schema.UndefinedOr(AgentMcpConnections));
 
 function workflowSkillAllowlistsEqual(
   left: ReadonlyArray<string> | undefined,
@@ -5012,6 +5015,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : workflow.approvedPlanId === null && command.sourcePlanRef === undefined
             ? workflow.profile.planner
             : workflow.profile.implementer);
+      const agentMcpConnections =
+        projection.thread.agent?.definition.mcpConnections ??
+        workflowAgent?.mcpConnections ??
+        command.agentMcpConnections;
       const modelSelection =
         projection.thread.agent?.definition.modelSelection ??
         workflowAgent?.modelSelection ??
@@ -5159,7 +5166,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: "Notifications must be server- or provider-created queued messages.",
         });
       }
-      if (workflowSkillAllowlist !== undefined) {
+      if (workflowSkillAllowlist !== undefined || agentMcpConnections !== undefined) {
         const adapter = yield* providerAdapters.get(modelSelection.instanceId).pipe(
           Effect.mapError(
             (cause) =>
@@ -5170,7 +5177,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               }),
           ),
         );
-        if (adapter.workflowSkillIsolation !== "native") {
+        if (
+          agentMcpConnections !== undefined &&
+          adapter.driver !== "codex" &&
+          adapter.driver !== "claudeAgent"
+        ) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Provider ${adapter.driver} does not support authored agent MCP connections.`,
+          });
+        }
+        if (workflowSkillAllowlist !== undefined && adapter.workflowSkillIsolation !== "native") {
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
             commandType: command.type,
@@ -5334,13 +5352,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         );
         if (
           targetRun !== undefined &&
-          !workflowSkillAllowlistsEqual(targetRun.workflowSkillAllowlist, workflowSkillAllowlist)
+          (!workflowSkillAllowlistsEqual(
+            targetRun.workflowSkillAllowlist,
+            workflowSkillAllowlist,
+          ) ||
+            !agentMcpConnectionsEqual(targetRun.agentMcpConnections, agentMcpConnections))
         ) {
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
             commandType: command.type,
             cause:
-              "A workflow skill policy change requires a fresh provider thread and cannot steer or restart an active turn.",
+              "A workflow skill policy change or MCP connection change requires a fresh provider thread and cannot steer or restart an active turn.",
           });
         }
         yield* dispatchSteerIntoRun({
@@ -5381,12 +5403,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : projection.runs.findLast(
               (candidate) => candidate.providerThreadId === activeProviderThread.id,
             );
-      const workflowSkillPolicyChanged =
+      const workflowRuntimePolicyChanged =
         activeProviderThread !== undefined &&
-        !workflowSkillAllowlistsEqual(
+        (!workflowSkillAllowlistsEqual(
           activeProviderThreadRun?.workflowSkillAllowlist,
           workflowSkillAllowlist,
-        );
+        ) ||
+          !agentMcpConnectionsEqual(
+            activeProviderThreadRun?.agentMcpConnections,
+            agentMcpConnections,
+          ));
       const activeRun = projection.runs.find(isBlockingRun);
       const pendingMergeBackTransfers = pendingMergeBackTransfersForThread(projection);
       const shouldQueue =
@@ -5395,12 +5421,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           dispatchMode.type === "start_immediately" ||
           dispatchMode.type === "queue_after_active");
       if (shouldQueue) {
-        if (workflowSkillPolicyChanged) {
+        if (workflowRuntimePolicyChanged) {
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
             commandType: command.type,
             cause:
-              "A workflow role with a different skill allowlist cannot be queued on the active provider thread.",
+              "A workflow role with a different skill allowlist or MCP connections cannot be queued on the active provider thread.",
           });
         }
         if (pendingMergeBackTransfers.length > 0) {
@@ -5505,6 +5531,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ordinal,
           providerInstanceId: modelSelection.instanceId,
           modelSelection,
+          ...(agentMcpConnections === undefined ? {} : { agentMcpConnections }),
           ...(workflowSkillAllowlist === undefined
             ? {}
             : { workflowSkillAllowlist: [...workflowSkillAllowlist] }),
@@ -5731,7 +5758,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         activeProviderThread.providerInstanceId !== modelSelection.instanceId;
       const isProviderSwitch =
         activeProviderThread !== undefined &&
-        (providerInstanceChanged || workflowSkillPolicyChanged);
+        (providerInstanceChanged || workflowRuntimePolicyChanged);
       // Account overlays share native history. Selection commands may already
       // have updated the app thread, so classify against the native thread's owner.
       const canResumeAcrossInstances =
@@ -5861,6 +5888,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ordinal,
           providerInstanceId: modelSelection.instanceId,
           modelSelection,
+          ...(agentMcpConnections === undefined ? {} : { agentMcpConnections }),
           ...(workflowSkillAllowlist === undefined
             ? {}
             : { workflowSkillAllowlist: [...workflowSkillAllowlist] }),
@@ -6565,6 +6593,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ordinal,
         providerInstanceId: modelSelection.instanceId,
         modelSelection,
+        ...(agentMcpConnections === undefined ? {} : { agentMcpConnections }),
         ...(workflowSkillAllowlist === undefined
           ? {}
           : { workflowSkillAllowlist: [...workflowSkillAllowlist] }),
@@ -7437,6 +7466,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         attachments: [],
         modelSelection: reviewer.modelSelection,
         workflowSkillAllowlist: reviewer.skills,
+        ...(reviewer.mcpConnections === undefined
+          ? {}
+          : { agentMcpConnections: reviewer.mcpConnections }),
         dispatchMode: { type: "start_immediately" },
         createdBy: command.createdBy,
         creationSource: command.creationSource,

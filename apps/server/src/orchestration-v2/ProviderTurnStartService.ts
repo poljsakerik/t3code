@@ -56,11 +56,18 @@ import {
 
 export function providerRuntimePolicyForRun(
   base: ProviderAdapterV2RuntimePolicy,
-  run: Pick<OrchestrationV2Run, "workflowSkillAllowlist">,
+  run: Pick<OrchestrationV2Run, "workflowSkillAllowlist" | "agentMcpConnections">,
 ): ProviderAdapterV2RuntimePolicy {
-  if (base.detachedConversation || run.workflowSkillAllowlist === undefined) return base;
+  if (
+    base.detachedConversation ||
+    (run.workflowSkillAllowlist === undefined && run.agentMcpConnections === undefined)
+  )
+    return base;
   return ProviderAdapterV2RuntimePolicy.make({
     ...base,
+    ...(run.agentMcpConnections === undefined
+      ? {}
+      : { agentMcpConnections: run.agentMcpConnections }),
     ...(run.workflowSkillAllowlist === undefined
       ? {}
       : { workflowSkillAllowlist: [...run.workflowSkillAllowlist] }),

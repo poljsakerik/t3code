@@ -1081,6 +1081,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         name: id,
         skills: [],
         instructions: "Review carefully",
+        mcpConnections: { docs: { url: "https://docs.example/mcp", description: "Docs" } },
         modelSelection: claudeModelSelection,
       });
       const workflow: ThreadWorkflowState = {
@@ -1266,6 +1267,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
       const reviewerRun = (yield* orchestrator.getThreadProjection(freshId)).runs[0]!;
       assert.deepEqual(reviewerRun.modelSelection, claudeModelSelection);
       assert.deepEqual(reviewerRun.workflowSkillAllowlist, ["code-review"]);
+      assert.deepEqual(reviewerRun.agentMcpConnections, agent("fresh").mcpConnections);
 
       assert.lengthOf(
         result.storedEvents.filter((stored) => stored.event.type === "thread.created"),
@@ -1332,8 +1334,18 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
               version: 1,
               id: "fixed",
               name: "Fixed",
-              planner: { ...agent, modelSelection: claudeModelSelection },
-              implementer: { ...agent, modelSelection: implementerSelection },
+              planner: {
+                ...agent,
+                modelSelection: claudeModelSelection,
+                mcpConnections: { docs: { url: "https://docs.example/mcp", description: "Docs" } },
+              },
+              implementer: {
+                ...agent,
+                modelSelection: implementerSelection,
+                mcpConnections: {
+                  issues: { url: "https://issues.example/mcp", description: "Issues" },
+                },
+              },
               reviewers: [agent],
               checks: [{ id: "check", name: "Check", run: "true", timeoutMs: 1000 }],
               limits: { maxRevisionCycles: 3, identicalFailureLimit: 2 },
@@ -1378,6 +1390,12 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
           assert.deepEqual(
             projection.runs[0]?.modelSelection,
             hasPlan ? implementerSelection : claudeModelSelection,
+          );
+          assert.deepEqual(
+            projection.runs[0]?.agentMcpConnections,
+            hasPlan
+              ? workflow.profile!.implementer.mcpConnections
+              : workflow.profile!.planner.mcpConnections,
           );
           assert.isUndefined(projection.runs[0]?.workflowSkillAllowlist);
         }),

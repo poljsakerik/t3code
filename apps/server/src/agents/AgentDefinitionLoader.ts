@@ -1,13 +1,15 @@
 import { createDiskProjectSource } from "@t3tools/eve/project-source";
 import * as Path from "effect/Path";
 import {
+  AgentMcpConnection,
+  AgentMcpConnections,
   ProviderInstanceId,
   AgentDefinitionError,
   ResolvedAgentDefinition,
   type AgentDefinition,
 } from "@t3tools/contracts";
 import { discoverAgent } from "@t3tools/eve/discover";
-import { loadAgentConfiguration } from "@t3tools/eve/load-module";
+import { loadAgentConfiguration, loadAgentModule } from "@t3tools/eve/load-module";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -16,6 +18,18 @@ const AgentConfiguration = Schema.Struct({
   description: Schema.optional(Schema.String),
 });
 const decodeConfiguration = Schema.decodeUnknownEffect(AgentConfiguration, {
+  onExcessProperty: "error",
+});
+// Eve helpers stamp definitions with non-enumerable identity and protocol symbols.
+const decodeAuthoredMcpConnection = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    ...AgentMcpConnection.fields,
+    [Symbol.for("eve.connection-protocol")]: Schema.optional(Schema.Literal("mcp")),
+    [Symbol.for("eve.definition-source-key")]: Schema.optional(Schema.String),
+  }),
+  { onExcessProperty: "error" },
+);
+const decodeMcpConnections = Schema.decodeUnknownEffect(AgentMcpConnections, {
   onExcessProperty: "error",
 });
 const decodeDefinition = Schema.decodeUnknownEffect(ResolvedAgentDefinition);
@@ -54,6 +68,50 @@ export const loadAgentDefinition = Effect.fn("loadAgentDefinition")(
         message: `Agent ${definition.name} has an authored ${capability.slot} capability, which cannot run through the T3 provider harness.`,
       });
     }
+    const connectionExports: Record<string, unknown> = {};
+    for (const connection of manifest.connections) {
+      if (connection.name === "t3-code")
+        return yield* new AgentDefinitionError({
+          path: connection.logicalPath,
+          message: "The MCP connection name t3-code is reserved for T3's runner.",
+        });
+      const connectionExport = yield* Effect.tryPromise({
+        try: () => loadAgentModule(manifest.agentRoot, connection.logicalPath),
+        catch: (cause) =>
+          new AgentDefinitionError({
+            path: connection.logicalPath,
+            message: `Could not import MCP connection ${connection.name}.`,
+            cause,
+          }),
+      });
+      const connectionConfig = yield* decodeAuthoredMcpConnection(connectionExport).pipe(
+        Effect.mapError(
+          (cause) =>
+            new AgentDefinitionError({
+              path: connection.logicalPath,
+              message:
+                "MCP connections require an HTTP(S) url, description, and optional static string headers. Eve auth callbacks, tool filters, approvals, and other runtime settings are not supported by T3's runner.",
+              cause,
+            }),
+        ),
+      );
+      connectionExports[connection.name] = {
+        url: connectionConfig.url,
+        description: connectionConfig.description,
+        ...(connectionConfig.headers === undefined ? {} : { headers: connectionConfig.headers }),
+      };
+    }
+    const mcpConnections = yield* decodeMcpConnections(connectionExports).pipe(
+      Effect.mapError(
+        (cause) =>
+          new AgentDefinitionError({
+            path: path.join(manifest.agentRoot, "connections"),
+            message:
+              "MCP connection names must start with a letter and contain only letters, digits, hyphens, or underscores.",
+            cause,
+          }),
+      ),
+    );
     const parts: string[] = [];
     for (const instruction of manifest.instructions) {
       if (instruction.sourceKind === "module") {
@@ -156,6 +214,7 @@ export const loadAgentDefinition = Effect.fn("loadAgentDefinition")(
         .join("\n\n")
         .trim(),
       skills,
+      ...(manifest.connections.length === 0 ? {} : { mcpConnections }),
       modelSelection: {
         instanceId: ProviderInstanceId.make(provider === "anthropic" ? "claudeAgent" : "codex"),
         model: model!,

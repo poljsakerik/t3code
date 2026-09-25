@@ -1,5 +1,6 @@
 import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
 import {
+  AgentMcpConnections,
   ChatAttachment,
   CheckpointId,
   MessageId,
@@ -47,6 +48,7 @@ import type {
 export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   detachedConversation: Schema.optional(Schema.Boolean),
   agentInstructions: Schema.optional(Schema.String),
+  agentMcpConnections: Schema.optional(AgentMcpConnections),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   cwd: Schema.NullOr(Schema.String),

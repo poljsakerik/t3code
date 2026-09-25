@@ -1,4 +1,8 @@
-import { AgentConversation, AgentConversationOwner } from "./agentDefinitions.ts";
+import {
+  AgentConversation,
+  AgentConversationOwner,
+  AgentMcpConnections,
+} from "./agentDefinitions.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import { AgentDefinitionGetInput, agentDefinitionKey } from "./agentDefinitions.ts";
 import * as Effect from "effect/Effect";
@@ -488,6 +492,7 @@ export const OrchestrationV2Run = Schema.Struct({
   ordinal: PositiveInt,
   providerInstanceId: ProviderInstanceId,
   modelSelection: ModelSelection,
+  agentMcpConnections: Schema.optional(AgentMcpConnections),
   workflowSkillAllowlist: Schema.optional(Schema.Array(WorkflowSkillName)),
   providerThreadId: Schema.NullOr(ProviderThreadId),
   userMessageId: MessageId,
@@ -2601,6 +2606,7 @@ export const OrchestrationV2Command = Schema.Union([
     titleSeed: Schema.optional(TrimmedNonEmptyString),
     modelSelection: Schema.optional(ModelSelection),
     /** Server-owned native skill allowlist for verified-workflow reviewers. */
+    agentMcpConnections: Schema.optional(AgentMcpConnections),
     workflowSkillAllowlist: Schema.optional(Schema.Array(WorkflowSkillName)),
     sourcePlanRef: Schema.optional(Schema.Struct({ threadId: ThreadId, planId: PlanId })),
     restartContinuationOfRunId: Schema.optional(RunId),

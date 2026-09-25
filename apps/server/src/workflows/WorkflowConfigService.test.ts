@@ -6,12 +6,35 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as NodeOS from "node:os";
+import { afterEach, beforeEach, vi } from "vite-plus/test";
 
 import { ServerConfig, layerTest as serverConfigLayerTest } from "../config.ts";
 import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
 import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { WorkflowConfigService, layer } from "./WorkflowConfigService.ts";
+
+vi.mock("node:os", async (importOriginal) => {
+  const os = await importOriginal<typeof NodeOS>();
+  return { ...os, homedir: vi.fn(os.homedir) };
+});
+
+let globalHome: string;
+beforeEach(() =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    globalHome = yield* fs.makeTempDirectory({ prefix: "t3-workflow-home-" });
+    vi.mocked(NodeOS.homedir).mockReturnValue(globalHome);
+  }).pipe(Effect.provide(NodeServices.layer), Effect.runPromise),
+);
+afterEach(() =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    vi.mocked(NodeOS.homedir).mockReset();
+    yield* fs.remove(globalHome, { recursive: true, force: true });
+  }).pipe(Effect.provide(NodeServices.layer), Effect.runPromise),
+);
 
 const projectRepositoryLayer = Layer.succeed(ProjectionProjectRepository, {
   upsert: () => Effect.void,
@@ -68,7 +91,148 @@ function writeAgent(
   );
 }
 
+const reusableProfile = (reviewers = ["reviewer"]) =>
+  JSON.stringify({
+    version: 1,
+    id: "reusable",
+    name: "Reusable",
+    planner: "planner",
+    implementer: "implementer",
+    reviewers,
+    checks: [{ id: "test", name: "Tests", run: "test-command" }],
+    limits: { maxRevisionCycles: 3, identicalFailureLimit: 2 },
+  });
+
 it.layer(testLayer)("WorkflowConfigService", (it) => {
+  it.effect("reuses global agents across projects and mixes them with project agents", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const config = yield* ServerConfig;
+      const workflows = yield* WorkflowConfigService;
+      const globalRoot = yield* fs.realPath(globalHome);
+      yield* writeAgent(globalHome, "planner", "Shared planning.", "anthropic/claude-sonnet-4-6");
+      yield* writeAgent(globalHome, "reviewer", "Shared review.");
+      yield* writeYaml(
+        `${globalHome}/.t3/agents/reviewer/skills/checklist/SKILL.md`,
+        "Global checklist.",
+      );
+      for (const source of ["global", "project"]) {
+        const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-workspace-" });
+        yield* writeAgent(workspaceRoot, "implementer", `${source} implementation.`);
+        yield* writeYaml(
+          source === "global"
+            ? `${config.stateDir}/workflows/profiles/reusable.json`
+            : `${workspaceRoot}/.t3/workflows/profiles/reusable.json`,
+          reusableProfile(),
+        );
+        const { profile, workspaceRoot: resolvedRoot } = yield* workflows.resolveProfile({
+          projectId: ProjectId.make(workspaceRoot),
+          profileId: "reusable",
+        });
+        assert.equal(resolvedRoot, workspaceRoot);
+        assert.equal(profile.planner.instructions, "Shared planning.");
+        assert.equal(profile.planner.modelSelection?.instanceId, "claudeAgent");
+        assert.equal(profile.implementer.instructions, `${source} implementation.`);
+        assert.include(profile.reviewers[0]!.instructions, "Global checklist.");
+        assert.include(
+          profile.reviewers[0]!.instructions,
+          `${globalRoot}/.t3/agents/reviewer/skills/checklist`,
+        );
+      }
+    }).pipe(Effect.scoped),
+  );
+
+  for (const reference of ["reviewer", ".t3/agents/reviewer"]) {
+    it.effect(`prefers the project agent over the global agent: ${reference}`, () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const workflows = yield* WorkflowConfigService;
+        const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-workspace-" });
+        for (const name of ["planner", "implementer", "reviewer"]) {
+          yield* writeAgent(workspaceRoot, name, "Local instructions.");
+        }
+        yield* writeAgent(globalHome, "reviewer", "Global instructions.");
+        yield* writeAgent(globalHome, "reviewer/subagents/reviewer", "Nested global instructions.");
+        yield* writeYaml(
+          `${workspaceRoot}/.t3/workflows/profiles/reusable.json`,
+          reusableProfile([reference]),
+        );
+        const { profile } = yield* workflows.resolveProfile({
+          projectId: ProjectId.make(workspaceRoot),
+          profileId: "reusable",
+        });
+        assert.equal(profile.reviewers[0]?.instructions, "Local instructions.");
+      }).pipe(Effect.scoped),
+    );
+  }
+
+  for (const scope of ["project", "global"]) {
+    it.effect(`reports duplicate names within the ${scope} catalog`, () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const workflows = yield* WorkflowConfigService;
+        const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-workspace-" });
+        for (const name of ["planner", "implementer"]) {
+          yield* writeAgent(workspaceRoot, name, "Local instructions.");
+        }
+        const root = scope === "project" ? workspaceRoot : globalHome;
+        yield* writeAgent(root, "reviewer", "Review.");
+        yield* writeAgent(root, "reviewer/subagents/reviewer", "Nested review.");
+        yield* writeYaml(
+          `${workspaceRoot}/.t3/workflows/profiles/reusable.json`,
+          reusableProfile(),
+        );
+        const error = yield* workflows
+          .resolveProfile({
+            projectId: ProjectId.make(workspaceRoot),
+            profileId: "reusable",
+          })
+          .pipe(Effect.flip);
+        assert.include(error.detail, "ambiguous");
+        const realRoot = yield* fs.realPath(root);
+        assert.include(error.detail, `${realRoot}/.t3/agents/reviewer`);
+        assert.include(error.detail, `${realRoot}/.t3/agents/reviewer/subagents/reviewer`);
+      }).pipe(Effect.scoped),
+    );
+  }
+
+  it.effect("does not count the home catalog twice when the project aliases home", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const workflows = yield* WorkflowConfigService;
+      const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-workspace-" });
+      yield* fs.symlink(globalHome, `${workspaceRoot}/home`);
+      for (const name of ["planner", "implementer", "reviewer"]) {
+        yield* writeAgent(globalHome, name, "Shared instructions.");
+      }
+      yield* writeYaml(
+        `${globalHome}/.t3/workflows/profiles/reusable.json`,
+        reusableProfile([".t3/agents/reviewer"]),
+      );
+      const { profile } = yield* workflows.resolveProfile({
+        projectId: ProjectId.make(`${workspaceRoot}/home`),
+        profileId: "reusable",
+      });
+      assert.equal(profile.reviewers[0]?.instructions, "Shared instructions.");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("reports an agent missing from both catalogs", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const workflows = yield* WorkflowConfigService;
+      const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-workspace-" });
+      yield* writeYaml(`${workspaceRoot}/.t3/workflows/profiles/reusable.json`, reusableProfile());
+      const error = yield* workflows
+        .resolveProfile({
+          projectId: ProjectId.make(workspaceRoot),
+          profileId: "reusable",
+        })
+        .pipe(Effect.flip);
+      assert.include(error.detail, "planner was not found in the project or global");
+    }).pipe(Effect.scoped),
+  );
+
   it.effect(
     "includes attached skill instructions for every role without sharing them between agents",
     () =>

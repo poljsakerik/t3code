@@ -1429,7 +1429,9 @@ export const codexAppServerClientFactoryFromSettingsLayer: Layer.Layer<
           const command = yield* makeCodexAppServerSpawnCommand({
             command: input.settings.binaryPath || "codex",
             args: [
-              ...codexAppServerArgs(resolveCodexLaunchArgs(input.settings.launchArgs, input.environment)),
+              ...codexAppServerArgs(
+                resolveCodexLaunchArgs(input.settings.launchArgs, input.environment),
+              ),
               ...(input.runtimePolicy.detachedConversation
                 ? [
                     "-c",
@@ -1703,7 +1705,9 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             detachedConfig = {
               default_permissions: "t3-agent-conversation",
               project_doc_max_bytes: 0,
-              developer_instructions: input.runtimePolicy.agentInstructions,
+              ...(input.runtimePolicy.agentInstructions === undefined
+                ? {}
+                : { developer_instructions: input.runtimePolicy.agentInstructions }),
               mcp_servers: disabledEntries(config.mcp_servers),
               plugins: disabledEntries(config.plugins),
               apps: { ...disabledEntries(config.apps), _default: { enabled: false } },

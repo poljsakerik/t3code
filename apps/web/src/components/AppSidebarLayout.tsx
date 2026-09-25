@@ -5,7 +5,6 @@ import { agentConversationRefFromHref } from "../agentConversationNavigation.log
 import { useAgentConversationNavigation } from "../agentConversationNavigation";
 import { useThreadShell } from "../state/entities";
 import { resolveThreadRouteTarget } from "../threadRoutes";
-import { useParams } from "@tanstack/react-router";
 import { useAtomValue } from "@effect/atom-react";
 import * as Schema from "effect/Schema";
 import {

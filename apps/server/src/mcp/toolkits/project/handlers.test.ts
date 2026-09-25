@@ -55,7 +55,7 @@ it.effect("attributes a launched thread's first message to the calling thread", 
       }),
       Layer.mock(ThreadLaunch.ThreadLaunchService)({
         launch: (input) => {
-          launchedSender = input.initialMessage?.senderThreadId;
+          launchedSender = "projectId" in input ? input.initialMessage?.senderThreadId : undefined;
           return Effect.succeed({
             threadId: input.threadId,
             projection: {

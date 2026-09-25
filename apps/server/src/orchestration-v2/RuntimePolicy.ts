@@ -85,6 +85,9 @@ export const layerFromProjectRepository: Layer.Layer<
             runtimeMode: "approval-required",
             interactionMode: "default",
             agentInstructions: input.thread.agent.definition.instructions,
+            ...(input.thread.agent.definition.mcpConnections === undefined
+              ? {}
+              : { agentMcpConnections: input.thread.agent.definition.mcpConnections }),
             detachedConversation: true,
             approvalPolicy: "on-request",
             workflowSkillAllowlist: [...input.thread.agent.definition.skills],

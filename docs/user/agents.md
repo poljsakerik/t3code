@@ -43,4 +43,26 @@ A conversation uses the agent's instructions, installed skills and supporting fi
 
 The source project only supplies the definition. Direct conversations run in their own managed directory, without attaching a project or worktree or loading its instructions. They can run installed commands such as `gh` and access the network using the environment's existing CLI authentication. For a PR review, provide the GitHub URL; no project checkout is required. Commands use supervised permissions, with approval requests when additional access is needed. Git, terminal, and checkpoint controls tied to a project remain unavailable. Codex needs a version supporting named permission profiles; Claude needs its filesystem sandbox available.
 
-Existing conversations retain their saved instructions, model, and installed skill files when the definition changes or disappears. Native provider skills must remain available; a missing required skill produces an error. Start a new conversation to use an edited definition. Eve tools, external connections, custom memory, and hooks are not part of direct conversations in this release.
+Existing conversations retain their saved instructions, model, and installed skill files when the definition changes or disappears. Native provider skills must remain available; a missing required skill produces an error. Start a new conversation to use an edited definition. Eve tools, custom memory, and hooks are not part of direct conversations in this release.
+
+## MCP connections
+
+Add a file under an agent's `connections/` directory to attach an MCP server:
+
+```ts
+// .t3/agents/assistant/connections/docs.ts
+export default {
+  url: "https://your-server.example/mcp",
+  description: "Search our documentation",
+  // Optional, for servers requiring authentication:
+  headers: { Authorization: `Bearer ${process.env.DOCS_MCP_TOKEN}` },
+};
+```
+
+The filename names the connection. Eve's folder form, `connections/docs/connection.ts`, and supported JavaScript module extensions work too. Use either file or folder form for each connection. An Eve `defineMcpClientConnection(...)` export is accepted when Eve is installed in the project. The name `t3-code` is reserved.
+
+T3 connects these servers through the agent's Codex or Claude Code harness in direct conversations, workflow stages, and reviews. Connections run from the connected environment, including when you use a remote browser or mobile client. Direct conversations expose only the agent's attached MCPs; project workflows retain their normal provider integrations.
+
+Use Streamable HTTP endpoints and static string headers. Omit `headers` for servers without authentication. Stdio servers, SSE-only endpoints, Eve auth/header callbacks, interactive Eve OAuth, tool filters, and custom approval policies are not supported. Tool permissions follow T3's runner.
+
+Connections and resolved header values are saved with the agent snapshot when you create a conversation or workflow. After editing or removing a connection, or rotating its credentials, start a new conversation or workflow to use the change. Browsing the agent catalog does not execute connection modules or contact MCP servers.

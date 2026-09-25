@@ -682,3 +682,24 @@ for (const previousMessages of [[], ["/compact", " /COMPACT "]]) {
       }),
   );
 }
+
+it("restores MCP connections from a saved run and keeps detached definitions authoritative", () => {
+  const base = ProviderAdapterV2RuntimePolicy.make({
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    cwd: "/workspace",
+  });
+  const connections = { docs: { url: "https://docs.example/mcp", description: "Docs" } };
+  expect(
+    ProviderTurnStart.providerRuntimePolicyForRun(base, { agentMcpConnections: connections })
+      .agentMcpConnections,
+  ).toEqual(connections);
+  const detached = { ...base, detachedConversation: true, agentMcpConnections: connections };
+  expect(
+    ProviderTurnStart.providerRuntimePolicyForRun(detached, { agentMcpConnections: {} })
+      .agentMcpConnections,
+  ).toEqual(connections);
+  expect(
+    ProviderTurnStart.providerRuntimePolicyForRun(base, {}).agentMcpConnections,
+  ).toBeUndefined();
+});

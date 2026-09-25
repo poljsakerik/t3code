@@ -117,6 +117,97 @@ it.layer(NodeServices.layer)("AgentDefinitionLoader", (it) => {
     );
   }
 
+  it.effect(
+    "loads file and folder MCP connections, and freezes them across edits and removal",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { root, definition } = yield* fixture({
+          "agent.ts": 'export default { model: "openai/gpt-5.4" };',
+          "instructions.md": "Review.",
+          "connections/docs.ts":
+            'export default { url: "https://docs.example/mcp", description: "Docs", headers: { Authorization: "Bearer test" } };',
+          "connections/issues/connection.mjs":
+            'export default { url: "http://localhost:9000/mcp", description: "Issues" };',
+          "subagents/other/connections/private.ts": "throw new Error('must not run');",
+        });
+        const first = yield* loadAgentDefinition(root, definition);
+        assert.deepEqual(first.mcpConnections, {
+          docs: {
+            url: "https://docs.example/mcp",
+            description: "Docs",
+            headers: { Authorization: "Bearer test" },
+          },
+          issues: { url: "http://localhost:9000/mcp", description: "Issues" },
+        });
+        yield* fs.writeFileString(
+          path.join(root, definition.directory, "connections/docs.ts"),
+          'export default { url: "https://new.example/mcp", description: "New docs" };',
+        );
+        assert.equal(
+          (yield* loadAgentDefinition(root, definition)).mcpConnections?.docs?.url,
+          "https://new.example/mcp",
+        );
+        yield* fs.remove(path.join(root, definition.directory, "connections"), { recursive: true });
+        assert.isUndefined((yield* loadAgentDefinition(root, definition)).mcpConnections);
+        assert.equal(first.mcpConnections?.docs?.url, "https://docs.example/mcp");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("accepts Eve's non-enumerable MCP definition stamps", () =>
+    Effect.gen(function* () {
+      const { root, definition } = yield* fixture({
+        "agent.ts": 'export default { model: "openai/gpt-5.4" };',
+        "instructions.md": "Review.",
+        "connections/docs.ts": `const connection = { url: "https://docs.example/mcp", description: "Docs" };
+          Object.defineProperty(connection, Symbol.for("eve.connection-protocol"), { value: "mcp" });
+          Object.defineProperty(connection, Symbol.for("eve.definition-source-key"), { value: "connection:https://docs.example/mcp" });
+          export default connection;`,
+      });
+      assert.equal(
+        (yield* loadAgentDefinition(root, definition)).mcpConnections?.docs?.url,
+        "https://docs.example/mcp",
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("rejects names reserved for T3's runner", () =>
+    Effect.gen(function* () {
+      const { root, definition } = yield* fixture({
+        "agent.ts": 'export default { model: "openai/gpt-5.4" };',
+        "instructions.md": "Review.",
+        "connections/t3-code.ts": "throw new Error('must not execute');",
+      });
+      assert.include(
+        (yield* Effect.flip(loadAgentDefinition(root, definition))).message,
+        "reserved",
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  for (const config of [
+    '{ url: "file:///tmp/mcp", description: "Invalid" }',
+    '{ url: "https://:invalid", description: "Invalid" }',
+    '{ url: "https://example.com/mcp", description: "Auth", auth: { getToken() {} } }',
+    '{ url: "https://example.com/mcp", description: "Headers", headers: () => ({}) }',
+    '{ url: "https://example.com/mcp", description: "Tools", tools: { allow: ["search"] } }',
+    '{ url: "https://example.com/mcp", description: "Approval", approval: () => true }',
+    '{ command: "npx", args: ["some-server"] }',
+  ]) {
+    it.effect(`rejects unsupported MCP settings: ${config}`, () =>
+      Effect.gen(function* () {
+        const { root, definition } = yield* fixture({
+          "agent.ts": 'export default { model: "openai/gpt-5.4" };',
+          "instructions.md": "Review.",
+          "connections/service.ts": `export default ${config};`,
+        });
+        const failure = yield* Effect.flip(loadAgentDefinition(root, definition));
+        assert.include(failure.message, "MCP connections require");
+      }).pipe(Effect.scoped),
+    );
+  }
+
   for (const [name, files, message] of [
     ["missing model", { "agent.ts": "export default {};" }, /configuration must declare/],
     [

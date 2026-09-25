@@ -6874,3 +6874,37 @@ it("isolates detached Claude configuration from global integrations and project 
     }).installPermissionCallback,
   );
 });
+
+for (const detachedConversation of [true, false]) {
+  it(`passes authored MCPs to Claude (detached: ${detachedConversation})`, () => {
+    const options = makeClaudeQueryOptions({
+      nativeThreadId: "mcp-session",
+      resume: false,
+      cwd: "/managed/conversation",
+      detachedConversation,
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "claude-sonnet-4-6",
+      },
+      agentMcpConnections: {
+        docs: {
+          url: "https://docs.example/mcp",
+          description: "Docs",
+          headers: { Authorization: "Bearer test" },
+        },
+      },
+      mcpServers: { "t3-code": { type: "http", url: "http://localhost:8000/mcp" } },
+    });
+    assert.deepEqual(options.mcpServers?.docs, {
+      type: "http",
+      url: "https://docs.example/mcp",
+      headers: { Authorization: "Bearer test" },
+    });
+    if (detachedConversation) {
+      assert.isUndefined(options.mcpServers?.["t3-code"]);
+      assert.isTrue(options.strictMcpConfig);
+    } else {
+      assert.isDefined(options.mcpServers?.["t3-code"]);
+    }
+  });
+}

@@ -1180,16 +1180,35 @@ export function codexThreadRuntimeParams(input: {
     config: {
       ...CODEX_THREAD_CONFIG,
       ...input.workflowSkillConfig,
-      ...(mcpSession === undefined
+      ...(mcpSession === undefined && input.runtimePolicy?.agentMcpConnections === undefined
         ? {}
         : {
             mcp_servers: {
-              "t3-code": {
-                url: mcpSession.endpoint,
-                http_headers: {
-                  Authorization: mcpSession.authorizationHeader,
-                },
-              },
+              ...(input.workflowSkillConfig?.mcp_servers as
+                | Record<string, Schema.Json>
+                | undefined),
+              ...Object.fromEntries(
+                Object.entries(input.runtimePolicy?.agentMcpConnections ?? {}).map(
+                  ([name, connection]) => [
+                    name,
+                    {
+                      enabled: true,
+                      url: connection.url,
+                      ...(connection.headers === undefined
+                        ? {}
+                        : { http_headers: { ...connection.headers } }),
+                    },
+                  ],
+                ),
+              ),
+              ...(mcpSession === undefined
+                ? {}
+                : {
+                    "t3-code": {
+                      url: mcpSession.endpoint,
+                      http_headers: { Authorization: mcpSession.authorizationHeader },
+                    },
+                  }),
             },
           }),
     },

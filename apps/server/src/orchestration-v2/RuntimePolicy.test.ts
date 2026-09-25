@@ -87,6 +87,7 @@ it.layer(TestLayer)("RuntimePolicyV2", (it) => {
         name: "Writer",
         instructions: "Write clearly.",
         skills: ["writing"],
+        mcpConnections: { docs: { url: "https://docs.example/mcp", description: "Docs" } },
         modelSelection,
       };
       const resolved = yield* policy.resolve({
@@ -103,6 +104,7 @@ it.layer(TestLayer)("RuntimePolicyV2", (it) => {
       });
       assert.equal(resolved.cwd, "/managed/writer");
       assert.equal(resolved.agentInstructions, "Write clearly.");
+      assert.deepEqual(resolved.agentMcpConnections, definition.mcpConnections);
       assert.deepEqual(resolved.workflowSkillAllowlist, ["writing"]);
       assert.isTrue(resolved.detachedConversation);
       assert.equal(resolved.approvalPolicy, "on-request");

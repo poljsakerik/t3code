@@ -6915,3 +6915,33 @@ it.effect("keeps detached turns on their named permission profile and frozen ins
     assert.equal(params.collaborationMode?.settings.developer_instructions, "Write clearly.");
   }),
 );
+
+it("enables only authored MCPs over detached Codex integration exclusions", () => {
+  const result = codexThreadRuntimeParams({
+    threadId: ThreadId.make("mcp-conversation"),
+    runtimePolicy: {
+      cwd: "/managed/conversation",
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      detachedConversation: true,
+      agentMcpConnections: {
+        docs: {
+          url: "https://docs.example/mcp",
+          description: "Docs",
+          headers: { Authorization: "Bearer test" },
+        },
+      },
+    },
+    workflowSkillConfig: {
+      mcp_servers: { unrelated: { enabled: false }, docs: { enabled: false } },
+    },
+  });
+  assert.deepEqual(result.config.mcp_servers, {
+    unrelated: { enabled: false },
+    docs: {
+      enabled: true,
+      url: "https://docs.example/mcp",
+      http_headers: { Authorization: "Bearer test" },
+    },
+  });
+});

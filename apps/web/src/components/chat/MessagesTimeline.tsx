@@ -2831,7 +2831,7 @@ function WorkflowVerificationCard({
           </div>
           <p className="truncate text-xs text-muted-foreground">{item.profileName}</p>
         </div>
-        <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+        <span className="shrink-0 font-mono text-3xs text-muted-foreground">
           {!item.reviewOnly && `${passedChecks}/${item.configuredChecks.length} checks · `}
           {approvedReviews}/{item.reviewerLabels.length} approvals
         </span>
@@ -2839,7 +2839,7 @@ function WorkflowVerificationCard({
 
       {item.configuredChecks.length > 0 ? (
         <div className="border-b border-border/45 px-3 py-2">
-          <p className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+          <p className="mb-1 text-3xs font-medium uppercase tracking-wider text-muted-foreground">
             Deterministic checks
           </p>
           <div className="space-y-1">
@@ -2857,7 +2857,7 @@ function WorkflowVerificationCard({
                       <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-info" />
                     )}
                     <span className="min-w-0 flex-1 truncate font-medium">{definition.name}</span>
-                    <span className="font-mono text-[10px] text-muted-foreground">
+                    <span className="font-mono text-3xs text-muted-foreground">
                       {result === undefined
                         ? item.phase === "checking"
                           ? "pending"
@@ -2869,11 +2869,11 @@ function WorkflowVerificationCard({
                             : `exit ${result.exitCode ?? "?"}`}
                     </span>
                   </div>
-                  <p className="mt-0.5 truncate ps-5 font-mono text-[10px] text-muted-foreground/70">
+                  <p className="mt-0.5 truncate ps-5 font-mono text-3xs text-muted-foreground/70">
                     {definition.run}
                   </p>
                   {failed && (result.stdout.trim() || result.stderr.trim()) ? (
-                    <details className="mt-1 ps-5 text-[10px]">
+                    <details className="mt-1 ps-5 text-3xs">
                       <summary className="cursor-pointer text-destructive-foreground">
                         View failure output
                       </summary>
@@ -2891,7 +2891,7 @@ function WorkflowVerificationCard({
 
       {item.reviews.length > 0 ? (
         <div className="px-3 py-2">
-          <p className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+          <p className="mb-1 text-3xs font-medium uppercase tracking-wider text-muted-foreground">
             Reviewers
           </p>
           <div className="space-y-1.5">
@@ -2916,7 +2916,7 @@ function WorkflowVerificationCard({
                     </span>
                     <span
                       className={cn(
-                        "font-mono text-[10px]",
+                        "font-mono text-3xs",
                         approved
                           ? "text-success-foreground"
                           : rejected || review.status === "failed"
@@ -2932,7 +2932,7 @@ function WorkflowVerificationCard({
                     </span>
                     <button
                       type="button"
-                      className="text-[10px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                      className="text-3xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
                       onClick={() => ctx.onOpenThread(review.reviewerThreadId)}
                     >
                       Open reviewer
@@ -2960,7 +2960,7 @@ function WorkflowVerificationCard({
                           <div className="flex flex-wrap items-baseline gap-x-1.5">
                             <span className="font-medium">{finding.title}</span>
                             {finding.file ? (
-                              <span className="font-mono text-[10px] text-muted-foreground">
+                              <span className="font-mono text-3xs text-muted-foreground">
                                 {finding.file}
                                 {finding.line ? `:${finding.line}` : ""}
                               </span>
@@ -2968,7 +2968,7 @@ function WorkflowVerificationCard({
                           </div>
                           <p className="text-muted-foreground">{finding.description}</p>
                           {finding.evidence ? (
-                            <p className="mt-0.5 font-mono text-[10px] text-muted-foreground/80">
+                            <p className="mt-0.5 font-mono text-3xs text-muted-foreground/80">
                               {finding.evidence}
                             </p>
                           ) : null}

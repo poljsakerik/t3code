@@ -1,9 +1,5 @@
 import { AgentModeTabs } from "../AgentModeTabs";
-import {
-  ArrowLeftIcon,
-  ChartNoAxesColumnIcon,
-  SettingsIcon,
-} from "lucide-react";
+import { ArrowLeftIcon, ChartNoAxesColumnIcon, SettingsIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { memo, useCallback } from "react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
@@ -54,31 +50,31 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
 
   return (
     <>
-    // The titlebar row, not a padded SidebarHeader: it aligns to the window controls.
-    <div
-      className={cn(
-        "@container/sidebar-header relative flex h-[var(--workspace-topbar-height)] shrink-0 flex-row items-center gap-2 px-3 md:px-0",
-        isElectron && "drag-region",
-      )}
-    >
-      {backdropVariant ? <SidebarStageBackdrop variant={backdropVariant} /> : null}
-      <SidebarTrigger
-        // Over the stage artwork: the media viewer's control-on-imagery treatment.
-        variant={backdropVariant ? "media-navigation" : "ghost"}
-        className="relative top-auto z-10 translate-y-0 md:hidden"
-      />
-      <SidebarBrand onBackdrop={backdropVariant !== null} />
-      {pillLabel ? (
-        <Badge
-          className="relative z-10 ml-1 hidden @[15rem]/sidebar-header:inline-flex"
-          data-environment-identification="pill"
-          size="sm"
-          variant="secondary"
-        >
-          {pillLabel}
-        </Badge>
-      ) : null}
-    </div>
+      {/* The titlebar row aligns to the window controls. */}
+      <div
+        className={cn(
+          "@container/sidebar-header relative flex h-[var(--workspace-topbar-height)] shrink-0 flex-row items-center gap-2 px-3 md:px-0",
+          isElectron && "drag-region",
+        )}
+      >
+        {backdropVariant ? <SidebarStageBackdrop variant={backdropVariant} /> : null}
+        <SidebarTrigger
+          // Over the stage artwork: the media viewer's control-on-imagery treatment.
+          variant={backdropVariant ? "media-navigation" : "ghost"}
+          className="relative top-auto z-10 translate-y-0 md:hidden"
+        />
+        <SidebarBrand onBackdrop={backdropVariant !== null} />
+        {pillLabel ? (
+          <Badge
+            className="relative z-10 ml-1 hidden @[15rem]/sidebar-header:inline-flex"
+            data-environment-identification="pill"
+            size="sm"
+            variant="secondary"
+          >
+            {pillLabel}
+          </Badge>
+        ) : null}
+      </div>
       {!pathname.startsWith("/settings") ? <AgentModeTabs /> : null}
     </>
   );

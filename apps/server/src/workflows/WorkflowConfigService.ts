@@ -15,6 +15,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as NodeOS from "node:os";
 import { parse } from "yaml";
 
 import { loadAgentDefinition } from "../agents/AgentDefinitionLoader.ts";
@@ -179,41 +180,39 @@ export const make = Effect.gen(function* () {
     readonly workspaceRoot: string;
     readonly profileId: string;
   }) {
-    const workspaceRoot = yield* fs.realPath(input.workspaceRoot).pipe(
+    const roots = yield* Effect.forEach([input.workspaceRoot, NodeOS.homedir()], (root) =>
+      fs.realPath(root),
+    ).pipe(
       Effect.mapError(
         (cause) =>
           new WorkflowConfigError({
             profileId: input.profileId,
             path: input.workspaceRoot,
-            detail: "could not resolve the project workspace",
+            detail: "could not resolve the project or global agent workspace",
             cause,
           }),
       ),
     );
-    const discovered = yield* discoverAgentDefinitions(input.workspaceRoot).pipe(
+    return yield* Effect.forEach(
+      [...new Set(roots)],
+      Effect.fnUntraced(function* (workspaceRoot) {
+        const definitions = yield* discoverAgentDefinitions(workspaceRoot).pipe(
+          Effect.mapError(
+            (cause) =>
+              new WorkflowConfigError({
+                profileId: input.profileId,
+                path: path.join(workspaceRoot, ".t3"),
+                detail: "could not discover Eve-style agent folders",
+                cause,
+              }),
+          ),
+        );
+        return definitions.map((definition) => ({ workspaceRoot, definition }));
+      }),
+    ).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.provideService(Path.Path, path),
-      Effect.mapError(
-        (cause) =>
-          new WorkflowConfigError({
-            profileId: input.profileId,
-            path: path.join(input.workspaceRoot, ".t3"),
-            detail: "could not discover Eve-style agent folders",
-            cause,
-          }),
-      ),
     );
-    const byName = new Map<string, Array<(typeof discovered)[number]>>();
-    for (const definition of discovered) {
-      const definitions = byName.get(definition.name) ?? [];
-      definitions.push(definition);
-      byName.set(definition.name, definitions);
-    }
-    return {
-      workspaceRoot,
-      byId: new Map(discovered.map((definition) => [definition.id, definition])),
-      byName,
-    };
   });
 
   const listProfiles: WorkflowConfigServiceShape["listProfiles"] = Effect.fn(
@@ -238,33 +237,45 @@ export const make = Effect.gen(function* () {
         detail: `no workflow profile with id ${input.profileId} was found`,
       });
     }
-    const agents = yield* readAgents({
+    const [projectAgents = [], globalAgents = []] = yield* readAgents({
       workspaceRoot: roots.workspaceRoot,
       profileId: input.profileId,
     });
 
     const resolveAgent = (agentId: string, stage: "planner" | "implementer" | "reviewer") => {
-      const exact = agents.byId.get(agentId);
-      const named = agents.byName.get(agentId) ?? [];
-      if (exact === undefined && named.length > 1) {
+      const projectMatches = projectAgents.filter(
+        ({ definition }) => definition.id === agentId || definition.name === agentId,
+      );
+      const matches =
+        projectMatches.length > 0
+          ? projectMatches
+          : globalAgents.filter(
+              ({ definition }) => definition.id === agentId || definition.name === agentId,
+            );
+      if (matches.length > 1) {
         return Effect.fail(
           new WorkflowConfigError({
             profileId: input.profileId,
-            detail: `agent name ${agentId} is ambiguous; use its .t3-relative catalog id`,
+            detail: `agent reference ${agentId} is ambiguous; found ${matches
+              .map(({ workspaceRoot, definition }) =>
+                path.join(workspaceRoot, definition.directory),
+              )
+              .join(", ")}. Give these agents unique names and update the profile reference`,
           }),
         );
       }
-      const definition = exact ?? named[0];
-      if (definition === undefined) {
+      const match = matches[0];
+      if (match === undefined) {
         return Effect.fail(
           new WorkflowConfigError({
             profileId: input.profileId,
-            detail: `agent ${agentId} was not found in the project's Eve-style .t3 agent folders`,
+            detail: `agent ${agentId} was not found in the project or global Eve-style .t3 agent folders`,
           }),
         );
       }
+      const { workspaceRoot, definition } = match;
       return Effect.gen(function* () {
-        const agent = yield* loadAgentDefinition(agents.workspaceRoot, definition).pipe(
+        const agent = yield* loadAgentDefinition(workspaceRoot, definition).pipe(
           Effect.provideService(Path.Path, path),
           Effect.mapError(
             (cause) =>

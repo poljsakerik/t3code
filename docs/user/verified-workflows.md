@@ -52,7 +52,9 @@ To use another checked-in directory, set its workspace-relative path in `t3.json
 
 The selected directory must contain a `profiles` subdirectory and must remain inside the project root.
 
-Profiles reference project-local Eve-style agent folders by folder name (or by their `.t3`-relative catalog ID). Put each agent's provider and model in `agent.ts` and its prompt in `instructions.md`:
+Profiles reference Eve-style agent folders by folder name (or by their `.t3`-relative catalog ID). T3 searches both the project's `.t3` folder and the server user's home-directory `~/.t3` folder, shown as **Global** in Agents. For example, define `ponytail` once in `~/.t3/agents/ponytail/` and use `ponytail` in profiles across projects. A profile can mix global and project agents. Project definitions override global definitions with the same name or catalog ID. If a reference matches multiple agents within the selected scope, workflow creation fails with the conflicting locations; give those agents unique names and update the profile.
+
+Put each agent's provider and model in `agent.ts` and its prompt in `instructions.md`:
 
 ```text
 .t3/

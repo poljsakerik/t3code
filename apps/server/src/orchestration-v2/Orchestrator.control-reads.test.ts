@@ -4,6 +4,7 @@ import {
   MessageId,
   EventId,
   NodeId,
+  PlanId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -11,6 +12,8 @@ import {
   RuntimeRequestId,
   ThreadId,
   TurnItemId,
+  type OrchestrationV2PlanArtifact,
+  type ThreadWorkflowState,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -18,7 +21,7 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
-import { OrchestratorV2 } from "./Orchestrator.ts";
+import { OrchestratorDispatchError, OrchestratorV2 } from "./Orchestrator.ts";
 import { ProjectionStoreV2, layer as projectionLayer } from "./ProjectionStore.ts";
 import type { ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
@@ -274,3 +277,164 @@ it.effect(
       assert.isNotNull((yield* projections.getThread(threadId)).deletedAt);
     }).pipe(Effect.provide(testLayer)),
 );
+
+for (const scenario of [
+  { name: "same thread" },
+  { name: "new thread", newThread: true },
+  { name: "verified workflow", workflow: true, status: "completed" },
+  { name: "missing plan", missing: true, rejection: "does not exist" },
+  { name: "todo list", todoList: true, rejection: "does not exist" },
+  { name: "superseded plan", status: "superseded", rejection: "cannot be implemented" },
+  {
+    name: "different project",
+    newThread: true,
+    differentProject: true,
+    rejection: "different project",
+  },
+] as const) {
+  const options: {
+    newThread?: boolean;
+    workflow?: boolean;
+    status?: OrchestrationV2PlanArtifact["status"];
+    missing?: boolean;
+    todoList?: boolean;
+    differentProject?: boolean;
+    rejection?: string;
+  } = scenario;
+  it.effect(
+    `resolves the selected implementation plan without hydrating history (${scenario.name})`,
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* OrchestratorV2;
+        const projections = yield* ProjectionStoreV2;
+        const sql = yield* SqlClient.SqlClient;
+        const now = yield* DateTime.now;
+        const sourceThreadId = ThreadId.make("thread:plan-source");
+        const targetThreadId = options.newThread
+          ? ThreadId.make("thread:plan-target")
+          : sourceThreadId;
+        const planId = PlanId.make("plan:selected");
+        for (const threadId of new Set([sourceThreadId, targetThreadId])) {
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`create-${threadId}`),
+            threadId,
+            projectId: ProjectId.make(
+              options.differentProject && threadId === targetThreadId
+                ? "other-project"
+                : "plan-project",
+            ),
+            title: "Implement a plan",
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "plan",
+            branch: null,
+            worktreePath: null,
+            createdBy: "user",
+            creationSource: "web",
+          });
+        }
+        const implementerSelection = { ...modelSelection, model: "workflow-implementer" };
+        if (options.workflow) {
+          const thread = yield* projections.getThread(sourceThreadId);
+          const agent = {
+            id: "agent",
+            name: "Agent",
+            skills: [],
+            instructions: "Follow the plan.",
+          };
+          const workflow: ThreadWorkflowState = {
+            profileId: "verified",
+            workspaceRoot: "/workspace",
+            profile: {
+              version: 1,
+              id: "verified",
+              name: "Verified",
+              planner: { ...agent, modelSelection },
+              implementer: { ...agent, modelSelection: implementerSelection },
+              reviewers: [agent],
+              checks: [{ id: "check", name: "Check", run: "true", timeoutMs: 1000 }],
+              limits: { maxRevisionCycles: 3, identicalFailureLimit: 2 },
+            },
+            status: "planned",
+            revision: 0,
+            revisionCycles: 0,
+            consecutiveFailureCount: 0,
+            lastFailureFingerprint: null,
+            approvedPlanId: null,
+            candidateRunId: null,
+            workspaceDigest: null,
+            checks: [],
+            reviews: [],
+            terminalReason: null,
+            updatedAt: DateTime.formatIso(now),
+          };
+          yield* projections.apply({
+            id: EventId.make("seed-workflow"),
+            type: "thread.workflow-updated",
+            threadId: sourceThreadId,
+            occurredAt: now,
+            payload: { ...thread, workflow },
+          });
+        }
+        if (!options.missing) {
+          yield* projections.apply({
+            id: EventId.make("seed-plan"),
+            type: "plan.updated",
+            threadId: sourceThreadId,
+            occurredAt: now,
+            payload: {
+              id: planId,
+              threadId: sourceThreadId,
+              runId: null,
+              nodeId: NodeId.make("node:plan"),
+              status: options.status ?? "active",
+              ...(options.todoList
+                ? { kind: "todo_list", steps: [] }
+                : { kind: "proposed_plan", markdown: "Fix the regression." }),
+            },
+          });
+        }
+        // Unrelated historical payloads must not be decoded to implement this plan.
+        yield* sql`INSERT INTO orchestration_v2_projection_plans
+        (plan_id, thread_id, run_id, node_id, kind, status, payload_json)
+        VALUES ('obsolete-plan', ${sourceThreadId}, NULL, 'old-node', 'proposed_plan', 'completed', '{"obsolete":true}')`;
+        yield* sql`INSERT INTO orchestration_v2_projection_messages
+        (message_id, thread_id, run_id, node_id, role, streaming, created_at, updated_at, payload_json)
+        VALUES ('obsolete-message', ${sourceThreadId}, NULL, NULL, 'assistant', 0, ${DateTime.formatIso(now)}, ${DateTime.formatIso(now)}, '{"obsolete":true}')`;
+        const dispatch = orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("implement-plan"),
+          threadId: targetThreadId,
+          messageId: MessageId.make("implementation-message"),
+          text: "Implement the plan.",
+          attachments: [],
+          sourcePlanRef: { threadId: sourceThreadId, planId },
+          dispatchMode: { type: "defer_start" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        if (options.rejection !== undefined) {
+          const error = yield* Effect.flip(dispatch);
+          assert.instanceOf(error, OrchestratorDispatchError);
+          assert.include(String(error.cause), options.rejection);
+          assert.isEmpty((yield* projections.getThreadRecords(targetThreadId, ["runs"])).runs);
+          return;
+        }
+        yield* dispatch;
+        const records = yield* projections.getThreadRecords(targetThreadId, ["runs", "messages"], {
+          messageRoles: ["user"],
+        });
+        assert.equal(records.runs.length, 1);
+        assert.deepEqual(records.runs[0]?.sourcePlanRef, { threadId: sourceThreadId, planId });
+        assert.equal((yield* projections.getPlan(sourceThreadId, planId))?.status, "completed");
+        if (options.workflow) {
+          assert.equal(records.thread.workflow?.status, "implementing");
+          assert.equal(records.thread.workflow?.approvedPlanId, planId);
+          assert.equal(records.thread.workflow?.revision, 1);
+          assert.deepEqual(records.runs[0]?.modelSelection, implementerSelection);
+          assert.include(records.messages[0]!.text, "Implement the approved plan completely.");
+        }
+      }).pipe(Effect.provide(testLayer)),
+  );
+}

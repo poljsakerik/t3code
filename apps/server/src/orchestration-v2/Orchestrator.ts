@@ -5266,12 +5266,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // Command projections leave plans out, so read the source plan directly.
       const sourcePlanArtifact =
         command.sourcePlanRef === undefined
-          ? undefined
-          : yield* projectionStore
+          ? null
+          : (sourcePlanProjection?.plans.find(
+              (plan) => plan.id === command.sourcePlanRef?.planId,
+            ) ??
+            // Command projections omit stored plans; load only the selected plan,
+            // preserving any update already applied from this command's events.
+            (yield* projectionStore
               .getPlan(command.sourcePlanRef.threadId, command.sourcePlanRef.planId)
-              .pipe(mapDispatchError(command));
-      const sourcePlan = sourcePlanArtifact?.kind === "proposed_plan" ? sourcePlanArtifact : null;
-      if (command.sourcePlanRef !== undefined && sourcePlan === null) {
+              .pipe(mapDispatchError(command))) ??
+            null);
+      if (
+        command.sourcePlanRef !== undefined &&
+        (sourcePlan === null || sourcePlan.kind !== "proposed_plan")
+      ) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,

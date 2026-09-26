@@ -2,7 +2,7 @@
 
 Verified workflows turn a request into a plan, an implementation, deterministic checks, and independent agent reviews. A workflow is only marked **Verified** after every configured check passes and every configured reviewer approves the same repository revision.
 
-Open the command palette (Cmd+K / Ctrl+K) and choose **New verified workflow** with the profile you want. Each profile available to the current project has its own entry. The web and desktop apps create a planning thread with that profile, which is shown in the thread header and verification cards. Ordinary new threads are unchanged and do not run this loop.
+Open the command palette (Cmd+K / Ctrl+K). In a project thread, choose **New verified workflow in [project]** with the profile you want; project profiles appear before global profiles. To start from anywhere, choose **New verified workflow...**, select a global profile, then select a project in that environment. The web and desktop apps create a planning thread with that profile, which is shown in the thread header and verification cards.
 
 The planner may ask clarifying questions with A/B/C choices. When its proposed plan is ready, use the existing **Implement** action. This action is available even when the general Plan Mode setting is off. T3 Code then:
 
@@ -36,7 +36,7 @@ Workflow stages are YAML or JSON and are read by the server that owns the projec
 userdata/workflows/profiles/*.{yaml,yml,json}
 ```
 
-A repository can override profiles with the same IDs:
+A repository can define profiles with the same IDs. Both appear in the command palette, labeled Project and Global:
 
 ```text
 .t3/workflows/profiles/*.{yaml,yml,json}

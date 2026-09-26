@@ -326,6 +326,7 @@ const PersistedDraftThreadState = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   workflowProfileId: Schema.optionalKey(Schema.String),
+  workflowProfileScope: Schema.optionalKey(Schema.Literals(["global", "project"])),
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
   envMode: DraftThreadEnvModeSchema,
@@ -459,6 +460,7 @@ export interface DraftSessionState {
   runtimeMode: RuntimeMode;
   interactionMode: ProviderInteractionMode;
   workflowProfileId?: string;
+  workflowProfileScope?: "global" | "project";
   branch: string | null;
   worktreePath: string | null;
   envMode: DraftThreadEnvMode;
@@ -546,6 +548,7 @@ interface ComposerDraftStoreState {
       environmentSelection?: "auto" | "manual";
       loadBalancedEnvironmentId?: EnvironmentId | null;
       workflowProfileId?: string;
+      workflowProfileScope?: "global" | "project";
       /** Keep the previously mapped empty draft alive until its route is no longer mounted. */
       deferPreviousDraftCleanup?: boolean;
     },
@@ -566,6 +569,7 @@ interface ComposerDraftStoreState {
       environmentSelection?: "auto" | "manual";
       loadBalancedEnvironmentId?: EnvironmentId | null;
       workflowProfileId?: string;
+      workflowProfileScope?: "global" | "project";
     },
   ) => void;
   /** Updates mutable draft-session metadata without touching composer content. */
@@ -583,6 +587,7 @@ interface ComposerDraftStoreState {
       environmentSelection?: "auto" | "manual";
       loadBalancedEnvironmentId?: EnvironmentId | null;
       workflowProfileId?: string;
+      workflowProfileScope?: "global" | "project";
     },
   ) => void;
   clearProjectDraftThreadId: (projectRef: ScopedProjectRef) => void;
@@ -1596,6 +1601,7 @@ function createDraftThreadState(
     environmentSelection?: "auto" | "manual";
     loadBalancedEnvironmentId?: EnvironmentId | null;
     workflowProfileId?: string;
+    workflowProfileScope?: "global" | "project";
   },
 ): DraftThreadState {
   // A project change (including switching environments within a logical
@@ -1647,6 +1653,11 @@ function createDraftThreadState(
       ? { workflowProfileId: options.workflowProfileId }
       : existingThread?.workflowProfileId !== undefined
         ? { workflowProfileId: existingThread.workflowProfileId }
+        : {}),
+    ...(options?.workflowProfileScope !== undefined
+      ? { workflowProfileScope: options.workflowProfileScope }
+      : existingThread?.workflowProfileScope !== undefined
+        ? { workflowProfileScope: existingThread.workflowProfileScope }
         : {}),
     branch: nextBranch,
     worktreePath: nextWorktreePath,
@@ -2596,6 +2607,9 @@ function toHydratedDraftThreadState(
     ...(persistedDraftThread.workflowProfileId === undefined
       ? {}
       : { workflowProfileId: persistedDraftThread.workflowProfileId }),
+    ...(persistedDraftThread.workflowProfileScope === undefined
+      ? {}
+      : { workflowProfileScope: persistedDraftThread.workflowProfileScope }),
     branch: persistedDraftThread.branch,
     worktreePath: persistedDraftThread.worktreePath,
     envMode: persistedDraftThread.envMode,
@@ -2905,6 +2919,11 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 : existing.workflowProfileId !== undefined
                   ? { workflowProfileId: existing.workflowProfileId }
                   : {}),
+              ...(options.workflowProfileScope !== undefined
+                ? { workflowProfileScope: options.workflowProfileScope }
+                : existing.workflowProfileScope !== undefined
+                  ? { workflowProfileScope: existing.workflowProfileScope }
+                  : {}),
               branch: nextBranch,
               worktreePath: nextWorktreePath,
               envMode:
@@ -2922,6 +2941,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               nextDraftThread.runtimeMode === existing.runtimeMode &&
               nextDraftThread.interactionMode === existing.interactionMode &&
               nextDraftThread.workflowProfileId === existing.workflowProfileId &&
+              nextDraftThread.workflowProfileScope === existing.workflowProfileScope &&
               nextDraftThread.branch === existing.branch &&
               nextDraftThread.worktreePath === existing.worktreePath &&
               nextDraftThread.envMode === existing.envMode &&

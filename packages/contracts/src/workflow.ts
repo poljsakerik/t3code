@@ -66,10 +66,11 @@ export type WorkflowProfileDefinition = typeof WorkflowProfileDefinition.Type;
 export const WorkflowProfileSummary = Schema.Struct({
   id: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
+  scope: Schema.Literals(["project", "global"]),
 });
 export type WorkflowProfileSummary = typeof WorkflowProfileSummary.Type;
 
-export const WorkflowListProfilesInput = Schema.Struct({ projectId: ProjectId });
+export const WorkflowListProfilesInput = Schema.Struct({ projectId: Schema.optional(ProjectId) });
 export const WorkflowListProfilesResult = Schema.Array(WorkflowProfileSummary);
 
 export class WorkflowConfigError extends Schema.TaggedError<WorkflowConfigError>()(

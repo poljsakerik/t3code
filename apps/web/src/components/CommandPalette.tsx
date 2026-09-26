@@ -943,6 +943,15 @@ function OpenCommandPaletteDialog(props: {
           input: { projectId: contextualProjectRef.projectId },
         }),
   );
+  const globalWorkflowEnvironmentId = contextualProjectRef?.environmentId ?? primaryEnvironmentId;
+  const globalWorkflowProfiles = useEnvironmentQuery(
+    globalWorkflowEnvironmentId === null
+      ? null
+      : projectEnvironment.workflowProfiles({
+          environmentId: globalWorkflowEnvironmentId,
+          input: {},
+        }),
+  );
   const projectPickerEntries = useMemo(
     () =>
       buildSidebarProjectPickerEntries({
@@ -1801,7 +1810,7 @@ function OpenCommandPaletteDialog(props: {
         for (const profile of workflowProfiles.data ?? []) {
           actionItems.push({
             kind: "action",
-            value: `action:new-verified-workflow:${profile.id}`,
+            value: `action:new-verified-workflow:${profile.scope}:${profile.id}`,
             searchTerms: [
               "verified workflow",
               "plan",
@@ -1813,13 +1822,16 @@ function OpenCommandPaletteDialog(props: {
             ],
             title: (
               <>
-                New verified workflow: <span className="font-semibold">{profile.name}</span>
+                New verified workflow in <span className="font-semibold">{activeProjectTitle}</span>
               </>
             ),
-            description: activeProjectTitle,
+            description: `${profile.name} · ${profile.scope === "project" ? "Project" : "Global"}`,
             icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
             run: async () => {
-              await handleNewThread(contextualProjectRef, { workflowProfileId: profile.id });
+              await handleNewThread(contextualProjectRef, {
+                workflowProfileId: profile.id,
+                workflowProfileScope: profile.scope,
+              });
             },
           });
         }
@@ -1838,7 +1850,88 @@ function OpenCommandPaletteDialog(props: {
         }
       }
     }
+  }
 
+  const globalWorkflowProjects = pickerProjects.filter(
+    (project) => project.environmentId === globalWorkflowEnvironmentId,
+  );
+  if (projects.length > 0 && globalWorkflowProjects.length > 0) {
+    const globalWorkflowItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = (
+      globalWorkflowProfiles.data ?? []
+    ).map((profile) => ({
+      kind: "submenu",
+      value: `global-workflow:${profile.id}`,
+      title: profile.name,
+      searchTerms: [profile.name, profile.id],
+      icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
+      addonIcon: <ListChecksIcon className={ADDON_ICON_CLASS} />,
+      groups: [
+        {
+          value: "projects",
+          label: "Projects",
+          items: globalWorkflowProjects.map((project): CommandPaletteActionItem => ({
+            kind: "action",
+            value: `global-workflow:${profile.id}:${project.environmentId}:${project.id}`,
+            title: project.displayName,
+            description: project.workspaceRoot,
+            searchTerms: [project.title, project.workspaceRoot],
+            icon: projectFaviconIcon(project),
+            run: async () => {
+              await handleNewThread(scopeProjectRef(project.environmentId, project.id), {
+                workflowProfileId: profile.id,
+                workflowProfileScope: "global",
+              });
+            },
+          })),
+        },
+      ],
+    }));
+    if (globalWorkflowItems.length === 0) {
+      globalWorkflowItems.push({
+        kind: "action",
+        value: "global-workflow:none",
+        searchTerms: ["global workflow profiles"],
+        title: globalWorkflowProfiles.isPending
+          ? "Loading global workflow profiles..."
+          : globalWorkflowProfiles.error
+            ? "Could not load global workflow profiles"
+            : "No global workflow profiles configured",
+        icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
+        disabled: true,
+        run: async () => {},
+      });
+    }
+    actionItems.push({
+      kind: "submenu",
+      value: "action:new-verified-workflow-in",
+      searchTerms: ["new verified workflow", "global workflow", "project"],
+      title: "New verified workflow...",
+      icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
+      addonIcon: <ListChecksIcon className={ADDON_ICON_CLASS} />,
+      groups: [
+        {
+          value: "global-workflows",
+          label: "Global workflows",
+          items: globalWorkflowItems,
+        },
+      ],
+    });
+    if (globalWorkflowProfiles.error) {
+      actionItems.push({
+        kind: "action",
+        value: "action:retry-global-workflow-profiles",
+        searchTerms: ["verified workflow", "global profiles"],
+        title: "Retry loading global workflow profiles",
+        description: globalWorkflowProfiles.error,
+        icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          globalWorkflowProfiles.refresh();
+        },
+      });
+    }
+  }
+
+  if (projects.length > 0 && conversationMode === "code") {
     actionItems.push({
       kind: "submenu",
       value: "action:new-thread-in",

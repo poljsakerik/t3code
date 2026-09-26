@@ -77,6 +77,7 @@ export interface ProjectThreadLaunchInput {
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
   readonly workflowProfileId?: string;
+  readonly workflowProfileScope?: "global" | "project";
   readonly workspaceStrategy: ThreadLaunchWorkspaceStrategy;
   readonly initialMessage?: ThreadLaunchInitialMessage;
   readonly importedNativeThread?: {
@@ -725,6 +726,9 @@ const make = Effect.gen(function* () {
                 ...(input.workflowProfileId === undefined
                   ? {}
                   : { workflowProfileId: input.workflowProfileId }),
+                ...(input.workflowProfileScope === undefined
+                  ? {}
+                  : { workflowProfileScope: input.workflowProfileScope }),
                 branch: initialBranch,
                 worktreePath: initialWorktreePath,
                 ...(input.importedNativeThread === undefined

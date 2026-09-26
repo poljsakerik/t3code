@@ -2391,6 +2391,7 @@ export const OrchestrationV2Command = Schema.Union([
       }),
     ),
     workflowProfileId: Schema.optional(TrimmedNonEmptyString),
+    workflowProfileScope: Schema.optional(Schema.Literals(["global", "project"])),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.archive"),
@@ -2886,6 +2887,7 @@ const ProjectThreadLaunchInput = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   workflowProfileId: Schema.optional(TrimmedNonEmptyString),
+  workflowProfileScope: Schema.optional(Schema.Literals(["global", "project"])),
   workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
   initialMessage: Schema.optional(
     Schema.Struct({

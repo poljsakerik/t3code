@@ -344,6 +344,7 @@ describe("V2 environment commands", () => {
             branch: "feature",
             worktreePath: "/workspace/project-worktrees/feature",
             workflowProfileId: "default",
+            workflowProfileScope: "global",
             createdAt: "2026-06-20T00:00:00.000Z",
           },
         },
@@ -354,6 +355,7 @@ describe("V2 environment commands", () => {
         title: "Continue here",
         generateTitle: true,
         workflowProfileId: "default",
+        workflowProfileScope: "global",
         workspaceStrategy: {
           type: "existing_worktree",
           worktreePath: "/workspace/project-worktrees/feature",

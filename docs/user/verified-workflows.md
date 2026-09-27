@@ -36,7 +36,7 @@ Workflow stages are YAML or JSON and are read by the server that owns the projec
 userdata/workflows/profiles/*.{yaml,yml,json}
 ```
 
-A repository can define profiles with the same IDs. Both appear in the command palette, labeled Project and Global:
+A repository can define profiles with the same IDs. The project profile takes precedence in that project:
 
 ```text
 .t3/workflows/profiles/*.{yaml,yml,json}

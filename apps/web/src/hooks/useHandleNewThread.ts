@@ -41,7 +41,6 @@ interface NewThreadWorkspaceOptions {
   envMode?: DraftThreadEnvMode;
   startFromOrigin?: boolean;
   workflowProfileId?: string;
-  workflowProfileScope?: "global" | "project";
 }
 
 // The workspace options the caller passed explicitly, shaped for the draft
@@ -55,9 +54,6 @@ function pickExplicitWorkspaceOptions(options: NewThreadWorkspaceOptions | undef
     ...(options?.startFromOrigin !== undefined ? { startFromOrigin: options.startFromOrigin } : {}),
     ...(options?.workflowProfileId !== undefined
       ? { workflowProfileId: options.workflowProfileId, interactionMode: "plan" as const }
-      : {}),
-    ...(options?.workflowProfileScope !== undefined
-      ? { workflowProfileScope: options.workflowProfileScope }
       : {}),
   };
 }
@@ -80,7 +76,6 @@ export function useNewThreadHandler() {
         envMode?: DraftThreadEnvMode;
         startFromOrigin?: boolean;
         workflowProfileId?: string;
-        workflowProfileScope?: "global" | "project";
         replace?: boolean;
       },
       // Which draft the thread ended up in, so a caller that has something to put in it — a
@@ -203,7 +198,6 @@ export function useNewThreadHandler() {
       const emptyStoredDraftThread =
         reusableStoredDraftThread &&
         reusableStoredDraftThread.workflowProfileId === options?.workflowProfileId &&
-        reusableStoredDraftThread.workflowProfileScope === options?.workflowProfileScope &&
         !composerDraftHasUserContent(getComposerDraft(reusableStoredDraftThread.draftId))
           ? reusableStoredDraftThread
           : null;
@@ -346,7 +340,6 @@ export function useNewThreadHandler() {
         currentRouteTarget?.kind === "draft" &&
         latestActiveDraftThread.logicalProjectKey === logicalProjectKey &&
         latestActiveDraftThread.workflowProfileId === options?.workflowProfileId &&
-        latestActiveDraftThread.workflowProfileScope === options?.workflowProfileScope &&
         latestActiveDraftThread.promotedTo == null &&
         // Same content rule as above: a new-thread request while viewing an
         // invested draft mints a fresh one instead of repurposing it.
@@ -395,7 +388,6 @@ export function useNewThreadHandler() {
           // silently undo mint-fresh semantics.
           racedDraft.draftId !== storedDraftThread?.draftId &&
           racedDraft.workflowProfileId === options?.workflowProfileId &&
-          racedDraft.workflowProfileScope === options?.workflowProfileScope &&
           readThreadShell(scopeThreadRef(racedDraft.environmentId, racedDraft.threadId)) === null
         ) {
           // Same remap the reuse paths above perform: point the draft at the
@@ -441,9 +433,6 @@ export function useNewThreadHandler() {
               : {}
             : {
                 workflowProfileId: options.workflowProfileId,
-                ...(options.workflowProfileScope === undefined
-                  ? {}
-                  : { workflowProfileScope: options.workflowProfileScope }),
                 interactionMode: "plan",
               }),
           // The currently rendered draft route still reads its session from

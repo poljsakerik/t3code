@@ -1978,7 +1978,6 @@ function OpenCommandPaletteDialog(props: {
             run: async () => {
               await handleNewThread(contextualProjectRef, {
                 workflowProfileId: profile.id,
-                workflowProfileScope: profile.scope,
               });
             },
           });
@@ -2027,7 +2026,6 @@ function OpenCommandPaletteDialog(props: {
             run: async () => {
               await handleNewThread(scopeProjectRef(project.environmentId, project.id), {
                 workflowProfileId: profile.id,
-                workflowProfileScope: "global",
               });
             },
           })),

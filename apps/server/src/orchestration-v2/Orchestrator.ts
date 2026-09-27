@@ -2090,9 +2090,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 .resolveProfile({
                   projectId: command.projectId!,
                   profileId: command.workflowProfileId!,
-                  ...(command.workflowProfileScope === undefined
-                    ? {}
-                    : { scope: command.workflowProfileScope }),
                 })
                 .pipe(mapDispatchError(command)),
           });

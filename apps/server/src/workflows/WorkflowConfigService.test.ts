@@ -476,7 +476,6 @@ it.layer(Layer.fresh(testLayer))("workflow profile discovery", (it) => {
       assert.deepEqual(yield* workflows.listProfiles(input), [
         { id: "custom", name: "Custom", scope: "project" },
         { id: "shared", name: "Repository", scope: "project" },
-        { id: "shared", name: "Global", scope: "global" },
         { id: "quick", name: "Quick", scope: "global" },
       ]);
       assert.deepEqual(yield* workflows.listProfiles({ projectId: ProjectId.make(otherRoot) }), [
@@ -493,12 +492,6 @@ it.layer(Layer.fresh(testLayer))("workflow profile discovery", (it) => {
       }
       const resolved = yield* workflows.resolveProfile({ ...input, profileId: "shared" });
       assert.equal(resolved.profile.name, "Repository");
-      const globalResolved = yield* workflows.resolveProfile({
-        ...input,
-        profileId: "shared",
-        scope: "global",
-      });
-      assert.equal(globalResolved.profile.name, "Global");
 
       yield* writeYaml(path.join(repositoryProfiles, "broken.yaml"), "version: 1");
       const result = yield* Effect.result(workflows.listProfiles(input));

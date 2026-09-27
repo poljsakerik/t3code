@@ -75,7 +75,6 @@ export interface CreateThreadInput extends CommandMetadata {
   readonly branch: string | null;
   readonly worktreePath: string | null;
   readonly workflowProfileId?: string;
-  readonly workflowProfileScope?: "global" | "project";
 }
 
 export interface ThreadCommandInput extends CommandMetadata {
@@ -152,7 +151,6 @@ interface StartThreadBootstrap {
     readonly branch: string | null;
     readonly worktreePath: string | null;
     readonly workflowProfileId?: string;
-    readonly workflowProfileScope?: "global" | "project";
     readonly createdAt: string;
   };
   readonly prepareWorktree?: {
@@ -407,9 +405,6 @@ export const createThread = Effect.fn("EnvironmentCommands.createThread")(functi
     ...(input.workflowProfileId === undefined
       ? {}
       : { workflowProfileId: input.workflowProfileId }),
-    ...(input.workflowProfileScope === undefined
-      ? {}
-      : { workflowProfileScope: input.workflowProfileScope }),
   });
 });
 
@@ -690,9 +685,6 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
       ...(bootstrap?.workflowProfileId === undefined
         ? {}
         : { workflowProfileId: bootstrap.workflowProfileId }),
-      ...(bootstrap?.workflowProfileScope === undefined
-        ? {}
-        : { workflowProfileScope: bootstrap.workflowProfileScope }),
       workspaceStrategy,
       initialMessage: {
         messageId: input.message.messageId,

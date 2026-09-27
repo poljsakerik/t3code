@@ -8995,9 +8995,6 @@ export default function ChatView(props: ChatViewProps) {
                       ...(draftThread?.workflowProfileId === undefined
                         ? {}
                         : { workflowProfileId: draftThread.workflowProfileId }),
-                      ...(draftThread?.workflowProfileScope === undefined
-                        ? {}
-                        : { workflowProfileScope: draftThread.workflowProfileScope }),
                       createdAt: activeThread.createdAt,
                     },
                   }

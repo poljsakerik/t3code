@@ -431,7 +431,10 @@ export function useNewThreadHandler() {
             ? carryInteractionMode
               ? { interactionMode: carryInteractionMode }
               : {}
-            : { workflowProfileId: options.workflowProfileId, interactionMode: "plan" }),
+            : {
+                workflowProfileId: options.workflowProfileId,
+                interactionMode: "plan",
+              }),
           // The currently rendered draft route still reads its session from
           // this store. Keep that session alive until navigation completes,
           // otherwise its missing-session fallback races us back to `/`.

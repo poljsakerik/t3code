@@ -29,7 +29,7 @@ export { WorkflowConfigError } from "@t3tools/contracts";
 
 export interface WorkflowConfigServiceShape {
   readonly listProfiles: (input: {
-    readonly projectId: ProjectId;
+    readonly projectId?: ProjectId | undefined;
   }) => Effect.Effect<ReadonlyArray<WorkflowProfileSummary>, WorkflowConfigError>;
   readonly resolveProfile: (input: {
     readonly projectId: ProjectId;
@@ -164,14 +164,20 @@ export const make = Effect.gen(function* () {
     readonly repositoryRoot: string;
     readonly profileId: string;
   }) {
-    const profiles = new Map<string, WorkflowProfileDefinitionType>();
-    for (const root of [input.globalRoot, input.repositoryRoot]) {
+    const profiles = new Map<
+      string,
+      { definition: WorkflowProfileDefinitionType; scope: "global" | "project" }
+    >();
+    for (const [root, scope] of [
+      [input.globalRoot, "global"],
+      [input.repositoryRoot, "project"],
+    ] as const) {
       const definitions = yield* readDefinitions({
         directory: path.join(root, "profiles"),
         decode: decodeWorkflowProfileDefinition,
         profileId: input.profileId,
       });
-      for (const profile of definitions) profiles.set(profile.id, profile);
+      for (const profile of definitions) profiles.set(profile.id, { definition: profile, scope });
     }
     return profiles;
   });
@@ -218,11 +224,27 @@ export const make = Effect.gen(function* () {
   const listProfiles: WorkflowConfigServiceShape["listProfiles"] = Effect.fn(
     "WorkflowConfigService.listProfiles",
   )(function* (input) {
-    const roots = yield* resolveRoots({ ...input, profileId: "*" });
-    const profiles = yield* readProfiles({ ...roots, profileId: "*" });
+    const profiles =
+      input.projectId === undefined
+        ? new Map(
+            (yield* readDefinitions({
+              directory: path.join(config.stateDir, "workflows", "profiles"),
+              decode: decodeWorkflowProfileDefinition,
+              profileId: "*",
+            })).map((definition) => [definition.id, { definition, scope: "global" as const }]),
+          )
+        : yield* readProfiles({
+            ...(yield* resolveRoots({ projectId: input.projectId, profileId: "*" })),
+            profileId: "*",
+          });
     return [...profiles.values()]
-      .map(({ id, name }) => ({ id, name }))
-      .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+      .map(({ definition: { id, name }, scope }) => ({ id, name, scope }))
+      .sort(
+        (a, b) =>
+          (a.scope === b.scope ? 0 : a.scope === "project" ? -1 : 1) ||
+          a.name.localeCompare(b.name) ||
+          a.id.localeCompare(b.id),
+      );
   });
 
   const resolveProfile: WorkflowConfigServiceShape["resolveProfile"] = Effect.fn(
@@ -230,7 +252,7 @@ export const make = Effect.gen(function* () {
   )(function* (input) {
     const roots = yield* resolveRoots(input);
     const profiles = yield* readProfiles({ ...roots, profileId: input.profileId });
-    const profile = profiles.get(input.profileId);
+    const profile = profiles.get(input.profileId)?.definition;
     if (profile === undefined) {
       return yield* new WorkflowConfigError({
         profileId: input.profileId,

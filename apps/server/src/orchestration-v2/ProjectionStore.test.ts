@@ -2203,6 +2203,74 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
     }),
   );
 
+  it.effect("projects a running manual review as a reviewing shell workflow", () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStoreV2;
+      const threadId = yield* addRolledBackRecoveryCandidate("manual-review-shell");
+      const run = (yield* store.getThreadProjection(threadId)).runs[0]!;
+      const now = yield* DateTime.now;
+      const review = {
+        id: TurnItemId.make("manual-review-shell:review"),
+        threadId,
+        runId: run.id,
+        nodeId: run.rootNodeId,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 2,
+        status: "running" as const,
+        title: "Agent review",
+        startedAt: now,
+        completedAt: null,
+        updatedAt: now,
+        type: "workflow_verification" as const,
+        reviewOnly: true,
+        profileId: "standalone-review",
+        profileName: "Agent review",
+        revision: 1,
+        phase: "reviewing" as const,
+        configuredChecks: [],
+        checks: [],
+        reviewerLabels: [],
+        reviews: [],
+        terminalReason: null,
+      };
+      const assertWorkflowStatus = Effect.fnUntraced(function* (status: "reviewing" | null) {
+        const memoryShell = threadShellFromProjection(yield* store.getThreadProjection(threadId));
+        const sqlShell = (yield* store.getShellSnapshot()).threads.find(
+          (row) => row.id === threadId,
+        )!;
+        for (const shell of [memoryShell, sqlShell]) {
+          assert.equal(shell.workflow?.status ?? null, status);
+        }
+      });
+      yield* store.apply({
+        id: EventId.make("event:manual-review-shell:completed"),
+        type: "run.updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...run, status: "completed" },
+      });
+      yield* store.apply({
+        id: EventId.make("event:manual-review-shell:running"),
+        type: "turn-item.updated",
+        threadId,
+        occurredAt: now,
+        payload: review,
+      });
+      yield* assertWorkflowStatus("reviewing");
+      yield* store.apply({
+        id: EventId.make("event:manual-review-shell:approved"),
+        type: "turn-item.updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...review, status: "completed", phase: "approved", completedAt: now },
+      });
+      yield* assertWorkflowStatus(null);
+    }),
+  );
+
   it.effect("projects one shared provider session into multiple thread bindings", () =>
     Effect.gen(function* () {
       const projectionStore = yield* ProjectionStoreV2;

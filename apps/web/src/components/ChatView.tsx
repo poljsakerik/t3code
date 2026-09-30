@@ -8749,7 +8749,8 @@ export default function ChatView(props: ChatViewProps) {
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
-      const followUpSent = await onSubmitPlanFollowUp({
+      const followUpSent = await submitFollowUpTurn({
+        fromPlan: true,
         text: followUp.text,
         context: buildMessageContext({
           terminalContexts: sendableComposerTerminalContexts,
@@ -9981,11 +9982,14 @@ export default function ChatView(props: ChatViewProps) {
     setActivePendingUserInputQuestionIndex(Math.max(activePendingProgress.questionIndex - 1, 0));
   }, [activePendingProgress, setActivePendingUserInputQuestionIndex]);
 
-  async function onSubmitPlanFollowUp({
+  /** Sends a turn that does not come from the composer draft, such as a plan follow-up. */
+  async function submitFollowUpTurn({
+    fromPlan,
     text,
     context,
     interactionMode: nextInteractionMode,
   }: {
+    fromPlan: boolean;
     text: string;
     context?: ReturnType<typeof buildMessageContext>;
     interactionMode: "default" | "plan";
@@ -10000,7 +10004,7 @@ export default function ChatView(props: ChatViewProps) {
     }
 
     const sendCtx = composerRef.current?.getSendContext();
-    if (!sendCtx?.providerAvailable || !showPlanFollowUpPrompt) {
+    if (!sendCtx?.providerAvailable || (fromPlan && !showPlanFollowUpPrompt)) {
       return false;
     }
     const {
@@ -10087,7 +10091,7 @@ export default function ChatView(props: ChatViewProps) {
           titleSeed: activeThread.title,
           runtimeMode,
           interactionMode: nextInteractionMode,
-          ...(nextInteractionMode === "default" && activeProposedPlan
+          ...(fromPlan && nextInteractionMode === "default" && activeProposedPlan
             ? {
                 sourceProposedPlan: {
                   threadId: activeThread.id,
@@ -10114,13 +10118,35 @@ export default function ChatView(props: ChatViewProps) {
       const error = squashAtomCommandFailure(failure);
       setThreadError(
         threadIdForSend,
-        error instanceof Error ? error.message : "Failed to send plan follow-up.",
+        error instanceof Error
+          ? error.message
+          : fromPlan
+            ? "Failed to send plan follow-up."
+            : "Failed to send message.",
       );
     }
     sendInFlightRef.current = false;
     resetLocalDispatch();
     return false;
   }
+
+  const submitFollowUpTurnRef = useRef(submitFollowUpTurn);
+  useLayoutEffect(() => {
+    submitFollowUpTurnRef.current = submitFollowUpTurn;
+  });
+  const implementReviewFindings = useCallback((prompt: string) => {
+    void submitFollowUpTurnRef
+      .current({
+        fromPlan: false,
+        text: prompt,
+        interactionMode: "default",
+      })
+      .then((sent) => {
+        if (!sent) {
+          toastManager.add({ type: "error", title: "Review feedback was not sent" });
+        }
+      });
+  }, []);
 
   const onImplementPlanInNewThread = useCallback(async () => {
     if (
@@ -11061,7 +11087,10 @@ export default function ChatView(props: ChatViewProps) {
                   paintOnlyDisplayedTimeline ? noopHeldRevert : onRevertTimelineTurn
                 }
                 {...(!paintOnlyDisplayedTimeline
-                  ? { onUseArtifactTemplate: useArtifactTemplate }
+                  ? {
+                      onUseArtifactTemplate: useArtifactTemplate,
+                      onImplementReviewFindings: implementReviewFindings,
+                    }
                   : {})}
                 isRevertingCheckpoint={isRevertingCheckpoint}
                 onImageExpand={onExpandTimelineImage}

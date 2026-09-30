@@ -1306,6 +1306,34 @@ function buildVisibleTurnItems(input: {
   ]);
 }
 
+/**
+ * Thread lists read workflow status from the shell. A manual review runs after
+ * its task settles and has no workflow, so it is surfaced as a reviewing one.
+ */
+function shellWorkflowSummary(
+  workflow: OrchestrationV2ThreadProjection["thread"]["workflow"],
+  turnItems: ReadonlyArray<OrchestrationV2TurnItem>,
+): OrchestrationV2ThreadShell["workflow"] {
+  const summary = summarizeThreadWorkflow(workflow);
+  if (summary !== null) return summary;
+  const review = turnItems.findLast(
+    (item) =>
+      item.type === "workflow_verification" &&
+      item.reviewOnly === true &&
+      item.phase === "reviewing" &&
+      item.status === "running",
+  );
+  if (review?.type !== "workflow_verification") return null;
+  return {
+    profileId: review.profileId,
+    status: "reviewing",
+    revision: review.revision,
+    blockingFindingCount: 0,
+    terminalReason: null,
+    updatedAt: DateTime.formatIso(review.updatedAt),
+  };
+}
+
 export function threadShellFromProjection(
   projection: OrchestrationV2ThreadProjection,
 ): OrchestrationV2ThreadShell {
@@ -1410,7 +1438,7 @@ export function threadShellFromProjection(
     hasActionableProposedPlan: projection.plans.some(
       (plan) => plan.kind === "proposed_plan" && plan.status === "active",
     ),
-    workflow: summarizeThreadWorkflow(projection.thread.workflow),
+    workflow: shellWorkflowSummary(projection.thread.workflow, projection.turnItems),
     pendingBackgroundTasks: [...pendingBackgroundTasks],
     providerInstanceHistory: providerInstanceHistoryForShell({
       threadId: projection.thread.id,
@@ -1494,6 +1522,7 @@ type ShellThreadState = {
   readonly latestUserMessageAt: DateTime.Utc | null;
   readonly latestUserAuthoredMessageAt: DateTime.Utc | null;
   readonly hasActionableProposedPlan: boolean;
+  readonly workflow: OrchestrationV2ThreadShell["workflow"];
   readonly pendingBackgroundTasks: OrchestrationV2ThreadShell["pendingBackgroundTasks"];
   readonly providerInstanceHistory: OrchestrationV2ThreadShell["providerInstanceHistory"];
   readonly itemCount: number;
@@ -1641,7 +1670,7 @@ function shellFromState(input: {
     latestUserMessageAt: input.state.latestUserMessageAt,
     latestUserAuthoredMessageAt: input.state.latestUserAuthoredMessageAt,
     hasActionableProposedPlan: input.state.hasActionableProposedPlan,
-    workflow: summarizeThreadWorkflow(input.state.thread.workflow),
+    workflow: input.state.workflow,
     pendingBackgroundTasks: input.state.pendingBackgroundTasks,
     providerInstanceHistory: input.state.providerInstanceHistory,
     itemCount: input.state.itemCount,
@@ -5037,7 +5066,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             FROM orchestration_v2_projection_turn_items i
             LEFT JOIN orchestration_v2_projection_runs r
               ON r.run_id = i.run_id
-            WHERE i.type IN ('command_execution', 'dynamic_tool', 'subagent')
+            WHERE (
+                i.type IN ('command_execution', 'dynamic_tool', 'subagent')
+                -- Running manual reviews feed the shell workflow summary.
+                OR (i.type = 'workflow_verification' AND json_extract(i.payload_json, '$.reviewOnly') = 1)
+              )
               AND i.status NOT IN ('completed', 'interrupted', 'failed', 'cancelled')
               -- A rolled-back run's items are abandoned, not pending. Without
               -- this the shell reports Waiting for work no one will finish,
@@ -5049,7 +5082,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             FROM orchestration_v2_projection_turn_items i
             LEFT JOIN orchestration_v2_projection_runs r
               ON r.run_id = i.run_id
-            WHERE i.type IN ('command_execution', 'dynamic_tool', 'subagent')
+            WHERE (
+                i.type IN ('command_execution', 'dynamic_tool', 'subagent')
+                -- Running manual reviews feed the shell workflow summary.
+                OR (i.type = 'workflow_verification' AND json_extract(i.payload_json, '$.reviewOnly') = 1)
+              )
               AND i.status NOT IN ('completed', 'interrupted', 'failed', 'cancelled')
               AND (i.run_id IS NULL OR r.status <> 'rolled_back')
               AND i.thread_id IN ${sql.in(threadIds)}
@@ -5370,6 +5407,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ? null
               : DateTime.makeUnsafe(row.latest_user_authored_message_at),
           hasActionableProposedPlan: row.has_actionable_proposed_plan === 1,
+          workflow: shellWorkflowSummary(
+            thread.workflow,
+            pendingTurnItemsByThreadId.get(thread.id) ?? [],
+          ),
           pendingBackgroundTasks,
           providerInstanceHistory: providerInstanceHistoryForShell({
             threadId: thread.id,

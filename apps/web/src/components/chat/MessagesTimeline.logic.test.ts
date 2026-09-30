@@ -33,6 +33,7 @@ import {
   resolveTimelineToolPresentation,
   workEntryDisplayLabel,
   workEntryIsVisibleInGroup,
+  reviewFindingsPrompt,
 } from "./MessagesTimeline.logic";
 
 describe("expanded tool group scrolling", () => {
@@ -4330,4 +4331,29 @@ describe("failed turn transcript", () => {
       });
     },
   );
+});
+
+describe("reviewFindingsPrompt", () => {
+  it("lists each selected finding with its location and evidence", () => {
+    expect(
+      reviewFindingsPrompt([
+        {
+          id: "a",
+          severity: "blocking",
+          title: "Null crash",
+          description: "Guard the missing session.",
+          file: "src/a.ts",
+          line: 12,
+          evidence: "session.id",
+        },
+        { id: "b", severity: "advisory", title: "Rename", description: "Use a clearer name." },
+      ]),
+    ).toBe(
+      [
+        "Implement the following review feedback items:",
+        "1. [blocking] Null crash (src/a.ts:12)\n   Guard the missing session.\n   Evidence: session.id",
+        "2. [advisory] Rename\n   Use a clearer name.",
+      ].join("\n\n"),
+    );
+  });
 });

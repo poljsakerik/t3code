@@ -144,6 +144,7 @@ import type {
   KnownComposerContextRecord,
 } from "@t3tools/contracts";
 import { Button, InlineButton } from "../ui/button";
+import { Checkbox } from "../ui/checkbox";
 import { useAssetUrlRefresh, useAssetUrls, useAssetUrlState } from "../../assets/assetUrls";
 import { MediaVideoPlayer } from "../media/MediaVideoPlayer";
 import { getVirtualizedScrollFadeClassName } from "../ui/scroll-area";
@@ -193,6 +194,7 @@ import {
   resolveTimelineMinimapInteractiveWidth,
   resolveTimelineMinimapTopPercent,
   resolveWorkGroupScrollIndex,
+  reviewFindingsPrompt,
   shouldFollowWorkGroupAppend,
   shouldPreserveAssistantLineBreaks,
   toolGroupAction,
@@ -297,6 +299,7 @@ interface TimelineRowSharedState {
   onRevertToTurnCount: (targetTurnCount: number, messageId: MessageId) => void;
   onUseArtifactTemplate: (template: CodexArtifactTemplate) => void;
   onRunShellCommand: ((command: string) => void) | undefined;
+  onImplementReviewFindings: ((prompt: string) => void) | undefined;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   displayThreadKey?: string;
   onOpenTurnDiff: (runId: RunId, filePath?: string) => void;
@@ -449,6 +452,8 @@ interface MessagesTimelineProps {
   onRevertToTurnCount: (targetTurnCount: number, messageId: MessageId) => void;
   onUseArtifactTemplate?: (template: CodexArtifactTemplate) => void;
   onRunShellCommand?: (command: string) => void;
+  /** Sends the prompt for selected review findings as the next turn. */
+  onImplementReviewFindings?: (prompt: string) => void;
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onFileOpen?: (attachment: ChatFileAttachment) => void;
@@ -523,6 +528,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onRevertToTurnCount,
   onUseArtifactTemplate = NOOP_USE_ARTIFACT_TEMPLATE,
   onRunShellCommand,
+  onImplementReviewFindings,
   isRevertingCheckpoint,
   onImageExpand,
   onFileOpen = NOOP_OPEN_ATTACHMENT,
@@ -1146,6 +1152,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeThreadEnvironmentId,
       onRevertToTurnCount,
       onRunShellCommand,
+      onImplementReviewFindings,
       onImageExpand,
       onFileOpen,
       onUseArtifactTemplate,
@@ -1179,6 +1186,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeThreadEnvironmentId,
       onRevertToTurnCount,
       onRunShellCommand,
+      onImplementReviewFindings,
       onImageExpand,
       onFileOpen,
       onUseArtifactTemplate,
@@ -2807,6 +2815,32 @@ function WorkflowVerificationCard({
   const approvedReviews = item.reviews.filter(
     (review) => review.status === "completed" && review.review?.verdict === "approve",
   ).length;
+  // Requested reviews end with the user choosing which findings to act on;
+  // verification loops feed their findings back to the implementer themselves.
+  const onImplement = ctx.onImplementReviewFindings;
+  const { activeTurnInProgress } = use(TimelineRowActivityCtx);
+  const selectableFindings =
+    onImplement && item.reviewOnly && !item.reviews.some((review) => review.status === "running")
+      ? item.reviews.flatMap((review) =>
+          (review.review?.findings ?? []).map((finding) => ({
+            key: `${review.reviewerId}:${finding.id}`,
+            finding,
+          })),
+        )
+      : [];
+  const [selectedFindingKeys, setSelectedFindingKeys] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const selectedFindings = selectableFindings.filter(({ key }) => selectedFindingKeys.has(key));
+  const allFindingsSelected =
+    selectableFindings.length > 0 && selectedFindings.length === selectableFindings.length;
+  const toggleFinding = (key: string, checked: boolean) =>
+    setSelectedFindingKeys((current) => {
+      const next = new Set(current);
+      if (checked) next.add(key);
+      else next.delete(key);
+      return next;
+    });
 
   return (
     <section
@@ -2947,33 +2981,47 @@ function WorkflowVerificationCard({
                   ) : null}
                   {findings.length > 0 ? (
                     <div className="mt-1.5 space-y-1 ps-5">
-                      {findings.map((finding) => (
-                        <div
-                          key={finding.id}
-                          className={cn(
-                            "border-s ps-2 text-xs",
-                            finding.severity === "blocking"
-                              ? "border-destructive/60"
-                              : "border-border",
-                          )}
-                        >
-                          <div className="flex flex-wrap items-baseline gap-x-1.5">
-                            <span className="font-medium">{finding.title}</span>
-                            {finding.file ? (
-                              <span className="font-mono text-3xs text-muted-foreground">
-                                {finding.file}
-                                {finding.line ? `:${finding.line}` : ""}
-                              </span>
+                      {findings.map((finding) => {
+                        const key = `${review.reviewerId}:${finding.id}`;
+                        const body = (
+                          <div
+                            className={cn(
+                              "min-w-0 flex-1 border-s ps-2 text-xs",
+                              finding.severity === "blocking"
+                                ? "border-destructive/60"
+                                : "border-border",
+                            )}
+                          >
+                            <div className="flex flex-wrap items-baseline gap-x-1.5">
+                              <span className="font-medium">{finding.title}</span>
+                              {finding.file ? (
+                                <span className="font-mono text-3xs text-muted-foreground">
+                                  {finding.file}
+                                  {finding.line ? `:${finding.line}` : ""}
+                                </span>
+                              ) : null}
+                            </div>
+                            <p className="text-muted-foreground">{finding.description}</p>
+                            {finding.evidence ? (
+                              <p className="mt-0.5 font-mono text-3xs text-muted-foreground/80">
+                                {finding.evidence}
+                              </p>
                             ) : null}
                           </div>
-                          <p className="text-muted-foreground">{finding.description}</p>
-                          {finding.evidence ? (
-                            <p className="mt-0.5 font-mono text-3xs text-muted-foreground/80">
-                              {finding.evidence}
-                            </p>
-                          ) : null}
-                        </div>
-                      ))}
+                        );
+                        return selectableFindings.length > 0 ? (
+                          <label key={finding.id} className="flex cursor-pointer items-start gap-2">
+                            <Checkbox
+                              className="mt-0.5"
+                              checked={selectedFindingKeys.has(key)}
+                              onCheckedChange={(checked) => toggleFinding(key, checked)}
+                            />
+                            {body}
+                          </label>
+                        ) : (
+                          <div key={finding.id}>{body}</div>
+                        );
+                      })}
                     </div>
                   ) : null}
                 </div>
@@ -2987,6 +3035,38 @@ function WorkflowVerificationCard({
         <p className="border-t border-border/45 px-3 py-2 text-xs text-destructive-foreground">
           {item.terminalReason}
         </p>
+      ) : null}
+
+      {onImplement && selectableFindings.length > 0 ? (
+        <div className="flex items-center gap-2 border-t border-border/45 px-3 py-2">
+          <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-xs">
+            <Checkbox
+              checked={allFindingsSelected}
+              indeterminate={selectedFindings.length > 0 && !allFindingsSelected}
+              onCheckedChange={() =>
+                setSelectedFindingKeys(
+                  allFindingsSelected
+                    ? new Set()
+                    : new Set(selectableFindings.map(({ key }) => key)),
+                )
+              }
+            />
+            Select all
+            <span className="text-muted-foreground">
+              {selectedFindings.length}/{selectableFindings.length} selected
+            </span>
+          </label>
+          <Button
+            size="xs"
+            disabled={selectedFindings.length === 0 || activeTurnInProgress}
+            onClick={() => {
+              onImplement(reviewFindingsPrompt(selectedFindings.map(({ finding }) => finding)));
+              setSelectedFindingKeys(new Set());
+            }}
+          >
+            Implement selected
+          </Button>
+        </div>
       ) : null}
     </section>
   );

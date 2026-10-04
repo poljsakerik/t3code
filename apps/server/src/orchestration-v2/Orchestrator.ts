@@ -5282,7 +5282,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? null
           : yield* getProjectionWithPendingEvents(command.sourcePlanRef.threadId, events);
       // Command projections leave plans out, so read the source plan directly.
-      const sourcePlanArtifact =
+      const sourcePlan =
         command.sourcePlanRef === undefined
           ? null
           : (sourcePlanProjection?.plans.find(

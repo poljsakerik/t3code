@@ -543,6 +543,7 @@ for (const scenario of [
   { name: "same thread" },
   { name: "new thread", newThread: true },
   { name: "verified workflow", workflow: true, status: "completed" },
+  { name: "verified workflow refinement", workflow: true, refine: true },
   { name: "missing plan", missing: true, rejection: "does not exist" },
   { name: "todo list", todoList: true, rejection: "does not exist" },
   { name: "superseded plan", status: "superseded", rejection: "cannot be implemented" },
@@ -556,6 +557,7 @@ for (const scenario of [
   const options: {
     newThread?: boolean;
     workflow?: boolean;
+    refine?: boolean;
     status?: OrchestrationV2PlanArtifact["status"];
     missing?: boolean;
     todoList?: boolean;
@@ -670,7 +672,7 @@ for (const scenario of [
           messageId: MessageId.make("implementation-message"),
           text: "Implement the plan.",
           attachments: [],
-          sourcePlanRef: { threadId: sourceThreadId, planId },
+          ...(options.refine ? {} : { sourcePlanRef: { threadId: sourceThreadId, planId } }),
           dispatchMode: { type: "defer_start" },
           createdBy: "user",
           creationSource: "web",
@@ -687,6 +689,13 @@ for (const scenario of [
           messageRoles: ["user"],
         });
         assert.equal(records.runs.length, 1);
+        if (options.refine) {
+          // Refining reopens planning and leaves the proposed plan actionable.
+          assert.equal(records.thread.workflow?.status, "planning");
+          assert.equal(records.thread.workflow?.approvedPlanId, null);
+          assert.equal((yield* projections.getPlan(sourceThreadId, planId))?.status, "active");
+          return;
+        }
         assert.deepEqual(records.runs[0]?.sourcePlanRef, { threadId: sourceThreadId, planId });
         assert.equal((yield* projections.getPlan(sourceThreadId, planId))?.status, "completed");
         if (options.workflow) {

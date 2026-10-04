@@ -462,8 +462,17 @@ export const live = Layer.effectDiscard(
         const plan = projection.plans.findLast(
           (candidate) => candidate.kind === "proposed_plan" && candidate.status === "active",
         );
+        const plannerRun = projection.runs.at(-1);
+        // While a refinement run is in flight, an earlier run's plan is stale.
+        if (
+          plan !== undefined &&
+          plannerRun !== undefined &&
+          plan.runId !== plannerRun.id &&
+          !terminalRun(plannerRun.status)
+        ) {
+          return;
+        }
         if (plan === undefined) {
-          const plannerRun = projection.runs.at(-1);
           if (
             plannerRun !== undefined &&
             terminalRun(plannerRun.status) &&

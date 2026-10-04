@@ -48,6 +48,45 @@ function makeHarness(environmentIds: ReadonlyArray<EnvironmentId> = [environment
 }
 
 describe("v2 thread shell lists", () => {
+  it("preserves agent ownership across environments without putting conversations in project lists", () => {
+    const { registry, threads, snapshotAtom } = makeHarness([environmentId, remoteEnvironmentId]);
+    const owner = { agentId: ".t3/agents/writer", sourceProjectId: otherProjectId, name: "Writer" };
+    const conversation = {
+      ...v2ThreadShell,
+      id: ThreadId.make("conversation"),
+      projectId: null,
+      agent: owner,
+    };
+    registry.set(snapshotAtom(environmentId), {
+      ...v2ShellSnapshot,
+      threads: [v2ThreadShell, conversation],
+    });
+    registry.set(snapshotAtom(remoteEnvironmentId), {
+      ...v2ShellSnapshot,
+      threads: [conversation],
+    });
+    const dispose = registry.mount(threads.threadShellsAtom);
+    expect(
+      registry
+        .get(threads.threadShellsAtom)
+        .filter((thread) => thread.agent)
+        .map((thread) => thread.environmentId),
+    ).toEqual([environmentId, remoteEnvironmentId]);
+    expect(
+      registry.get(threads.threadShellAtom({ environmentId, threadId: conversation.id }))?.agent,
+    ).toEqual(owner);
+    expect(
+      [...registry.get(threads.environmentThreadRefsByProjectAtom(environmentId)).values()]
+        .flat()
+        .map((ref) => ref.threadId),
+    ).toEqual([v2ThreadShell.id]);
+    expect(registry.get(threads.environmentThreadRefsByProjectAtom(remoteEnvironmentId)).size).toBe(
+      0,
+    );
+    dispose();
+    registry.dispose();
+  });
+
   it("preserves ordered reference arrays when a middle thread changes", () => {
     const { registry, threads, snapshotAtom } = makeHarness();
     const snapshot = {
@@ -115,7 +154,7 @@ describe("v2 thread shell lists", () => {
     harness.registry.set(harness.snapshotAtom(environmentId), snapshot);
     const listAtom = harness.threads.threadShellsAtom;
     const projectListAtom = harness.threads.threadShellsForProjectRefsAtom([
-      { environmentId, projectId: v2ThreadShell.projectId },
+      { environmentId, projectId: v2ThreadShell.projectId! },
     ]);
     const disposeList = harness.registry.mount(listAtom);
     const disposeProjectList = harness.registry.mount(projectListAtom);
@@ -162,8 +201,8 @@ describe("v2 thread shell lists", () => {
     harness.registry.set(harness.snapshotAtom(environmentId), snapshot);
     const membershipAtom = harness.threads.environmentThreadRefsByProjectAtom(environmentId);
     const listAtom = harness.threads.threadShellsForProjectRefsAtom([
-      { environmentId: remoteEnvironmentId, projectId: v2ThreadShell.projectId },
-      { environmentId, projectId: v2ThreadShell.projectId },
+      { environmentId: remoteEnvironmentId, projectId: v2ThreadShell.projectId! },
+      { environmentId, projectId: v2ThreadShell.projectId! },
     ]);
     const disposeList = harness.registry.mount(listAtom);
     try {

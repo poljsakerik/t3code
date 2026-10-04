@@ -1,5 +1,14 @@
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
+import { agentDefinitionKey } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+import * as FileSystem from "effect/FileSystem";
+import {
+  AgentConversationLauncher,
+  layer as agentConversationLauncherLayer,
+} from "../agents/AgentConversationLaunch.ts";
+import { layer as agentReceiptLayer } from "./CommandReceiptStore.ts";
+import { layer as agentIdsLayer } from "./IdAllocator.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
@@ -14,8 +23,10 @@ import {
   NodeId,
   RuntimeRequestId,
   TurnItemId,
+  type ThreadWorkflowState,
   type ModelSelection,
   type OrchestrationV2Run,
+  PlanId,
   ProjectId,
   type PullRequestDetail,
   type PullRequestComment,
@@ -89,6 +100,8 @@ const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-orchestration-v2-runtime-layer-",
 });
 
+const encodeReviewJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+
 const modelSelection = {
   instanceId: ProviderInstanceId.make("codex"),
   model: "gpt-5.4",
@@ -148,16 +161,36 @@ const alternateProviderInstance = {
   },
 } satisfies ProviderInstance;
 
+const claudeModelSelection = {
+  instanceId: ProviderInstanceId.make("claudeAgent"),
+  model: "claude-sonnet-4-6",
+};
+const claudeProviderInstance = {
+  ...providerInstance,
+  instanceId: claudeModelSelection.instanceId,
+  driverKind: ProviderDriverKind.make("claudeAgent"),
+  orchestrationAdapter: {
+    ...orchestrationAdapter,
+    instanceId: claudeModelSelection.instanceId,
+    driver: ProviderDriverKind.make("claudeAgent"),
+    workflowSkillIsolation: "native" as const,
+  },
+} satisfies ProviderInstance;
+
 const TestProviderInstanceRegistry = Layer.succeed(
   ProviderInstanceRegistry.ProviderInstanceRegistry,
   {
     getInstance: (instanceId) =>
       Effect.succeed(
-        [providerInstance, alternateProviderInstance].find(
+        [providerInstance, alternateProviderInstance, claudeProviderInstance].find(
           (instance) => instanceId === instance.instanceId,
         ),
       ),
-    listInstances: Effect.succeed([providerInstance, alternateProviderInstance]),
+    listInstances: Effect.succeed([
+      providerInstance,
+      alternateProviderInstance,
+      claudeProviderInstance,
+    ]),
     listUnavailable: Effect.succeed([]),
     streamChanges: Stream.empty,
     subscribeChanges: Effect.never,
@@ -215,6 +248,12 @@ const moveProject = (projectId: ProjectId, workspaceRoot: string, updatedAt: str
   );
 
 const TestLayer = Layer.mergeAll(
+  agentConversationLauncherLayer.pipe(
+    Layer.provide(OrchestrationV2LayerLive),
+    Layer.provide(ProjectionProjectRepositoryLive),
+    Layer.provide(agentReceiptLayer),
+    Layer.provide(agentIdsLayer),
+  ),
   OrchestrationV2LayerLive,
   OrchestrationV2EventSinkLayerLive,
   ProjectStore.layer,
@@ -230,7 +269,7 @@ const TestLayer = Layer.mergeAll(
   Layer.provide(TestProviderInstanceRegistry),
   Layer.provide(GitWorkflowTestLayer),
   Layer.provide(ProjectServiceTestLayer),
-  Layer.provide(PlatformTestLayer),
+  Layer.provideMerge(PlatformTestLayer),
 );
 
 const LegacyImportTestLayer = OrchestrationV2LayerLive.pipe(
@@ -428,6 +467,978 @@ const SharedApplicationDataPlaneTestLayer = Layer.mergeAll(
 );
 
 it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
+  it.effect(
+    "rejects an instructions-only agent with an actionable error and creates no thread",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const projects = yield* ProjectionProjectRepository;
+        const launcher = yield* AgentConversationLauncher;
+        const orchestrator = yield* OrchestratorV2;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-unconfigured-agent-" });
+        const projectId = ProjectId.make("unconfigured-agent-project");
+        const threadId = ThreadId.make("unconfigured-agent-thread");
+        yield* fs.makeDirectory(path.join(root, ".t3/agents/writer"), { recursive: true });
+        yield* fs.writeFileString(
+          path.join(root, ".t3/agents/writer/instructions.md"),
+          "Write clearly.",
+        );
+        const now = "2026-09-22T00:00:00.000Z";
+        yield* projects.upsert({
+          projectId,
+          title: "Unconfigured agent",
+          workspaceRoot: root,
+          defaultModelSelection: null,
+          defaultThreadEnvMode: null,
+          autoPull: false,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+          deletedAt: null,
+        });
+        const failure = yield* launcher
+          .launch({
+            commandId: CommandId.make("launch-unconfigured-agent"),
+            threadId,
+            agent: { sourceProjectId: projectId, agentId: ".t3/agents/writer" },
+            title: "Writing",
+            createdBy: "user",
+            creationSource: "web",
+          })
+          .pipe(Effect.flip);
+        assert.include(failure.message, "agent.ts");
+        assert.include(failure.message, "model");
+        assert.isNull(yield* orchestrator.getThreadShell(threadId));
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "launches from an authored definition, retries idempotently, and keeps its snapshot after source edits",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const projects = yield* ProjectionProjectRepository;
+        const launcher = yield* AgentConversationLauncher;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-agent-launch-" });
+        const projectId = ProjectId.make("agent-source-project");
+        const threadId = ThreadId.make("agent-launched-thread");
+        yield* fs.makeDirectory(path.join(root, ".t3/agents/writer"), { recursive: true });
+        yield* fs.writeFileString(
+          path.join(root, ".t3/agents/writer/agent.ts"),
+          'export default { model: "anthropic/claude-sonnet-4-6" };',
+        );
+        yield* fs.writeFileString(
+          path.join(root, ".t3/agents/writer/instructions.md"),
+          "Write clearly.",
+        );
+        const now = "2026-09-21T00:00:00.000Z";
+        yield* projects.upsert({
+          projectId,
+          title: "Source",
+          workspaceRoot: root,
+          defaultModelSelection: null,
+          defaultThreadEnvMode: null,
+          autoPull: false,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+          deletedAt: null,
+        });
+        const input = {
+          commandId: CommandId.make("launch-agent"),
+          threadId,
+          agent: { sourceProjectId: projectId, agentId: ".t3/agents/writer" },
+          title: "Writing",
+          createdBy: "user",
+          creationSource: "web",
+          initialMessage: { text: "Help with an essay.", attachments: [] },
+        } as const;
+        const first = yield* launcher.launch(input);
+        assert.deepEqual(first.projection.thread.modelSelection, claudeModelSelection);
+        assert.equal(first.projection.thread.agent?.definition.instructions, "Write clearly.");
+        assert.isNull(first.projection.thread.projectId);
+        assert.deepEqual(first.projection.checkpointScopes, []);
+        assert.equal(first.projection.messages.length, 1);
+        yield* fs.writeFileString(
+          path.join(root, ".t3/agents/writer/instructions.md"),
+          "Use the revised style.",
+        );
+        const second = yield* launcher.launch({
+          ...input,
+          commandId: CommandId.make("launch-agent-second"),
+          threadId: ThreadId.make("agent-second-thread"),
+        });
+        assert.equal(
+          second.projection.thread.agent?.definition.instructions,
+          "Use the revised style.",
+        );
+        assert.notEqual(
+          second.projection.thread.agent?.directory,
+          first.projection.thread.agent?.directory,
+        );
+        yield* fs.remove(path.join(root, ".t3"), { recursive: true });
+        yield* projects.upsert({
+          projectId,
+          title: "Source",
+          workspaceRoot: root,
+          defaultModelSelection: null,
+          defaultThreadEnvMode: null,
+          autoPull: false,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+          deletedAt: now,
+        });
+        const retry = yield* launcher.launch(input);
+        assert.isTrue(retry.resumed);
+        assert.equal(retry.projection.messages.length, 1);
+        assert.equal(
+          retry.projection.thread.agent?.directory,
+          first.projection.thread.agent?.directory,
+        );
+        assert.equal(retry.projection.thread.agent?.definition.instructions, "Write clearly.");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("preserves an agent owner and fixed setup without a project or checkpoint scope", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* OrchestratorV2;
+      const threadId = ThreadId.make("detached-writer");
+      const agent = {
+        owner: { agentId: ".t3/agents/writer", sourceProjectId: null, name: "Writer" },
+        definition: {
+          id: ".t3/agents/writer",
+          name: "Writer",
+          instructions: "Write clearly.",
+          skills: [],
+          modelSelection: claudeModelSelection,
+        },
+        directory: "/managed/conversations/writer",
+      };
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("create-detached-writer"),
+        threadId,
+        projectId: null,
+        agent,
+        title: "A writing conversation",
+        modelSelection: claudeModelSelection,
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("send-detached-writer"),
+        threadId,
+        messageId: MessageId.make("writer-message"),
+        text: "Help with an essay.",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(projection.thread.agent, agent);
+      assert.isNull(projection.thread.projectId);
+      assert.deepEqual(projection.runs[0]?.modelSelection, claudeModelSelection);
+      assert.deepEqual(projection.checkpointScopes, []);
+      const shell = yield* orchestrator.getThreadShell(threadId);
+      assert.deepEqual(shell?.agent, agent.owner);
+      assert.isNull(shell?.projectId);
+      const rejected = yield* orchestrator
+        .dispatch({
+          type: "thread.model-selection.set",
+          commandId: CommandId.make("change-detached-model"),
+          threadId,
+          modelSelection,
+        })
+        .pipe(Effect.flip);
+      assert.equal(rejected._tag, "OrchestratorDispatchError");
+    }),
+  );
+
+  it.effect(
+    "starts selected reviewers atomically and collects results without restarting completed work",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const workspaceRoot = yield* fs
+          .makeTempDirectoryScoped({ prefix: "t3-review-request-" })
+          .pipe(Effect.flatMap(fs.realPath));
+        for (const name of ["correctness", "security", "unsupported"]) {
+          const directory = `${workspaceRoot}/.t3/agents/${name}`;
+          yield* fs.makeDirectory(directory, { recursive: true });
+          yield* fs.writeFileString(`${directory}/instructions.md`, `Check ${name}.`);
+          yield* fs.writeFileString(
+            `${directory}/agent.ts`,
+            `export default { model: "${name === "unsupported" ? "openai/gpt-5.4" : "anthropic/claude-sonnet-4-6"}" };`,
+          );
+        }
+        const orchestrator = yield* OrchestratorV2;
+        const projects = yield* ProjectionProjectRepository;
+        const sink = yield* EventSinkV2;
+        const outbox = yield* EffectOutboxV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("request-review-parent");
+        const projectId = ProjectId.make("request-review-project");
+        yield* projects.upsert({
+          projectId,
+          title: "Reviews",
+          workspaceRoot,
+          defaultModelSelection: null,
+          defaultThreadEnvMode: null,
+          autoPull: false,
+          scripts: [],
+          createdAt: DateTime.formatIso(now),
+          updatedAt: DateTime.formatIso(now),
+          deletedAt: null,
+        });
+        const reviewerWorkspace = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-external-reviewer-",
+        });
+        const reviewerProjectId = ProjectId.make("reviewer-source-project");
+        yield* fs.makeDirectory(`${reviewerWorkspace}/.t3/agents/correctness/skills/context`, {
+          recursive: true,
+        });
+        yield* fs.writeFileString(
+          `${reviewerWorkspace}/.t3/agents/correctness/instructions.md`,
+          "Review using the other project's agent instructions.",
+        );
+        yield* fs.writeFileString(
+          `${reviewerWorkspace}/.t3/agents/correctness/agent.ts`,
+          'export default { model: "anthropic/claude-sonnet-4-6" };',
+        );
+        yield* fs.writeFileString(
+          `${reviewerWorkspace}/.t3/agents/correctness/skills/context/SKILL.md`,
+          "Use the external review checklist.",
+        );
+        yield* projects.upsert({
+          projectId: reviewerProjectId,
+          title: "Reviewer sources",
+          workspaceRoot: reviewerWorkspace,
+          defaultModelSelection: null,
+          defaultThreadEnvMode: null,
+          autoPull: false,
+          scripts: [],
+          createdAt: DateTime.formatIso(now),
+          updatedAt: DateTime.formatIso(now),
+          deletedAt: null,
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("review-create"),
+          threadId,
+          projectId,
+          title: "Fix task",
+          modelSelection,
+          runtimeMode: "approval-required",
+          interactionMode: "plan",
+          branch: "feature",
+          worktreePath: workspaceRoot,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("review-task"),
+          threadId,
+          messageId: MessageId.make("review-task"),
+          text: "Fix the login regression.",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const initial = yield* orchestrator.getThreadProjection(threadId);
+        const run = initial.runs[0]!;
+        const request = {
+          type: "thread.review" as const,
+          commandId: CommandId.make("review-request"),
+          threadId,
+          runId: run.id,
+          agents: [
+            { projectId, agentId: ".t3/agents/correctness" },
+            { projectId: reviewerProjectId, agentId: ".t3/agents/correctness" },
+          ],
+          createdBy: "user" as const,
+          creationSource: "web" as const,
+        };
+        assert.equal(
+          (yield* Effect.exit(
+            orchestrator.dispatch({ ...request, commandId: CommandId.make("review-too-early") }),
+          ))._tag,
+          "Failure",
+        );
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("review-parent-completed"),
+              type: "run.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: { ...run, status: "completed", completedAt: now },
+            },
+          ],
+        });
+        assert.equal(
+          (yield* Effect.exit(
+            orchestrator.dispatch({
+              ...request,
+              commandId: CommandId.make("review-stale"),
+              runId: RunId.make("old-run"),
+            }),
+          ))._tag,
+          "Failure",
+        );
+        const unsupported = {
+          ...request,
+          commandId: CommandId.make("review-unsupported"),
+          agents: [
+            { projectId, agentId: ".t3/agents/correctness" },
+            { projectId, agentId: ".t3/agents/unsupported" },
+          ],
+        };
+        assert.equal((yield* Effect.exit(orchestrator.dispatch(unsupported)))._tag, "Failure");
+        assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).subagents, 0);
+        yield* orchestrator.dispatch(request);
+        yield* orchestrator.dispatch(request);
+        const parent = yield* orchestrator.getThreadProjection(threadId);
+        assert.lengthOf(parent.subagents, 2);
+        const reviewCard = parent.turnItems.find((item) => item.type === "workflow_verification");
+        assert.equal(reviewCard?.type, "workflow_verification");
+        if (reviewCard?.type !== "workflow_verification") return;
+        assert.isTrue(reviewCard.reviewOnly);
+        assert.equal(reviewCard.phase, "reviewing");
+        assert.lengthOf(reviewCard.reviews, 2);
+        assert.lengthOf(parent.runs, 1);
+        assert.equal(parent.runs[0]?.status, "completed");
+        assert.isEmpty(parent.turnItems.filter((item) => item.type === "subagent"));
+        assert.equal(
+          (yield* Effect.exit(
+            orchestrator.dispatch({ ...request, commandId: CommandId.make("review-duplicate") }),
+          ))._tag,
+          "Failure",
+        );
+        const children = yield* Effect.forEach(parent.subagents, (task) =>
+          orchestrator.getThreadProjection(task.childThreadId!),
+        );
+        for (const [index, child] of children.entries()) {
+          assert.equal(child.thread.lineage.parentThreadId, threadId);
+          assert.equal(child.thread.runtimeMode, "full-access");
+          assert.equal(child.thread.interactionMode, "default");
+          assert.equal(child.thread.worktreePath, workspaceRoot);
+          assert.isNull(child.thread.workflow ?? null);
+          assert.deepEqual(child.runs[0]?.workflowSkillAllowlist, []);
+          assert.equal(child.runs[0]?.modelSelection.instanceId, claudeModelSelection.instanceId);
+          assert.equal(child.thread.projectId, projectId);
+          assert.include(child.messages[0]!.text, "Fix the login regression.");
+          assert.include(
+            child.messages[0]!.text,
+            index === 0
+              ? "Check correctness."
+              : "Review using the other project's agent instructions.",
+          );
+          if (index === 1)
+            assert.include(child.messages[0]!.text, "Use the external review checklist.");
+          assert.include(child.messages[0]!.text, "Return only one JSON object");
+          assert.include(child.messages[0]!.text, "Do not create report files");
+          assert.equal(parent.subagents[index]?.completionDelivery?.state, "disposed");
+          const childCommandId = CommandId.make(
+            `${request.commandId}:review:${encodeURIComponent(agentDefinitionKey(request.agents[index]!))}`,
+          );
+          assert.isTrue(
+            (yield* outbox.listByCommandId(childCommandId)).some(
+              (effect) => effect.request.type === "provider-turn.start",
+            ),
+          );
+        }
+        // Both starts are already queued before either reviewer finishes.
+        const afterSequence = yield* orchestrator.getThreadEventSequence(threadId);
+        for (const [index, child] of children.entries()) {
+          const childRun = child.runs[0]!;
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make(`review-child-response-${index}`),
+                type: "message.updated",
+                threadId: child.thread.id,
+                runId: childRun.id,
+                occurredAt: now,
+                payload: {
+                  ...child.messages[0]!,
+                  id: MessageId.make(`review-result-${index}`),
+                  role: "assistant",
+                  text:
+                    index === 0
+                      ? `Completed the full critique.\n\n\`\`\`json\n${yield* encodeReviewJson({
+                          verdict: "request_changes",
+                          summary: "Blocking: login still accepts expired tokens.",
+                          findings: [
+                            {
+                              id: "expired-token",
+                              severity: "blocking",
+                              title: "Expired tokens accepted",
+                              description: "Reject expired tokens at login.",
+                              file: "src/login.ts",
+                              line: 12,
+                              evidence: "An expired token still authenticates.",
+                            },
+                          ],
+                        })}\n\`\`\``
+                      : "Review could not finish.",
+                  streaming: false,
+                },
+              },
+              {
+                id: EventId.make(`review-child-completed-${index}`),
+                type: "run.updated",
+                threadId: child.thread.id,
+                runId: childRun.id,
+                occurredAt: now,
+                payload: {
+                  ...childRun,
+                  status: "completed",
+                  completedAt: now,
+                },
+              },
+            ],
+          });
+        }
+        yield* sink.stream({ threadId, afterSequence }).pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "subagent.updated" &&
+              ["completed", "failed"].includes(stored.event.payload.status),
+          ),
+          Stream.take(2),
+          Stream.runDrain,
+        );
+        const completed = yield* orchestrator.getThreadProjection(threadId);
+        assert.lengthOf(completed.runs, 1);
+        const completedCard = completed.turnItems.find((item) => item.id === reviewCard.id);
+        assert.equal(completedCard?.type, "workflow_verification");
+        if (completedCard?.type !== "workflow_verification") return;
+        assert.equal(completedCard.phase, "needs_human");
+        assert.equal(completedCard.status, "failed");
+        assert.equal(completedCard.reviews[0]?.review?.findings[0]?.file, "src/login.ts");
+        assert.include(completedCard.reviews[1]?.error ?? "", "invalid review JSON");
+        assert.deepEqual(
+          completed.subagents.map((task) => task.status),
+          ["completed", "failed"],
+        );
+        assert.equal(
+          completed.subagents[0]?.result,
+          "Blocking: login still accepts expired tokens.",
+        );
+        assert.isTrue(
+          completed.subagents.every((task) => task.completionDelivery?.state === "disposed"),
+        );
+        const agent = {
+          id: "workflow-agent",
+          name: "Workflow agent",
+          skills: [],
+          instructions: "Implement the task",
+          modelSelection,
+        };
+        const workflow: ThreadWorkflowState = {
+          profileId: "done-workflow",
+          workspaceRoot,
+          profile: {
+            version: 1,
+            id: "done-workflow",
+            name: "Done workflow",
+            planner: agent,
+            implementer: agent,
+            reviewers: [agent],
+            checks: [{ id: "tests", name: "Tests", run: "true", timeoutMs: 1000 }],
+            limits: { maxRevisionCycles: 3, identicalFailureLimit: 2 },
+          },
+          status: "done",
+          revision: 1,
+          revisionCycles: 0,
+          consecutiveFailureCount: 0,
+          lastFailureFingerprint: null,
+          approvedPlanId: null,
+          candidateRunId: run.id,
+          workspaceDigest: "digest",
+          checks: [],
+          reviews: [],
+          terminalReason: null,
+          updatedAt: DateTime.formatIso(now),
+        };
+        for (const status of ["reviewing", "done", "needs_human"] as const) {
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make(`review-workflow-${status}`),
+                type: "thread.workflow-updated",
+                threadId,
+                occurredAt: now,
+                payload: { ...completed.thread, workflow: { ...workflow, status } },
+              },
+            ],
+          });
+          assert.equal(
+            (yield* Effect.exit(
+              orchestrator.dispatch({
+                ...request,
+                commandId: CommandId.make(`review-rejected-workflow-${status}`),
+              }),
+            ))._tag,
+            "Failure",
+          );
+          const rejected = yield* orchestrator.getThreadProjection(threadId);
+          assert.lengthOf(rejected.subagents, 2);
+        }
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("review-clear-workflow"),
+              type: "thread.workflow-updated",
+              threadId,
+              occurredAt: now,
+              payload: { ...completed.thread, workflow: null },
+            },
+          ],
+        });
+        yield* orchestrator.dispatch({ ...request, commandId: CommandId.make("review-again") });
+        const repeated = yield* orchestrator.getThreadProjection(threadId);
+        assert.lengthOf(repeated.subagents, 4);
+        for (const task of repeated.subagents.slice(2)) {
+          const child = yield* orchestrator.getThreadProjection(task.childThreadId!);
+          assert.isNull(child.thread.workflow);
+          assert.equal(child.runs[0]?.modelSelection.instanceId, claudeModelSelection.instanceId);
+        }
+        assert.deepEqual(
+          repeated.turnItems
+            .filter((item) => item.type === "workflow_verification")
+            .map((item) => item.revision),
+          [1, 2],
+        );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("preserves requested approval and planner modes for ordinary delegated agents", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* OrchestratorV2;
+      for (const runtimeMode of [
+        "approval-required",
+        "auto-accept-edits",
+        "auto",
+        "full-access",
+      ] as const) {
+        const threadId = ThreadId.make(`delegation-access-${runtimeMode}`);
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`create-${threadId}`),
+          threadId,
+          projectId: ProjectId.make("delegation-access-project"),
+          title: "Delegate a task",
+          modelSelection,
+          runtimeMode,
+          interactionMode: "default",
+          branch: null,
+          worktreePath: process.cwd(),
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`start-${threadId}`),
+          threadId,
+          messageId: MessageId.make(`message-${threadId}`),
+          text: "Delegate the investigation.",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const parent = yield* orchestrator.getThreadProjection(threadId);
+        const run = parent.runs[0]!;
+        yield* orchestrator.dispatch({
+          type: "delegated_task.request",
+          commandId: CommandId.make(`delegate-${threadId}`),
+          parentThreadId: threadId,
+          parentRunId: run.id,
+          parentNodeId: run.rootNodeId!,
+          task: "Inspect the implementation.",
+          modelSelection: claudeModelSelection,
+          runtimeMode: "approval-required",
+          interactionMode: "plan",
+          createdBy: "agent",
+          creationSource: "mcp",
+        });
+        const updated = yield* orchestrator.getThreadProjection(threadId);
+        const child = yield* orchestrator.getThreadProjection(updated.subagents[0]!.childThreadId!);
+        assert.equal(child.thread.runtimeMode, "approval-required");
+        assert.equal(child.thread.interactionMode, "plan");
+        assert.equal(updated.thread.runtimeMode, runtimeMode);
+        assert.equal(updated.thread.interactionMode, "default");
+      }
+    }),
+  );
+
+  it.effect("launches workflow reviewers atomically and does not duplicate them on retry", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* OrchestratorV2;
+      const sink = yield* EventSinkV2;
+      const now = yield* DateTime.now;
+      const outbox = yield* EffectOutboxV2;
+      const planId = PlanId.make("workflow-review-plan");
+      const parentId = ThreadId.make("workflow-subagents-parent");
+      const secondId = ThreadId.make("workflow-subagents-second");
+      const freshId = ThreadId.make("workflow-subagents-fresh");
+      const runId = RunId.make("workflow-subagents-run");
+      const rootId = NodeId.make("workflow-subagents-root");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create-${parentId}`),
+        threadId: parentId,
+        projectId: ProjectId.make("workflow-subagents-project"),
+        title: parentId,
+        modelSelection,
+        runtimeMode: "approval-required",
+        interactionMode: "plan",
+        branch: "feature/review",
+        worktreePath: "/workspace/review",
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const parent = (yield* orchestrator.getThreadProjection(parentId)).thread;
+      const agent = (id: string) => ({
+        id,
+        name: id,
+        skills: [],
+        instructions: "Review carefully",
+        mcpConnections: { docs: { url: "https://docs.example/mcp", description: "Docs" } },
+        modelSelection: claudeModelSelection,
+      });
+      const workflow: ThreadWorkflowState = {
+        profileId: "default",
+        workspaceRoot: "/workspace/review",
+        profile: {
+          version: 1,
+          id: "default",
+          name: "Default",
+          planner: agent("planner"),
+          implementer: agent("implementer"),
+          reviewers: [
+            agent("second"),
+            { ...agent("fresh"), modelSelection: claudeModelSelection, skills: ["code-review"] },
+          ],
+          checks: [{ id: "test", name: "Tests", run: "true", timeoutMs: 1000 }],
+          limits: { maxRevisionCycles: 3, identicalFailureLimit: 2 },
+        },
+        status: "reviewing",
+        revision: 1,
+        revisionCycles: 0,
+        consecutiveFailureCount: 0,
+        lastFailureFingerprint: null,
+        approvedPlanId: planId,
+        candidateRunId: runId,
+        workspaceDigest: "digest",
+        checks: [],
+        terminalReason: null,
+        updatedAt: DateTime.formatIso(now),
+        reviews: [secondId, freshId].map((reviewerThreadId, index) => ({
+          reviewerId: index === 0 ? "second" : "fresh",
+          reviewerThreadId,
+          revision: 1,
+          status: "running",
+          review: null,
+          error: null,
+        })),
+      };
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("workflow-subagents-state"),
+            type: "thread.workflow-updated",
+            threadId: parentId,
+            occurredAt: now,
+            payload: { ...parent, workflow },
+          },
+          {
+            id: EventId.make("workflow-subagents-plan"),
+            type: "plan.updated",
+            threadId: parentId,
+            occurredAt: now,
+            payload: {
+              id: planId,
+              threadId: parentId,
+              runId,
+              nodeId: rootId,
+              status: "completed",
+              kind: "proposed_plan",
+              markdown: "Fix the login regression.",
+            },
+          },
+          {
+            id: EventId.make("workflow-subagents-run-created"),
+            type: "run.created",
+            threadId: parentId,
+            runId,
+            occurredAt: now,
+            payload: {
+              id: runId,
+              threadId: parentId,
+              ordinal: 1,
+              providerInstanceId: modelSelection.instanceId,
+              modelSelection,
+              providerThreadId: null,
+              userMessageId: MessageId.make("workflow-request"),
+              rootNodeId: rootId,
+              activeAttemptId: null,
+              status: "completed",
+              queuePosition: null,
+              requestedAt: now,
+              startedAt: now,
+              completedAt: now,
+              checkpointId: null,
+              contextHandoffId: null,
+            },
+          },
+          {
+            id: EventId.make("workflow-subagents-root-created"),
+            type: "node.updated",
+            threadId: parentId,
+            runId,
+            nodeId: rootId,
+            occurredAt: now,
+            payload: {
+              id: rootId,
+              threadId: parentId,
+              runId,
+              parentNodeId: null,
+              rootNodeId: rootId,
+              kind: "root_turn",
+              status: "completed",
+              countsForRun: true,
+              providerThreadId: null,
+              providerTurnId: null,
+              nativeItemRef: null,
+              runtimeRequestId: null,
+              checkpointScopeId: null,
+              startedAt: now,
+              completedAt: now,
+            },
+          },
+        ],
+      });
+      const invalidStart = yield* Effect.exit(
+        orchestrator.dispatch({
+          type: "workflow.update",
+          commandId: CommandId.make("workflow-subagents-invalid"),
+          threadId: parentId,
+          expectedStatus: "reviewing",
+          workflow: {
+            ...workflow,
+            profile: {
+              ...workflow.profile!,
+              reviewers: [
+                workflow.profile!.reviewers[0]!,
+                { ...workflow.profile!.reviewers[1]!, modelSelection },
+              ],
+            },
+          },
+          createdBy: "system",
+          creationSource: "server",
+        }),
+      );
+      assert.equal(invalidStart._tag, "Failure");
+      assert.isEmpty((yield* orchestrator.getThreadProjection(parentId)).subagents);
+      const result = yield* orchestrator.dispatch({
+        type: "workflow.update",
+        commandId: CommandId.make("workflow-subagents-create"),
+        threadId: parentId,
+        expectedStatus: "reviewing",
+        workflow,
+        createdBy: "system",
+        creationSource: "server",
+      });
+      const updated = yield* orchestrator.getThreadProjection(parentId);
+      assert.lengthOf(updated.subagents, 2);
+      for (const childId of [secondId, freshId]) {
+        const child = yield* orchestrator.getThreadProjection(childId);
+        const task = updated.subagents.find((task) => task.childThreadId === childId)!;
+        assert.deepEqual(child.thread.lineage, {
+          parentThreadId: parentId,
+          relationshipToParent: "subagent",
+          rootThreadId: parentId,
+        });
+        assert.deepEqual(child.thread.forkedFrom, { type: "node", nodeId: task.id });
+        assert.isNull(child.thread.workflow);
+        assert.equal(child.thread.runtimeMode, "full-access");
+        assert.equal(child.thread.interactionMode, "default");
+        assert.equal(child.thread.worktreePath, parent.worktreePath);
+        assert.equal(task.origin, "app_owned");
+        assert.equal(task.runId, runId);
+        assert.equal(task.completionDelivery?.state, "disposed");
+        assert.lengthOf(child.runs, 1);
+        assert.include(child.messages[0]!.text, "Approved plan:\nFix the login regression.");
+        assert.include(child.messages[0]!.text, "Return only one JSON object");
+        const startCommandId = CommandId.make(
+          `command:workflow:${encodeURIComponent(parentId)}:1:review:${encodeURIComponent(childId === secondId ? "second" : "fresh")}:start`,
+        );
+        assert.isTrue(
+          (yield* outbox.listByCommandId(startCommandId)).some(
+            (effect) => effect.request.type === "provider-turn.start",
+          ),
+        );
+      }
+      const fresh = yield* orchestrator.getThreadProjection(freshId);
+      assert.isNotNull(fresh.thread.activeProviderThreadId);
+      assert.equal(fresh.thread.interactionMode, "default");
+      assert.deepEqual(fresh.thread.modelSelection, claudeModelSelection);
+      const freshTask = updated.subagents.find((task) => task.childThreadId === freshId)!;
+      assert.equal(freshTask.driver, "claudeAgent");
+      assert.equal(freshTask.model, claudeModelSelection.model);
+      const reviewerRun = (yield* orchestrator.getThreadProjection(freshId)).runs[0]!;
+      assert.deepEqual(reviewerRun.modelSelection, claudeModelSelection);
+      assert.deepEqual(reviewerRun.workflowSkillAllowlist, ["code-review"]);
+      assert.deepEqual(reviewerRun.agentMcpConnections, agent("fresh").mcpConnections);
+
+      assert.lengthOf(
+        result.storedEvents.filter((stored) => stored.event.type === "thread.created"),
+        2,
+      );
+      const repeated = yield* orchestrator.dispatch({
+        type: "workflow.update",
+        commandId: CommandId.make("workflow-subagents-repeat"),
+        threadId: parentId,
+        expectedStatus: "reviewing",
+        workflow,
+        createdBy: "system",
+        creationSource: "server",
+      });
+      assert.isFalse(
+        repeated.storedEvents.some(
+          (stored) =>
+            stored.event.type === "thread.created" ||
+            stored.event.type === "thread.metadata-updated" ||
+            stored.event.type === "run.created",
+        ),
+      );
+    }),
+  );
+
+  for (const [status, hasPlan] of [
+    ["draft", false],
+    ["planning", false],
+    ["planned", false],
+    ["implementing", true],
+    ["revising", true],
+    ["needs_human", false],
+    ["needs_human", true],
+  ] as const) {
+    it.effect(
+      `runs the configured agent during ${status} (${hasPlan ? "implementation" : "planning"})`,
+      () =>
+        Effect.gen(function* () {
+          const orchestrator = yield* OrchestratorV2;
+          const sink = yield* EventSinkV2;
+          const now = yield* DateTime.now;
+          const threadId = ThreadId.make(`fixed-agent-${status}-${hasPlan}`);
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`create-${threadId}`),
+            threadId,
+            projectId: ProjectId.make("fixed-agent-project"),
+            title: "Fixed agent",
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: "/workspace",
+            createdBy: "user",
+            creationSource: "web",
+          });
+          const thread = (yield* orchestrator.getThreadProjection(threadId)).thread;
+          const implementerSelection = { ...modelSelection, model: "gpt-5.4-agent" };
+          const agent = { id: "agent", name: "Agent", instructions: "Do the job.", skills: [] };
+          const workflow: ThreadWorkflowState = {
+            profileId: "fixed",
+            workspaceRoot: "/workspace",
+            profile: {
+              version: 1,
+              id: "fixed",
+              name: "Fixed",
+              planner: {
+                ...agent,
+                modelSelection: claudeModelSelection,
+                mcpConnections: { docs: { url: "https://docs.example/mcp", description: "Docs" } },
+              },
+              implementer: {
+                ...agent,
+                modelSelection: implementerSelection,
+                mcpConnections: {
+                  issues: { url: "https://issues.example/mcp", description: "Issues" },
+                },
+              },
+              reviewers: [agent],
+              checks: [{ id: "check", name: "Check", run: "true", timeoutMs: 1000 }],
+              limits: { maxRevisionCycles: 3, identicalFailureLimit: 2 },
+            },
+            status,
+            revision: 0,
+            revisionCycles: 0,
+            consecutiveFailureCount: 0,
+            lastFailureFingerprint: null,
+            approvedPlanId: hasPlan ? PlanId.make("approved") : null,
+            candidateRunId: null,
+            workspaceDigest: null,
+            checks: [],
+            reviews: [],
+            terminalReason: null,
+            updatedAt: DateTime.formatIso(now),
+          };
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make(`seed-${threadId}`),
+                type: "thread.workflow-updated",
+                threadId,
+                occurredAt: now,
+                payload: { ...thread, workflow },
+              },
+            ],
+          });
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(`dispatch-${threadId}`),
+            threadId,
+            messageId: MessageId.make(`message-${threadId}`),
+            text: "Continue.",
+            attachments: [],
+            modelSelection: { instanceId: alternateInstanceId, model: "wrong-model" },
+            dispatchMode: { type: "start_immediately" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+          const projection = yield* orchestrator.getThreadProjection(threadId);
+          assert.deepEqual(
+            projection.runs[0]?.modelSelection,
+            hasPlan ? implementerSelection : claudeModelSelection,
+          );
+          assert.deepEqual(
+            projection.runs[0]?.agentMcpConnections,
+            hasPlan
+              ? workflow.profile!.implementer.mcpConnections
+              : workflow.profile!.planner.mcpConnections,
+          );
+          assert.isUndefined(projection.runs[0]?.workflowSkillAllowlist);
+        }),
+    );
+  }
+
   it.effect("emits model updates separately from provider switches", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -627,6 +1638,8 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
 
   it.effect("rejects non-ready rollback targets before persisting events or effects", () =>
     Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const worktreePath = yield* fs.makeTempDirectoryScoped({ prefix: "t3-rollback-readiness-" });
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const eventSink = yield* EventSink.EventSinkV2;
       const outbox = yield* EffectOutbox.EffectOutboxV2;
@@ -643,7 +1656,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         runtimeMode: "full-access",
         interactionMode: "default",
         branch: null,
-        worktreePath: process.cwd(),
+        worktreePath,
       });
       yield* orchestrator.dispatch({
         type: "message.dispatch",
@@ -783,7 +1796,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
           assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
         }
       }
-    }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+    }).pipe(Effect.provide(Layer.fresh(TestLayer)), Effect.scoped),
   );
 
   it.effect("resolves delivery intent against the active run and starts after it completes", () =>

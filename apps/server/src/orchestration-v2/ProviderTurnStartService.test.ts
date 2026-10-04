@@ -34,11 +34,50 @@ import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import { ProviderAdapterEventStreamError } from "./ProviderAdapter.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import { ProviderAdapterV2RuntimePolicy } from "./ProviderAdapter.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
+
+it("copies a reviewer's exclusive skill allowlist into the provider runtime policy", () => {
+  const base = ProviderAdapterV2RuntimePolicy.make({
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    cwd: "/workspace",
+  });
+
+  expect(
+    ProviderTurnStart.providerRuntimePolicyForRun(base, {
+      workflowSkillAllowlist: ["code-review"],
+    }).workflowSkillAllowlist,
+  ).toEqual(["code-review"]);
+  expect(
+    ProviderTurnStart.providerRuntimePolicyForRun(base, {
+      workflowSkillAllowlist: [],
+    }).workflowSkillAllowlist,
+  ).toEqual([]);
+  expect(ProviderTurnStart.providerRuntimePolicyForRun(base, {}).workflowSkillAllowlist).toBe(
+    undefined,
+  );
+});
+
+it("keeps the frozen conversation policy across follow-ups and provider recovery", () => {
+  const base = ProviderAdapterV2RuntimePolicy.make({
+    runtimeMode: "approval-required",
+    interactionMode: "default",
+    cwd: "/managed/conversation",
+    detachedConversation: true,
+    agentInstructions: "Write clearly.",
+    approvalPolicy: "never",
+    workflowSkillAllowlist: ["writing"],
+  });
+  expect(
+    ProviderTurnStart.providerRuntimePolicyForRun(base, { workflowSkillAllowlist: ["other"] }),
+  ).toEqual(base);
+  expect(ProviderTurnStart.providerRuntimePolicyForRun(base, {})).toEqual(base);
+});
 
 it("does not commit running state when inherited background routing cannot be read", async () => {
   const threadId = ThreadId.make("thread_provider_turn_start_projection_failure");
@@ -855,3 +894,24 @@ for (const previousMessages of [[], ["/compact", " /COMPACT "]]) {
       }),
   );
 }
+
+it("restores MCP connections from a saved run and keeps detached definitions authoritative", () => {
+  const base = ProviderAdapterV2RuntimePolicy.make({
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    cwd: "/workspace",
+  });
+  const connections = { docs: { url: "https://docs.example/mcp", description: "Docs" } };
+  expect(
+    ProviderTurnStart.providerRuntimePolicyForRun(base, { agentMcpConnections: connections })
+      .agentMcpConnections,
+  ).toEqual(connections);
+  const detached = { ...base, detachedConversation: true, agentMcpConnections: connections };
+  expect(
+    ProviderTurnStart.providerRuntimePolicyForRun(detached, { agentMcpConnections: {} })
+      .agentMcpConnections,
+  ).toEqual(connections);
+  expect(
+    ProviderTurnStart.providerRuntimePolicyForRun(base, {}).agentMcpConnections,
+  ).toBeUndefined();
+});

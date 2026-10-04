@@ -68,6 +68,29 @@ import {
 import type { ProviderContinuationRequest } from "../ProviderContinuationRequests.ts";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
 import {
+  buildCodexTurnStartParams,
+  canReuseCodexContextUsage,
+  CODEX_DEFAULT_INSTANCE_ID,
+  CODEX_DRIVER_KIND,
+  CODEX_THREAD_CONFIG,
+  codexBackgroundCommandDetail,
+  codexFileChangeApprovalPrompt,
+  codexProviderTurnTokenUsage,
+  codexSkillMentionText,
+  codexThreadRuntimeParams,
+  CodexAppServerClientFactory,
+  codexAppServerClientFactoryFromSettingsLayer,
+  codexWorkflowSkillConfig,
+  type CodexAppServerClientFactoryShape,
+  createCodexAdapterV2,
+  makeCodexAdapterV2,
+  makeCodexAppServerProtocolLogger,
+  makeCodexAppServerSpawnCommand,
+  projectCodexDynamicToolItem,
+  resolveCodexForkBoundary,
+  resolveCodexRollbackTurnCount,
+} from "./CodexAdapterV2.ts";
+import {
   makeReplayServerConfig,
   makeCodexProviderAdapterRegistryReplayLayer,
   withCodexReplayChildMetadata,
@@ -612,6 +635,30 @@ describe("CodexAdapterV2 runtime policy", () => {
 });
 
 describe("CodexAdapterV2 process spawning", () => {
+  it("builds an exclusive per-thread Codex reviewer skill configuration", () => {
+    assert.deepEqual(
+      codexWorkflowSkillConfig(
+        ["review"],
+        [
+          { name: "review", path: "/skills/review/SKILL.md" },
+          { name: "deploy", path: "/skills/deploy/SKILL.md" },
+        ],
+      ),
+      {
+        skills: {
+          config: [
+            { path: "/skills/review", enabled: true },
+            { path: "/skills/deploy", enabled: false },
+          ],
+        },
+      },
+    );
+    assert.throws(
+      () => codexWorkflowSkillConfig(["missing"], []),
+      /Assigned Codex skills are unavailable/,
+    );
+  });
+
   it("injects cwd, model, and MCP authorization into thread-scoped params", () => {
     const threadId = ThreadId.make("thread-codex-mcp");
     McpProviderSession.setMcpProviderSession({
@@ -7272,4 +7319,56 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       assert.include(errorCauseChainText(error), "fork exploded");
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
   );
+});
+
+it.effect("keeps detached turns on their named permission profile and frozen instructions", () =>
+  Effect.gen(function* () {
+    const params = yield* buildCodexTurnStartParams({
+      nativeThreadId: "agent-conversation",
+      codexInput: [],
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+      runtimePolicy: {
+        cwd: "/managed/conversation",
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        approvalPolicy: "on-request",
+        detachedConversation: true,
+        agentInstructions: "Write clearly.",
+      },
+      hasT3Mcp: true,
+    });
+    assert.isUndefined(params.sandboxPolicy);
+    assert.equal(params.approvalPolicy, "on-request");
+    assert.equal(params.collaborationMode?.settings.developer_instructions, "Write clearly.");
+  }),
+);
+
+it("enables only authored MCPs over detached Codex integration exclusions", () => {
+  const result = codexThreadRuntimeParams({
+    threadId: ThreadId.make("mcp-conversation"),
+    runtimePolicy: {
+      cwd: "/managed/conversation",
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      detachedConversation: true,
+      agentMcpConnections: {
+        docs: {
+          url: "https://docs.example/mcp",
+          description: "Docs",
+          headers: { Authorization: "Bearer test" },
+        },
+      },
+    },
+    workflowSkillConfig: {
+      mcp_servers: { unrelated: { enabled: false }, docs: { enabled: false } },
+    },
+  });
+  assert.deepEqual(result.config.mcp_servers, {
+    unrelated: { enabled: false },
+    docs: {
+      enabled: true,
+      url: "https://docs.example/mcp",
+      http_headers: { Authorization: "Bearer test" },
+    },
+  });
 });

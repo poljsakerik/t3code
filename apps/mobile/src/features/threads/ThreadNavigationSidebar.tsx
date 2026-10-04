@@ -1,4 +1,8 @@
-import { useAndroidControlSizing } from "../../components/useAndroidControlSizing";
+import {
+  AgentConversations,
+  AgentModeTabs,
+  conversationModeAtom,
+} from "../agents/AgentConversations";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { computeThreadMoveAvailability } from "./threadOrder";
 import type {
@@ -131,13 +135,18 @@ function NativeSidebarContainer(props: ThreadNavigationSidebarProps) {
 function ThreadNavigationSidebarPane(
   props: ThreadNavigationSidebarProps & { readonly nativeChrome: boolean },
 ) {
+  const conversationMode = useAtomValue(conversationModeAtom);
   const { themeVariables: materialTheme } = useAppearancePreferences();
   const drawerColor = materialTheme["--color-drawer"];
 
   const insets = useSafeAreaInsets();
   const { fabClearance } = useAndroidControlSizing();
   const projects = useProjects();
-  const threads = useNavigationThreadShells();
+  const allThreads = useNavigationThreadShells();
+  const threads = useMemo(
+    () => allThreads.filter((thread) => thread.agent === undefined),
+    [allThreads],
+  );
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const searchInputRef = useRef<TextInputInstance>(null);
@@ -888,6 +897,14 @@ function ThreadNavigationSidebarPane(
     </Text>
   );
 
+  if (conversationMode === "agents")
+    return (
+      <View className="flex-1 bg-drawer" style={{ width: props.width }}>
+        <AgentModeTabs />
+        <AgentConversations />
+      </View>
+    );
+
   if (props.nativeChrome) {
     return (
       <>
@@ -924,6 +941,7 @@ function ThreadNavigationSidebarPane(
           }}
         />
         <View className="flex-1">
+          <AgentModeTabs />
           <SwipeableScrollGateProvider enabled={swipeEnabled}>
             <GestureDetector gesture={sidebarScrollGesture}>
               <LegendList
@@ -971,6 +989,7 @@ function ThreadNavigationSidebarPane(
       }
       style={{ width: props.width }}
     >
+      <AgentModeTabs />
       <View
         className="flex-1"
         style={

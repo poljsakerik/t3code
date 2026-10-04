@@ -187,10 +187,12 @@ const make = Effect.gen(function* () {
       | typeof PullRequestUnlinkFailedError
       | typeof PullRequestWatchFailedError,
   ) =>
-    projects.getShell(thread.projectId).pipe(
-      Effect.map(Option.getOrUndefined),
-      Effect.mapError((cause) => new Failure({ cause })),
-    );
+    thread.projectId === null
+      ? Effect.succeed(undefined)
+      : projects.getShell(thread.projectId).pipe(
+          Effect.map(Option.getOrUndefined),
+          Effect.mapError((cause) => new Failure({ cause })),
+        );
 
   const dispatchFailure =
     (

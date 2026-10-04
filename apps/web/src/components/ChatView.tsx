@@ -7,6 +7,9 @@ import {
   resolveVisibleWorktreeSetup,
   resolveWorktreeSetupProgress,
 } from "./ChatView.logic";
+import { requestNewAgentConversation } from "../agentConversationNavigation";
+import { reviewableRun } from "@t3tools/contracts";
+import { openRequestReviewDialog, RequestReviewDialogHost } from "./RequestReviewDialog";
 import * as DateTime from "effect/DateTime";
 import { restorePlanFollowUpComposer } from "./ChatView.logic";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
@@ -2047,6 +2050,7 @@ export default function ChatView(props: ChatViewProps) {
   );
   const isServerThread = serverThread !== null;
   const activeThread = isServerThread ? serverThread : localDraftThread;
+  const isAgentConversation = serverThread?.agent !== undefined;
   const serverLatestRun = useMemo(
     () => (serverProjection === null ? null : deriveLatestThreadRun(serverProjection)),
     [serverProjection],
@@ -2514,6 +2518,7 @@ export default function ChatView(props: ChatViewProps) {
   ]);
   const activeProjectDefaultModelSelection = activeProjectSettings.settings.defaultModelSelection;
   const handleNewThreadInActiveProject = useCallback(() => {
+    if (requestNewAgentConversation()) return;
     startNewThreadForProject(activeProjectRef, handleNewThread);
   }, [activeProjectRef, handleNewThread]);
   const projectGroupingSettings = selectProjectGroupingSettings(settings);
@@ -3369,8 +3374,12 @@ export default function ChatView(props: ChatViewProps) {
   const showPlanFollowUpPrompt = shouldShowPlanFollowUpPrompt({
     pendingUserInputCount: pendingUserInputs.length,
     interactionMode,
+    workflowStatus: serverProjection?.thread.workflow?.status ?? null,
     latestTurnSettled: latestRunSettled,
-    hasActionableProposedPlan: hasActionableProposedPlan(activeProposedPlan),
+    hasActionableProposedPlan: hasActionableProposedPlan(
+      activeProposedPlan,
+      serverProjection?.thread.workflow?.status,
+    ),
     hasComposerAttachments: composerHasAttachments,
   });
   const activePendingApproval = pendingApprovals[0] ?? null;
@@ -5173,7 +5182,7 @@ export default function ChatView(props: ChatViewProps) {
 
   const handleRuntimeModeChange = useCallback(
     (mode: RuntimeMode) => {
-      if (mode === runtimeMode) return;
+      if (isAgentConversation || mode === runtimeMode) return;
       setComposerDraftRuntimeMode(composerDraftTarget, mode);
       if (isLocalDraftThread) {
         setDraftThreadContext(composerDraftTarget, { runtimeMode: mode });
@@ -5181,6 +5190,7 @@ export default function ChatView(props: ChatViewProps) {
       scheduleComposerFocus();
     },
     [
+      isAgentConversation,
       isLocalDraftThread,
       runtimeMode,
       scheduleComposerFocus,
@@ -5192,7 +5202,7 @@ export default function ChatView(props: ChatViewProps) {
 
   const handleInteractionModeChange = useCallback(
     (mode: ProviderInteractionMode) => {
-      if (mode === "plan" && !interactionModeEnabled) return;
+      if (isAgentConversation || (mode === "plan" && !interactionModeEnabled)) return;
       if (mode === interactionMode) return;
       setComposerDraftInteractionMode(composerDraftTarget, mode);
       if (isLocalDraftThread) {
@@ -5201,6 +5211,7 @@ export default function ChatView(props: ChatViewProps) {
       scheduleComposerFocus();
     },
     [
+      isAgentConversation,
       interactionMode,
       interactionModeEnabled,
       isLocalDraftThread,
@@ -6838,14 +6849,15 @@ export default function ChatView(props: ChatViewProps) {
       },
     );
   }, [activeThreadReferenceCopyTarget]);
-  const pullRequestPanelTarget = activeThread
-    ? threadPullRequestPanelTarget({
-        projectId: activeThread.projectId,
-        pullRequests: visiblePullRequests,
-        linkedPullRequest: linkedThreadPullRequest,
-        branchPullRequest: activeThreadShell?.branchPullRequest ?? activeThread.branchPullRequest,
-      })
-    : null;
+  const pullRequestPanelTarget =
+    activeThread?.projectId != null
+      ? threadPullRequestPanelTarget({
+          projectId: activeThread.projectId,
+          pullRequests: visiblePullRequests,
+          linkedPullRequest: linkedThreadPullRequest,
+          branchPullRequest: activeThreadShell?.branchPullRequest ?? activeThread.branchPullRequest,
+        })
+      : null;
   const addPullRequestSurface = useCallback(() => {
     if (!supportsPullRequests || activeThreadRef === null || pullRequestPanelTarget === null)
       return;
@@ -7267,7 +7279,7 @@ export default function ChatView(props: ChatViewProps) {
   const compactThreadUnavailable =
     !activeThread ||
     !activeThreadHasCompactableConversation ||
-    !activeProject ||
+    (!activeProject && !isAgentConversation) ||
     !isServerThread ||
     !manualCompactionProviderAvailable ||
     isWorking ||
@@ -8708,7 +8720,6 @@ export default function ChatView(props: ChatViewProps) {
     }
     if (
       !directAnnotation &&
-      sendInteractionModeEnabled &&
       showPlanFollowUpPrompt &&
       activeProposedPlan &&
       composerImages.length === 0 &&
@@ -8739,7 +8750,8 @@ export default function ChatView(props: ChatViewProps) {
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
-      const followUpSent = await onSubmitPlanFollowUp({
+      const followUpSent = await submitFollowUpTurn({
+        fromPlan: true,
         text: followUp.text,
         context: buildMessageContext({
           terminalContexts: sendableComposerTerminalContexts,
@@ -8813,7 +8825,7 @@ export default function ChatView(props: ChatViewProps) {
       }
       return;
     }
-    if (!activeProject) {
+    if (!activeProject && !isAgentConversation) {
       toastManager.add(
         stackedThreadToast({
           type: "warning",
@@ -8826,14 +8838,20 @@ export default function ChatView(props: ChatViewProps) {
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || activeMessageCount === 0;
     const baseBranchForWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
+      !isAgentConversation &&
+      isFirstMessage &&
+      sendEnvMode === "worktree" &&
+      !activeThread.worktreePath
         ? activeThreadBranch
         : null;
 
     // In worktree mode, require an explicit base branch so we don't silently
     // fall back to local execution when branch selection is missing.
     const shouldCreateWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath;
+      !isAgentConversation &&
+      isFirstMessage &&
+      sendEnvMode === "worktree" &&
+      !activeThread.worktreePath;
     if (shouldCreateWorktree && !activeThreadBranch) {
       setThreadError(threadIdForSend, "Select a base branch before sending in New worktree mode.");
       return;
@@ -9056,7 +9074,7 @@ export default function ChatView(props: ChatViewProps) {
         };
       }),
     );
-    if (multipleModelSelections !== null) {
+    if (multipleModelSelections !== null && activeProject) {
       const failedSelections: ModelSelection[] = [];
       let clearedDraft = false;
       let releasedComposer = false;
@@ -9471,7 +9489,7 @@ export default function ChatView(props: ChatViewProps) {
     let turnStartSucceeded = false;
     if (failure === null && turnAttachmentsResult._tag === "Success") {
       const bootstrap =
-        isLocalDraftThread || baseBranchForWorktree
+        activeProject && (isLocalDraftThread || baseBranchForWorktree)
           ? {
               ...(isLocalDraftThread
                 ? {
@@ -9483,6 +9501,9 @@ export default function ChatView(props: ChatViewProps) {
                       interactionMode: sendInteractionMode,
                       branch: activeThreadBranch,
                       worktreePath: activeThread.worktreePath,
+                      ...(draftThread?.workflowProfileId === undefined
+                        ? {}
+                        : { workflowProfileId: draftThread.workflowProfileId }),
                       createdAt: activeThread.createdAt,
                     },
                   }
@@ -9549,7 +9570,7 @@ export default function ChatView(props: ChatViewProps) {
           createdAt: messageCreatedAt,
         },
       });
-      if (backgroundThreadRef) {
+      if (backgroundThreadRef && activeProject) {
         markPromotedDraftThreadByRef(backgroundThreadRef);
         try {
           backgroundDraftOpened = Boolean(
@@ -9962,11 +9983,14 @@ export default function ChatView(props: ChatViewProps) {
     setActivePendingUserInputQuestionIndex(Math.max(activePendingProgress.questionIndex - 1, 0));
   }, [activePendingProgress, setActivePendingUserInputQuestionIndex]);
 
-  async function onSubmitPlanFollowUp({
+  /** Sends a turn that does not come from the composer draft, such as a plan follow-up. */
+  async function submitFollowUpTurn({
+    fromPlan,
     text,
     context,
     interactionMode: nextInteractionMode,
   }: {
+    fromPlan: boolean;
     text: string;
     context?: ReturnType<typeof buildMessageContext>;
     interactionMode: "default" | "plan";
@@ -9981,7 +10005,7 @@ export default function ChatView(props: ChatViewProps) {
     }
 
     const sendCtx = composerRef.current?.getSendContext();
-    if (!sendCtx?.providerAvailable || !sendCtx.interactionModeEnabled) {
+    if (!sendCtx?.providerAvailable || (fromPlan && !showPlanFollowUpPrompt)) {
       return false;
     }
     const {
@@ -10068,7 +10092,7 @@ export default function ChatView(props: ChatViewProps) {
           titleSeed: activeThread.title,
           runtimeMode,
           interactionMode: nextInteractionMode,
-          ...(nextInteractionMode === "default" && activeProposedPlan
+          ...(fromPlan && nextInteractionMode === "default" && activeProposedPlan
             ? {
                 sourceProposedPlan: {
                   threadId: activeThread.id,
@@ -10095,13 +10119,35 @@ export default function ChatView(props: ChatViewProps) {
       const error = squashAtomCommandFailure(failure);
       setThreadError(
         threadIdForSend,
-        error instanceof Error ? error.message : "Failed to send plan follow-up.",
+        error instanceof Error
+          ? error.message
+          : fromPlan
+            ? "Failed to send plan follow-up."
+            : "Failed to send message.",
       );
     }
     sendInFlightRef.current = false;
     resetLocalDispatch();
     return false;
   }
+
+  const submitFollowUpTurnRef = useRef(submitFollowUpTurn);
+  useLayoutEffect(() => {
+    submitFollowUpTurnRef.current = submitFollowUpTurn;
+  });
+  const implementReviewFindings = useCallback((prompt: string) => {
+    void submitFollowUpTurnRef
+      .current({
+        fromPlan: false,
+        text: prompt,
+        interactionMode: "default",
+      })
+      .then((sent) => {
+        if (!sent) {
+          toastManager.add({ type: "error", title: "Review feedback was not sent" });
+        }
+      });
+  }, []);
 
   const onImplementPlanInNewThread = useCallback(async () => {
     if (
@@ -10118,7 +10164,7 @@ export default function ChatView(props: ChatViewProps) {
     }
 
     const sendCtx = composerRef.current?.getSendContext();
-    if (!sendCtx?.providerAvailable || !sendCtx.interactionModeEnabled) {
+    if (!sendCtx?.providerAvailable || !showPlanFollowUpPrompt) {
       return;
     }
     const {
@@ -10258,6 +10304,7 @@ export default function ChatView(props: ChatViewProps) {
     startThreadTurn,
     environmentId,
     composerRef,
+    showPlanFollowUpPrompt,
   ]);
 
   const getModelDisabledReason = useCallback(
@@ -10280,7 +10327,7 @@ export default function ChatView(props: ChatViewProps) {
 
   const onProviderModelSelect = useCallback(
     (instanceId: ProviderInstanceId, model: string, options?: { focusComposer?: boolean }) => {
-      if (!activeThread) return;
+      if (!activeThread || isAgentConversation) return;
       // Look up the configured instance so model normalization and custom
       // model lookup stay scoped to that exact instance. Unknown instance ids
       // are rejected by returning early; the server remains authoritative too.
@@ -10360,6 +10407,7 @@ export default function ChatView(props: ChatViewProps) {
       if (options?.focusComposer !== false) scheduleComposerFocus();
     },
     [
+      isAgentConversation,
       activeThread,
       activeRuntime,
       lockedProvider,
@@ -10779,7 +10827,9 @@ export default function ChatView(props: ChatViewProps) {
   const panelToggleControls = (
     <PanelLayoutControls
       {...panelToggleControlProps}
-      showThreadPanelControl={!inlineRightPanelOwnsTitleBar}
+      showThreadPanelControl={!isAgentConversation && !inlineRightPanelOwnsTitleBar}
+      showTerminalControl={!isAgentConversation}
+      showRightPanelControl={!isAgentConversation}
     />
   );
   const threadPanelHeaderControl = (
@@ -10900,7 +10950,14 @@ export default function ChatView(props: ChatViewProps) {
             activeThreadId={activeThread.id}
             isServerThread={isServerThread}
             activeThreadTitle={activeThread.title}
+            {...(serverThread?.agent ? { agentName: serverThread.agent.name } : {})}
             activeProject={activeProject ?? null}
+            workflowProfileName={
+              serverProjection?.thread.workflow?.profile?.name ??
+              activeThread.workflow?.profileId ??
+              draftThread?.workflowProfileId ??
+              null
+            }
             rightPanelOpen={inlineRightPanelOwnsTitleBar}
             onNewThreadInProject={handleNewThreadInActiveProject}
             {...(activeDraftLogicalProjectKey
@@ -10959,6 +11016,23 @@ export default function ChatView(props: ChatViewProps) {
             <div className="relative flex min-h-0 flex-1 flex-col bg-background">
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               <MessagesTimeline
+                agentName={serverThread?.agent?.name}
+                bottomAccessory={
+                  !paintOnlyDisplayedTimeline &&
+                  activeThreadRef &&
+                  serverProjection &&
+                  reviewableRun(serverProjection) ? (
+                    <div className="py-3">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => openRequestReviewDialog(activeThreadRef)}
+                      >
+                        Request review
+                      </Button>
+                    </div>
+                  ) : null
+                }
                 citationRequest={paintOnlyDisplayedTimeline ? null : citationRequest}
                 citationHistoryLoading={threadDetailLoading}
                 {...(!paintOnlyDisplayedTimeline
@@ -11014,7 +11088,10 @@ export default function ChatView(props: ChatViewProps) {
                   paintOnlyDisplayedTimeline ? noopHeldRevert : onRevertTimelineTurn
                 }
                 {...(!paintOnlyDisplayedTimeline
-                  ? { onUseArtifactTemplate: useArtifactTemplate }
+                  ? {
+                      onUseArtifactTemplate: useArtifactTemplate,
+                      onImplementReviewFindings: implementReviewFindings,
+                    }
                   : {})}
                 isRevertingCheckpoint={isRevertingCheckpoint}
                 onImageExpand={onExpandTimelineImage}
@@ -11354,7 +11431,7 @@ export default function ChatView(props: ChatViewProps) {
                               />
                             </ComposerSurface.ContextStrip>
                           ) : null}
-                          {mountComposerContextStrip && (
+                          {!isAgentConversation && mountComposerContextStrip && (
                             <div className="pointer-events-auto">
                               <BranchToolbar
                                 forceNewWorktree={multipleModelSelections !== null}
@@ -11627,6 +11704,7 @@ export default function ChatView(props: ChatViewProps) {
         </AlertDialogPopup>
       </AlertDialog>
       <LinkPullRequestDialogHost />
+      <RequestReviewDialogHost />
       {expandedImage && (
         <ExpandedImageDialog
           key={expandedImageKey(expandedImage)}

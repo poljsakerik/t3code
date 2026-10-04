@@ -1,3 +1,4 @@
+import { searchAgentSkills } from "./agents/AgentSkills.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -60,6 +61,7 @@ import {
   OrchestrationV2ThreadLaunchError,
   type OrchestrationProjectShell,
   type OrchestrationV2ShellSnapshot,
+  type OrchestrationV2ThreadLaunchInput,
   type ProjectEntriesFailure,
   type ProjectFileFailure,
   type ProjectFileOperation,
@@ -188,6 +190,8 @@ import * as PortScanner from "./preview/PortScanner.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import { readWorkflowScript } from "./orchestration-v2/workflowScriptQuery.ts";
+import { AgentDefinitionService } from "./agents/AgentDefinitionService.ts";
+import { WorkflowConfigService } from "./workflows/WorkflowConfigService.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
@@ -354,6 +358,46 @@ export const withLateEditorConfig = <E, R>(
     ),
   );
 };
+
+export function buildThreadLaunchServiceInput(
+  input: OrchestrationV2ThreadLaunchInput,
+): ThreadLaunchService.ThreadLaunchInput {
+  if ("agent" in input)
+    return { ...input, createdBy: "user", creationSource: input.creationSource ?? "web" };
+  return {
+    commandId: input.commandId,
+    ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+    ...(input.reuseExistingThread === undefined
+      ? {}
+      : { reuseExistingThread: input.reuseExistingThread }),
+    projectId: input.projectId,
+    title: input.title,
+    ...(input.generateTitle === undefined ? {} : { generateTitle: input.generateTitle }),
+    modelSelection: input.modelSelection,
+    runtimeMode: input.runtimeMode,
+    interactionMode: input.interactionMode,
+    ...(input.workflowProfileId === undefined
+      ? {}
+      : { workflowProfileId: input.workflowProfileId }),
+    workspaceStrategy: input.workspaceStrategy,
+    ...(input.initialMessage === undefined
+      ? {}
+      : {
+          initialMessage: {
+            ...(input.initialMessage.messageId === undefined
+              ? {}
+              : { messageId: input.initialMessage.messageId }),
+            text: input.initialMessage.text,
+            attachments: input.initialMessage.attachments,
+            ...(input.initialMessage.context === undefined
+              ? {}
+              : { context: input.initialMessage.context }),
+          },
+        }),
+    createdBy: "user",
+    creationSource: input.creationSource ?? "web",
+  };
+}
 
 function unexpectedCompatibilityError(error: never): never {
   throw new Error(`Unhandled compatibility error: ${String(error)}`);
@@ -1243,6 +1287,8 @@ const makeWsRpcLayer = (
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
       const repositoryIdentityResolver =
         yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+      const workflowConfig = yield* WorkflowConfigService;
+      const agentDefinitions = yield* AgentDefinitionService;
       const agentSessionScanner = yield* AgentSessionScanner.AgentSessionScanner;
       const agentSessionImporter = yield* AgentSessionImporter.AgentSessionImporter;
       const checkpointDiffQuery = yield* CheckpointDiffQuery.CheckpointDiffQuery;
@@ -1705,6 +1751,7 @@ const makeWsRpcLayer = (
             },
             settings,
             shellResumeCompletionMarker: true,
+            agentConversations: true,
             threadResumeCompletionMarker: true,
             threadSnapshotPagination: true,
             ...Option.match(scratchWorkspaceRoot, {
@@ -1792,55 +1839,65 @@ const makeWsRpcLayer = (
 
       const handlers = ServerWsRpcGroup.of({
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
-          observeRpcEffect(
-            ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
-            startup
-              .enqueueCommand(
-                // A retry also restarts the preparation work the launch owns.
-                (command.type === "prepared-run.retry"
-                  ? threadLaunch.retryPreparation(command)
-                  : ThreadMessageIntake.dispatchCommand(
-                      ThreadManagementService.withCreationProvenance(command, {
-                        createdBy: "user",
-                        creationSource:
-                          "creationSource" in command ? command.creationSource : "web",
-                      }),
-                    )
-                ).pipe(Effect.provide(intakeContext)),
-              )
-              .pipe(
-                Effect.tap(() => recordClientCommandAnalytics(command)),
-                Effect.map((result) => ({ sequence: result.sequence })),
-                Effect.mapError((cause) => {
-                  const detail = userFacingDispatchErrorMessage(cause);
-                  return new OrchestrationV2DispatchCommandError({
-                    commandId: command.commandId,
-                    commandType: command.type,
-                    message: detail ?? "Failed to dispatch orchestration V2 command",
-                    ...(detail === undefined ? {} : { detail }),
-                    cause,
-                  });
+          command.type === "thread.create" &&
+          (command.agent !== undefined || command.projectId === null)
+            ? Effect.fail(
+                new OrchestrationV2DispatchCommandError({
+                  commandId: command.commandId,
+                  commandType: command.type,
+                  message:
+                    "Start agent conversations through launchThread so their configuration is resolved by the server.",
                 }),
+              )
+            : observeRpcEffect(
+                ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+                startup
+                  .enqueueCommand(
+                    // A retry also restarts the preparation work the launch owns.
+                    (command.type === "prepared-run.retry"
+                      ? threadLaunch.retryPreparation(command)
+                      : ThreadMessageIntake.dispatchCommand(
+                          ThreadManagementService.withCreationProvenance(command, {
+                            createdBy: "user",
+                            creationSource:
+                              "creationSource" in command ? command.creationSource : "web",
+                          }),
+                        )
+                    ).pipe(Effect.provide(intakeContext)),
+                  )
+                  .pipe(
+                    Effect.tap(() => recordClientCommandAnalytics(command)),
+                    Effect.map((result) => ({ sequence: result.sequence })),
+                    Effect.mapError((cause) => {
+                      const detail = userFacingDispatchErrorMessage(cause);
+                      return new OrchestrationV2DispatchCommandError({
+                        commandId: command.commandId,
+                        commandType: command.type,
+                        message: detail ?? "Failed to dispatch orchestration V2 command",
+                        ...(detail === undefined ? {} : { detail }),
+                        cause,
+                      });
+                    }),
+                  ),
+                {
+                  "rpc.aggregate": "orchestrationV2",
+                  "orchestration_v2.command_id": command.commandId,
+                  "orchestration_v2.command_type": command.type,
+                  "orchestration_v2.thread_id":
+                    command.type === "thread.fork" || command.type === "thread.merge_back"
+                      ? command.targetThreadId
+                      : command.type === "delegated_task.request" ||
+                          command.type === "delegated_task.wake-policy" ||
+                          command.type === "delegated_task.completion-delivery.acknowledge" ||
+                          command.type === "delegated_task.completion-delivery.dispose" ||
+                          command.type === "thread.created.record"
+                        ? command.parentThreadId
+                        : command.threadId,
+                  ...(command.type === "thread.fork" || command.type === "thread.merge_back"
+                    ? { "orchestration_v2.source_thread_id": command.sourceThreadId }
+                    : {}),
+                },
               ),
-            {
-              "rpc.aggregate": "orchestrationV2",
-              "orchestration_v2.command_id": command.commandId,
-              "orchestration_v2.command_type": command.type,
-              "orchestration_v2.thread_id":
-                command.type === "thread.fork" || command.type === "thread.merge_back"
-                  ? command.targetThreadId
-                  : command.type === "delegated_task.request" ||
-                      command.type === "delegated_task.wake-policy" ||
-                      command.type === "delegated_task.completion-delivery.acknowledge" ||
-                      command.type === "delegated_task.completion-delivery.dispose" ||
-                      command.type === "thread.created.record"
-                    ? command.parentThreadId
-                    : command.threadId,
-              ...(command.type === "thread.fork" || command.type === "thread.merge_back"
-                ? { "orchestration_v2.source_thread_id": command.sourceThreadId }
-                : {}),
-            },
-          ),
         [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_V2_WS_METHODS.getWorkflowScript,
@@ -1947,38 +2004,9 @@ const makeWsRpcLayer = (
             ORCHESTRATION_V2_WS_METHODS.launchThread,
             startup
               .enqueueCommand(
-                ThreadMessageIntake.launchThread({
-                  commandId: input.commandId,
-                  ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
-                  ...(input.reuseExistingThread === undefined
-                    ? {}
-                    : { reuseExistingThread: input.reuseExistingThread }),
-                  projectId: input.projectId,
-                  title: input.title,
-                  ...(input.generateTitle === undefined
-                    ? {}
-                    : { generateTitle: input.generateTitle }),
-                  modelSelection: input.modelSelection,
-                  runtimeMode: input.runtimeMode,
-                  interactionMode: input.interactionMode,
-                  workspaceStrategy: input.workspaceStrategy,
-                  ...(input.initialMessage === undefined
-                    ? {}
-                    : {
-                        initialMessage: {
-                          ...(input.initialMessage.messageId === undefined
-                            ? {}
-                            : { messageId: input.initialMessage.messageId }),
-                          text: input.initialMessage.text,
-                          attachments: input.initialMessage.attachments,
-                          ...(input.initialMessage.context === undefined
-                            ? {}
-                            : { context: input.initialMessage.context }),
-                        },
-                      }),
-                  createdBy: "user",
-                  creationSource: input.creationSource ?? "web",
-                }).pipe(Effect.provide(intakeContext)),
+                ThreadMessageIntake.launchThread(buildThreadLaunchServiceInput(input)).pipe(
+                  Effect.provide(intakeContext),
+                ),
               )
               .pipe(
                 Effect.tap(() =>
@@ -2001,21 +2029,21 @@ const makeWsRpcLayer = (
                   AttachmentClaimError: (cause) =>
                     new OrchestrationV2ThreadLaunchError({
                       commandId: input.commandId,
-                      projectId: input.projectId,
+                      projectId: "agent" in input ? null : input.projectId,
                       message: cause.message,
                       cause,
                     }),
                   ThreadLaunchError: (cause) =>
                     new OrchestrationV2ThreadLaunchError({
                       commandId: input.commandId,
-                      projectId: input.projectId,
-                      message: "Failed to launch thread",
+                      projectId: "agent" in input ? null : input.projectId,
+                      message: cause.message,
                       cause,
                     }),
                   ServerRuntimeStartupError: (cause) =>
                     new OrchestrationV2ThreadLaunchError({
                       commandId: input.commandId,
-                      projectId: input.projectId,
+                      projectId: "agent" in input ? null : input.projectId,
                       message: "Failed to launch thread",
                       cause,
                     }),
@@ -2024,7 +2052,7 @@ const makeWsRpcLayer = (
             {
               "rpc.aggregate": "orchestration",
               "orchestration_v2.command_id": input.commandId,
-              "orchestration_v2.project_id": input.projectId,
+              "orchestration_v2.project_id": "agent" in input ? null : input.projectId,
             },
           ),
         [ORCHESTRATION_V2_WS_METHODS.subscribeArchivedShell]: (_input) =>
@@ -3060,6 +3088,33 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "workspace" },
           ),
+        [WS_METHODS.agentSkillsSearch]: (input) => searchAgentSkills(input),
+        [WS_METHODS.agentSkillsInstall]: (input) => agentDefinitions.installSkill(input),
+        [WS_METHODS.agentSkillsRemove]: (input) => agentDefinitions.removeSkill(input),
+        [WS_METHODS.agentDefinitionsCatalog]: (input) =>
+          observeRpcEffect(WS_METHODS.agentDefinitionsCatalog, agentDefinitions.catalog(input), {
+            "rpc.aggregate": "workspace",
+          }),
+        [WS_METHODS.agentDefinitionsList]: (input) =>
+          observeRpcEffect(WS_METHODS.agentDefinitionsList, agentDefinitions.list(input), {
+            "rpc.aggregate": "workspace",
+          }),
+        [WS_METHODS.agentDefinitionsGet]: (input) =>
+          observeRpcEffect(WS_METHODS.agentDefinitionsGet, agentDefinitions.get(input), {
+            "rpc.aggregate": "workspace",
+          }),
+        [WS_METHODS.agentDefinitionsCreate]: (input) =>
+          observeRpcEffect(WS_METHODS.agentDefinitionsCreate, agentDefinitions.create(input), {
+            "rpc.aggregate": "workspace",
+          }),
+        [WS_METHODS.agentDefinitionsUpdate]: (input) =>
+          observeRpcEffect(WS_METHODS.agentDefinitionsUpdate, agentDefinitions.update(input), {
+            "rpc.aggregate": "workspace",
+          }),
+        [WS_METHODS.workflowsListProfiles]: (input) =>
+          observeRpcEffect(WS_METHODS.workflowsListProfiles, workflowConfig.listProfiles(input), {
+            "rpc.aggregate": "workspace",
+          }),
         [WS_METHODS.projectsListEntries]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectsListEntries,
@@ -3228,6 +3283,12 @@ const makeWsRpcLayer = (
                       }),
                   ),
                 );
+              if (thread.thread.projectId === null) {
+                return yield* new AssetWorkspaceContextResolutionError({
+                  resource: input.resource,
+                  cause: "Agent conversations have no project workspace.",
+                });
+              }
               const project = yield* projectService.getById(thread.thread.projectId).pipe(
                 Effect.mapError(
                   (cause) =>

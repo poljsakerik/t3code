@@ -46,6 +46,9 @@ export function isOrchestrationV2TurnItemVisible(input: {
   readonly items: ReadonlyArray<TimelineTurnItem>;
 }): boolean {
   const { item } = input;
+  if (item.type === "workflow_instruction" || item.type === "workflow_candidate_message") {
+    return false;
+  }
   if (
     item.runId !== null &&
     input.runs.some((run) => run.id === item.runId && run.status === "rolled_back")
@@ -93,6 +96,9 @@ export function createOrchestrationV2TurnItemVisibility(input: {
     input.items.filter((item) => item.type === "run_interrupt_request").map((item) => item.runId),
   );
   return (item) => {
+    if (item.type === "workflow_instruction" || item.type === "workflow_candidate_message") {
+      return false;
+    }
     const status = item.runId === null ? undefined : statuses.get(item.runId);
     if (status === "rolled_back") return false;
     if (

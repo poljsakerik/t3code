@@ -40,6 +40,7 @@ import {
   type OrchestrationV2ProjectedTurnItem,
   type RunAttemptId,
   RunId,
+  type WorkflowReviewFinding,
 } from "@t3tools/contracts";
 import type { ThreadRunSummary } from "@t3tools/client-runtime/state/shell";
 import {
@@ -2074,4 +2075,23 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       );
     }
   }
+}
+
+/** Turns the findings a user picked from a completed review into a follow-up prompt. */
+export function reviewFindingsPrompt(findings: ReadonlyArray<WorkflowReviewFinding>): string {
+  const items = findings.map((finding, index) => {
+    const location = finding.file
+      ? ` (${finding.file}${finding.line ? `:${finding.line}` : ""})`
+      : "";
+    const lines = [
+      `${index + 1}. [${finding.severity}] ${finding.title}${location}`,
+      `   ${finding.description}`,
+    ];
+    if (finding.evidence) lines.push(`   Evidence: ${finding.evidence}`);
+    return lines.join("\n");
+  });
+  return [
+    `Implement the following review feedback${findings.length === 1 ? "" : " items"}:`,
+    ...items,
+  ].join("\n\n");
 }

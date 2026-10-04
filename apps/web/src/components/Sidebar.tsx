@@ -1255,7 +1255,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   // Status hues follow the system-wide convention set by sidebar v1 and the
   // mobile Live Activity/widgets (amber approval, indigo input, sky working)
   // so a thread reads the same color everywhere it surfaces.
-  const topStatus =
+  const runtimeTopStatus =
     status === "working"
       ? {
           label: "Working",
@@ -1309,6 +1309,24 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                         className: "text-success",
                       }
                     : null;
+  const workflowStatus = thread.workflow?.status;
+  const topStatus = workflowStatus
+    ? {
+        label:
+          workflowStatus === "needs_human"
+            ? "Needs human"
+            : workflowStatus === "done"
+              ? "Verified"
+              : workflowStatus.charAt(0).toUpperCase() + workflowStatus.slice(1),
+        icon: workflowStatus === "done" ? ("done" as const) : null,
+        className:
+          workflowStatus === "needs_human"
+            ? "text-amber-700 dark:text-amber-300"
+            : workflowStatus === "done"
+              ? "text-emerald-700 dark:text-emerald-300"
+              : "text-sky-600 dark:text-sky-400",
+      }
+    : runtimeTopStatus;
   const isWokeStatus = topStatus?.icon === "woke";
 
   const branchMismatch = resolveLocalCheckoutBranchMismatch({
@@ -2324,7 +2342,11 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
 export default function Sidebar() {
   const projects = useProjects();
   const projectOrder = useUiStateStore((store) => store.projectOrder);
-  const threads = useThreadShells();
+  const allThreads = useThreadShells();
+  const threads = useMemo(
+    () => allThreads.filter((thread) => thread.agent === undefined),
+    [allThreads],
+  );
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -3261,9 +3283,11 @@ export default function Sidebar() {
       const nextThread = nextCardKey ? threadByKeyRef.current.get(nextCardKey) : null;
       return nextThread
         ? () => navigateToThread(scopeThreadRef(nextThread.environmentId, nextThread.id))
-        : shell
+        : shell && shell.projectId !== null
           ? () =>
-              void handleNewThreadRef.current(scopeProjectRef(shell.environmentId, shell.projectId))
+              void handleNewThreadRef.current(
+                scopeProjectRef(shell.environmentId, shell.projectId!),
+              )
           : () => void router.navigate({ to: "/" });
     },
     [navigateToThread, router],
@@ -4519,10 +4543,11 @@ export default function Sidebar() {
             if (threadProjectGroup) openProjectSettings(threadProjectGroup);
             return;
           case "new-thread-on-branch": {
+            if (thread.projectId === null) return;
             // Explicit branch carry-over: reuse the thread's worktree when it
             // has one, otherwise its branch on the local checkout.
             const result = await settlePromise(() =>
-              handleNewThreadRef.current(scopeProjectRef(thread.environmentId, thread.projectId), {
+              handleNewThreadRef.current(scopeProjectRef(thread.environmentId, thread.projectId!), {
                 branch: thread.branch,
                 worktreePath: thread.worktreePath,
                 envMode: thread.worktreePath ? "worktree" : "local",
@@ -5017,9 +5042,11 @@ export default function Sidebar() {
                           projectByKey.get(`${thread.environmentId}:${thread.projectId}`) ?? null
                         }
                         projectDisplayName={
-                          projectDisplayNameByKey.get(
-                            `${thread.environmentId}:${thread.projectId}`,
-                          ) ?? null
+                          (thread.projectId === null
+                            ? thread.agent?.name
+                            : projectDisplayNameByKey.get(
+                                `${thread.environmentId}:${thread.projectId}`,
+                              )) ?? null
                         }
                         environmentLabel={environmentLabelById.get(thread.environmentId) ?? null}
                         environmentMachine={
@@ -5182,9 +5209,11 @@ export default function Sidebar() {
                               null
                             }
                             projectDisplayName={
-                              projectDisplayNameByKey.get(
-                                `${thread.environmentId}:${thread.projectId}`,
-                              ) ?? null
+                              (thread.projectId === null
+                                ? thread.agent?.name
+                                : projectDisplayNameByKey.get(
+                                    `${thread.environmentId}:${thread.projectId}`,
+                                  )) ?? null
                             }
                             providerEntryByInstanceId={
                               providerEntriesByEnvironment.get(thread.environmentId) ??

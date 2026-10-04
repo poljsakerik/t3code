@@ -68,6 +68,37 @@ import type { ProviderContinuationRequest } from "../ProviderContinuationRequest
 import { makeProviderFailure } from "../ProviderFailure.ts";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
 import * as IdAllocator from "../IdAllocator.ts";
+import {
+  CLAUDE_AGENT_SDK_QUERY_PROTOCOL,
+  CLAUDE_DEFAULT_INSTANCE_ID,
+  CLAUDE_PROVIDER,
+  CLAUDE_READ_ONLY_ALLOWED_TOOLS,
+  CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS,
+  CLAUDE_T3_MCP_TOOL_WILDCARD,
+  ClaudeProviderCapabilitiesV2,
+  ClaudeAgentSdkQueryRunner,
+  ClaudeAgentSdkQueryRunnerError,
+  claudeEffectiveQueryPolicyKey,
+  claudePromptUuid,
+  claudeProviderTurnTokenUsage,
+  claudeMcpQueryOverrides,
+  claudeQueryMessages,
+  claudeRuntimeQueryPolicyForRuntimePolicy,
+  claudeSdkUserInputAnswers,
+  claudeUserInputQuestions,
+  claudeTodoSteps,
+  claudeProposedPlan,
+  awaitClaudeApprovalDecision,
+  createClaudeAdapterV2,
+  loggedClaudeQueryOptions,
+  makeClaudeAdapterV2,
+  makeClaudeAgentSdkProtocolLogger,
+  makeClaudeQueryOptions,
+  permissionResultFromDecision,
+  type ClaudeAgentSdkQueryOptions,
+  type ClaudeAgentSdkQueryOpenInput,
+} from "./ClaudeAdapterV2.ts";
+import { layer as idAllocatorLayer, IdAllocatorV2 } from "../IdAllocator.ts";
 
 const DEFAULT_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({});
 const AUTO_COMPACT_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({
@@ -82,6 +113,80 @@ const CLAUDE_TEST_RUNTIME_POLICY = ProviderAdapterV2RuntimePolicy.make({
   runtimeMode: "full-access",
   interactionMode: "default",
   cwd: "/workspace",
+});
+
+describe("Claude reviewer skill isolation", () => {
+  it.effect("starts without waiting for Claude's init inventory", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const idAllocator = yield* IdAllocatorV2;
+        const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-claude-v2-reviewer-skills-",
+        });
+        const nativeThreadId = "native-thread-claude-reviewer-skills";
+        const sdkMessages = yield* Queue.unbounded<SDKMessage>();
+        const offeredMessages: Array<SDKUserMessage> = [];
+        const adapter = makeClaudeAdapterV2({
+          instanceId: CLAUDE_DEFAULT_INSTANCE_ID,
+          settings: DEFAULT_CLAUDE_SETTINGS,
+          environment: {},
+          attachmentsDir,
+          fileSystem,
+          path,
+          idAllocator,
+          queryRunner: {
+            allocateSessionId: Effect.succeed(nativeThreadId),
+            open: () =>
+              Effect.succeed({
+                messages: Stream.fromQueue(sdkMessages),
+                offer: (message) =>
+                  Effect.sync(() => offeredMessages.push(message)).pipe(Effect.asVoid),
+                setModel: () => Effect.void,
+                interrupt: Effect.void,
+                close: Queue.shutdown(sdkMessages),
+              }),
+            forkSession: () => Effect.die("unused forkSession"),
+            assertComplete: Effect.void,
+          },
+        });
+        const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "plan",
+          cwd: "/workspace",
+          workflowSkillAllowlist: ["impeccable:impeccable"],
+        });
+        const threadId = ThreadId.make("thread-claude-reviewer-skills");
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-claude-reviewer-skills"),
+          modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+          runtimePolicy,
+        });
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+          runtimePolicy,
+        });
+        const now = yield* DateTime.now;
+
+        yield* runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId,
+            providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-reviewer-skills"),
+            text: "Review the implementation.",
+            attachments: [],
+            runtimePolicy,
+          }),
+        );
+
+        assert.lengthOf(offeredMessages, 1);
+      }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+    ),
+  );
 });
 
 function makeClaudeTestAppThread(input: {
@@ -704,8 +809,10 @@ describe("ClaudeAdapterV2 native protocol logging", () => {
         nativeThreadId: "native-thread-claude-mcp",
         resume: false,
         cwd: "/workspace",
+        skills: ["code-review"],
         ...overrides,
       });
+      assert.deepEqual(options.skills, ["code-review"]);
       assert.isObject(options.systemPrompt);
       const systemPrompt = options.systemPrompt as {
         readonly type: string;
@@ -7961,3 +8068,77 @@ describe("ClaudeAdapterV2 query message stream", () => {
     }),
   );
 });
+
+it("isolates detached Claude configuration from global integrations and project instructions", () => {
+  const options = makeClaudeQueryOptions({
+    nativeThreadId: "writer-session",
+    resume: false,
+    cwd: "/managed/writer",
+    detachedConversation: true,
+    agentInstructions: "Write clearly.",
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "claude-sonnet-4-6",
+    },
+    mcpServers: { unrelated: { command: "unrelated-server" } },
+    allowedTools: ["mcp__unrelated__*"],
+    permissionMode: "bypassPermissions",
+    allowDangerouslySkipPermissions: true,
+  });
+  assert.equal(options.systemPrompt, "Write clearly.");
+  assert.deepEqual(options.settingSources, []);
+  assert.deepEqual(options.mcpServers, {});
+  assert.deepEqual(options.additionalDirectories, []);
+  assert.deepEqual(options.allowedTools, []);
+  assert.equal(options.permissionMode, "default");
+  assert.isFalse(options.allowDangerouslySkipPermissions);
+  assert.isTrue(options.sandbox?.failIfUnavailable);
+  assert.isTrue(options.sandbox?.allowUnsandboxedCommands);
+  assert.isUndefined(options.sandbox?.filesystem?.denyRead);
+  assert.deepEqual(options.sandbox?.network?.allowedDomains, ["*"]);
+  assert.deepEqual(options.sandbox?.network?.deniedDomains, []);
+  assert.isFalse(options.sandbox?.network?.strictAllowlist);
+  assert.isTrue(
+    claudeRuntimeQueryPolicyForRuntimePolicy({
+      cwd: "/managed/writer",
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      detachedConversation: true,
+      approvalPolicy: "on-request",
+    }).installPermissionCallback,
+  );
+});
+
+for (const detachedConversation of [true, false]) {
+  it(`passes authored MCPs to Claude (detached: ${detachedConversation})`, () => {
+    const options = makeClaudeQueryOptions({
+      nativeThreadId: "mcp-session",
+      resume: false,
+      cwd: "/managed/conversation",
+      detachedConversation,
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "claude-sonnet-4-6",
+      },
+      agentMcpConnections: {
+        docs: {
+          url: "https://docs.example/mcp",
+          description: "Docs",
+          headers: { Authorization: "Bearer test" },
+        },
+      },
+      mcpServers: { "t3-code": { type: "http", url: "http://localhost:8000/mcp" } },
+    });
+    assert.deepEqual(options.mcpServers?.docs, {
+      type: "http",
+      url: "https://docs.example/mcp",
+      headers: { Authorization: "Bearer test" },
+    });
+    if (detachedConversation) {
+      assert.isUndefined(options.mcpServers?.["t3-code"]);
+      assert.isTrue(options.strictMcpConfig);
+    } else {
+      assert.isDefined(options.mcpServers?.["t3-code"]);
+    }
+  });
+}

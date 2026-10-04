@@ -502,7 +502,7 @@ export interface RunExecutionServiceV2StartRootRunInput {
   readonly session: ProviderAdapterV2SessionRuntime;
   readonly run: OrchestrationV2Run;
   readonly rootNode: OrchestrationV2ExecutionNode;
-  readonly checkpointScope: OrchestrationV2CheckpointScope;
+  readonly checkpointScope: OrchestrationV2CheckpointScope | null;
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly attempt: OrchestrationV2RunAttempt;
   readonly attemptId: RunAttemptId;
@@ -556,7 +556,7 @@ export const layer: Layer.Layer<
     const writeFinalRunEvents = (input: {
       readonly run: OrchestrationV2Run;
       readonly rootNode: OrchestrationV2ExecutionNode;
-      readonly checkpointScope: OrchestrationV2CheckpointScope;
+      readonly checkpointScope: OrchestrationV2CheckpointScope | null;
       readonly providerThread: OrchestrationV2ProviderThread;
       readonly attempt: OrchestrationV2RunAttempt;
       readonly shouldFinalizeRun?: () => Effect.Effect<boolean, ProjectionStoreV2Error>;
@@ -632,8 +632,13 @@ export const layer: Layer.Layer<
                 allocateEventId,
               })
             : [];
-        const persistedStatus =
-          input.terminal.status === "completed" ? "waiting" : input.terminal.status;
+        const checkpointScope = input.checkpointScope;
+        const needsCheckpoint =
+          checkpointScope !== null &&
+          (input.terminal.status === "completed" ||
+            input.terminal.status === "interrupted" ||
+            input.terminal.status === "cancelled");
+        const persistedStatus = needsCheckpoint ? "waiting" : input.terminal.status;
         // Completion cohorts are advanced by Orchestrator while a provider
         // turn is in flight. Do not replay the run snapshot captured at start
         // over a newer acknowledgement, successor, or Stop barrier.
@@ -642,13 +647,13 @@ export const layer: Layer.Layer<
         const finalizedRun: OrchestrationV2Run = {
           ...runWithoutDelegatedCompletion,
           status: persistedStatus,
-          completedAt: input.terminal.status === "completed" ? null : completedAt,
+          completedAt: needsCheckpoint ? null : completedAt,
         };
         const finalizedRootNode: OrchestrationV2ExecutionNode = {
           ...input.rootNode,
           status: persistedStatus,
-          completedAt: input.terminal.status === "completed" ? null : completedAt,
-          checkpointScopeId: input.checkpointScope.id,
+          completedAt: needsCheckpoint ? null : completedAt,
+          checkpointScopeId: input.checkpointScope?.id ?? null,
         };
         const finalizedProviderThread: OrchestrationV2ProviderThread = {
           ...input.providerThread,
@@ -665,23 +670,20 @@ export const layer: Layer.Layer<
         // the next message. The capture is enqueued with these terminal events,
         // ahead of any later run's start on this thread's effect lane.
         const finalization = {
-          effects:
-            input.terminal.status === "completed" ||
-            input.terminal.status === "interrupted" ||
-            input.terminal.status === "cancelled"
-              ? [
-                  {
-                    id: `effect:checkpoint.capture:${input.run.id}`,
-                    commandId: checkpointCaptureCommandId,
-                    threadId: input.run.threadId,
-                    request: {
-                      type: "checkpoint.capture" as const,
-                      runId: input.run.id,
-                      scopeId: input.checkpointScope.id,
-                    },
+          effects: needsCheckpoint
+            ? [
+                {
+                  id: `effect:checkpoint.capture:${input.run.id}`,
+                  commandId: checkpointCaptureCommandId,
+                  threadId: input.run.threadId,
+                  request: {
+                    type: "checkpoint.capture" as const,
+                    runId: input.run.id,
+                    scopeId: checkpointScope.id,
                   },
-                ]
-              : [],
+                },
+              ]
+            : [],
           events: [
             // Terminalize open run-owned subagent rows before the root run
             // settles so projections never keep a forever-running subagent card.
@@ -795,9 +797,17 @@ export const layer: Layer.Layer<
     return RunExecutionServiceV2.of({
       startRootRun: (input) =>
         Effect.gen(function* () {
+          const workflowCandidateRunId =
+            input.appThread.workflow?.status === "implementing" ||
+            input.appThread.workflow?.status === "revising"
+              ? input.run.id
+              : undefined;
           // Startup failure and stream shutdown can report the same attempt.
           const refreshAfterTurn = yield* Effect.cached(
-            finalizationObserver.refreshAfterTurn(input.appThread.projectId).pipe(
+            (input.appThread.projectId === null
+              ? Effect.void
+              : finalizationObserver.refreshAfterTurn(input.appThread.projectId)
+            ).pipe(
               Effect.catchCause((cause) =>
                 Effect.logWarning("failed to refresh pull requests after run termination", {
                   threadId: input.run.threadId,
@@ -834,21 +844,22 @@ export const layer: Layer.Layer<
                     .responseStreamingMode,
               ),
             );
-            yield* checkpointService
-              .captureBaseline({
-                scope: input.checkpointScope,
-                ordinalWithinScope: Math.max(0, input.run.ordinal - 1),
-              })
-              .pipe(
-                Effect.catchCause((cause) =>
-                  Cause.hasInterruptsOnly(cause)
-                    ? Effect.failCause(cause)
-                    : Effect.logWarning(
-                        "orchestration V2 checkpoint baseline capture failed; starting provider without a baseline",
-                        { runId: input.run.id },
-                      ),
-                ),
-              );
+            if (input.checkpointScope !== null)
+              yield* checkpointService
+                .captureBaseline({
+                  scope: input.checkpointScope,
+                  ordinalWithinScope: Math.max(0, input.run.ordinal - 1),
+                })
+                .pipe(
+                  Effect.catchCause((cause) =>
+                    Cause.hasInterruptsOnly(cause)
+                      ? Effect.failCause(cause)
+                      : Effect.logWarning(
+                          "orchestration V2 checkpoint baseline capture failed; starting provider without a baseline",
+                          { runId: input.run.id },
+                        ),
+                  ),
+                );
             if (
               input.shouldStartProviderTurn !== undefined &&
               !(yield* input.shouldStartProviderTurn())
@@ -1202,6 +1213,7 @@ export const layer: Layer.Layer<
                     runId: input.run.id,
                     nodeId: input.rootNode.id,
                     event: deliveredEvent,
+                    ...(workflowCandidateRunId === undefined ? {} : { workflowCandidateRunId }),
                     ...(isRootProviderThreadUpdate
                       ? rootTerminalAlreadySeen
                         ? {

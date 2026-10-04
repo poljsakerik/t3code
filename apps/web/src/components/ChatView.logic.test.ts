@@ -488,6 +488,34 @@ describe("shouldShowPlanFollowUpPrompt", () => {
     expect(shouldShowPlanFollowUpPrompt({ ...base, hasComposerAttachments: true })).toBe(false);
   });
 
+  it.each([
+    { planModeEnabled: false, provider: { showInteractionModeToggle: true } },
+    { planModeEnabled: true, provider: { showInteractionModeToggle: false } },
+  ])("allows workflow plan actions when legacy plan controls are disabled: %j", (settings) => {
+    const plannedWorkflow = {
+      ...base,
+      interactionMode: resolveComposerInteractionMode({ ...settings, interactionMode: "plan" })
+        .interactionMode,
+      workflowStatus: "planned" as const,
+    };
+    expect(shouldShowPlanFollowUpPrompt(plannedWorkflow)).toBe(true);
+    expect(shouldShowPlanFollowUpPrompt({ ...plannedWorkflow, latestTurnSettled: false })).toBe(
+      false,
+    );
+    expect(shouldShowPlanFollowUpPrompt({ ...plannedWorkflow, pendingUserInputCount: 1 })).toBe(
+      false,
+    );
+    expect(shouldShowPlanFollowUpPrompt({ ...plannedWorkflow, hasComposerAttachments: true })).toBe(
+      false,
+    );
+    expect(
+      shouldShowPlanFollowUpPrompt({ ...plannedWorkflow, hasActionableProposedPlan: false }),
+    ).toBe(false);
+    expect(
+      shouldShowPlanFollowUpPrompt({ ...plannedWorkflow, workflowStatus: "implementing" }),
+    ).toBe(false);
+  });
+
   it("preserves the existing plan follow-up gates", () => {
     expect(shouldShowPlanFollowUpPrompt({ ...base, pendingUserInputCount: 1 })).toBe(false);
     expect(shouldShowPlanFollowUpPrompt({ ...base, interactionMode: "default" })).toBe(false);

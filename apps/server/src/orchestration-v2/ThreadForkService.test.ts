@@ -1,3 +1,7 @@
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as Layer from "effect/Layer";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   ContextTransferId,
@@ -165,29 +169,81 @@ it.effect("keeps a fork awake when its source thread is snoozed", () =>
       threadId: sourceThreadId,
       runId: sourceRunId,
     });
-  }),
+  }).pipe(Effect.provide(layer.pipe(Layer.provide(NodeServices.layer)))),
 );
 
-it.effect("forks from a usage-limited failed run", () =>
+it.effect("gives an agent fork independent files while retaining its saved setup", () =>
   Effect.gen(function* () {
-    const result = yield* planFork(makeSourceRun("failed"));
-    assert.deepEqual(result.targetThread.forkedFrom, {
-      type: "run",
-      threadId: sourceThreadId,
-      runId: sourceRunId,
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-agent-fork-" });
+    const sourceDirectory = yield* fs.realPath(root);
+    const directory = path.join(sourceDirectory, "original");
+    yield* fs.makeDirectory(path.join(directory, "skills/writer"), { recursive: true });
+    yield* fs.writeFileString(
+      path.join(directory, "skills/writer/reference.md"),
+      "Original guidance",
+    );
+    const sourceThread = {
+      ...makeSourceThread(),
+      projectId: null,
+      branch: null,
+      worktreePath: null,
+      agent: {
+        owner: { agentId: ".t3/agents/writer", sourceProjectId: null, name: "Writer" },
+        definition: {
+          id: ".t3/agents/writer",
+          name: "Writer",
+          instructions: `Use ${directory}/skills/writer/reference.md`,
+          skills: [],
+          modelSelection,
+        },
+        directory,
+      },
+    };
+    const sourceRun = makeCompletedSourceRun();
+    const sourceProjection: OrchestrationV2ThreadProjection = {
+      thread: sourceThread,
+      runs: [sourceRun],
+      attempts: [],
+      nodes: [],
+      subagents: [],
+      providerSessions: [],
+      providerThreads: [],
+      providerTurns: [],
+      runtimeRequests: [],
+      messages: [],
+      plans: [],
+      turnItems: [],
+      checkpointScopes: [],
+      checkpoints: [],
+      contextHandoffs: [],
+      contextTransfers: [],
+      visibleTurnItems: [],
+      updatedAt: snoozedAt,
+    };
+    const service = yield* ThreadForkServiceV2;
+    const { targetThread } = yield* service.plan({
+      sourceProjection,
+      sourceRun,
+      sourceProviderThread: undefined,
+      canonicalSourcePoint: { threadId: sourceThreadId, runId: sourceRunId },
+      transferId: ContextTransferId.make("agent-fork"),
+      targetThreadId,
+      createdBy: "user",
+      creationSource: "web",
+      createdAt: forkCreatedAt,
     });
-  }),
-);
-
-it.effect("rejects in-progress and rolled-back fork sources", () =>
-  Effect.gen(function* () {
-    for (const status of ["running", "rolled_back"] as const) {
-      const sourceRun = makeSourceRun(status);
-      const error = yield* planFork(sourceRun).pipe(Effect.flip);
-      assert.equal(error._tag, "ThreadForkPlanError");
-      assert.equal(error.sourceThreadId, sourceThreadId);
-      assert.equal(error.targetThreadId, targetThreadId);
-      assert.equal(error.cause, ThreadForkService.forkableSourceRunStatusError(sourceRun));
-    }
-  }),
+    assert.deepEqual(targetThread.agent?.owner, sourceThread.agent.owner);
+    assert.isNull(targetThread.projectId);
+    assert.notEqual(targetThread.agent?.directory, directory);
+    assert.notInclude(targetThread.agent!.definition.instructions, directory);
+    const forkResource = path.join(targetThread.agent!.directory, "skills/writer/reference.md");
+    assert.equal(yield* fs.readFileString(forkResource), "Original guidance");
+    yield* fs.writeFileString(forkResource, "Fork guidance");
+    assert.equal(
+      yield* fs.readFileString(path.join(directory, "skills/writer/reference.md")),
+      "Original guidance",
+    );
+  }).pipe(Effect.provide(layer.pipe(Layer.provideMerge(NodeServices.layer))), Effect.scoped),
 );

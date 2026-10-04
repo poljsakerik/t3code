@@ -592,7 +592,9 @@ function listItemFromShell(shell: OrchestrationV2ThreadShell): OrchestratorMcpTh
 }
 
 function threadDetail(
-  projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "runtimeRequests">,
+  projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "runtimeRequests"> & {
+    readonly thread: { readonly projectId: import("@t3tools/contracts").ProjectId };
+  },
   itemCount: number,
 ): OrchestratorMcpThreadDetail {
   const latest = ThreadManagementService.latestRun(projection);
@@ -662,6 +664,8 @@ function turnItemText(item: OrchestrationV2TurnItem): string | null {
       return [item.summary, item.detail].filter((part) => part !== undefined).join("\n");
     case "user_message":
     case "assistant_message":
+    case "workflow_instruction":
+    case "workflow_candidate_message":
     case "reasoning":
       return item.text;
     case "proposed_plan":
@@ -710,6 +714,14 @@ function turnItemText(item: OrchestrationV2TurnItem): string | null {
       return `Created thread ${item.targetThreadId} with ${item.targetProviderInstanceId} (${item.targetModel}).`;
     case "subagent":
       return item.result ?? item.progress ?? item.prompt;
+    case "workflow_verification":
+      return jsonText({
+        revision: item.revision,
+        phase: item.phase,
+        checks: item.checks,
+        reviews: item.reviews,
+        terminalReason: item.terminalReason,
+      });
     case "dynamic_tool":
       return jsonText({ toolName: item.toolName, input: item.input, output: item.output });
   }
@@ -788,6 +800,19 @@ const make = Effect.gen(function* () {
         { turnItemTypes: [], messageRoles: ["user"] },
       )
       .pipe(
+        Effect.flatMap((projection) =>
+          projection.thread.projectId === null
+            ? Effect.fail(
+                failure(
+                  "capability_denied",
+                  "Project tools are unavailable in agent conversations.",
+                ),
+              )
+            : Effect.succeed({
+                ...projection,
+                thread: { ...projection.thread, projectId: projection.thread.projectId },
+              }),
+        ),
         Effect.mapError((error) =>
           failure(
             "orchestration_error",
@@ -797,7 +822,7 @@ const make = Effect.gen(function* () {
       );
 
   const loadProjectThread = (
-    projectId: OrchestrationV2ThreadProjection["thread"]["projectId"],
+    projectId: import("@t3tools/contracts").ProjectId,
     threadId: ThreadId,
   ) =>
     threadManagement
@@ -1765,6 +1790,12 @@ const make = Effect.gen(function* () {
     readThread: (scope, input) =>
       Effect.gen(function* () {
         const { parent, target } = yield* loadReadableThread(scope, input.threadId);
+        if (target.thread.projectId === null) {
+          return yield* failure(
+            "capability_denied",
+            "Project tools are unavailable in agent conversations.",
+          );
+        }
         const view = input.view ?? "messages";
         const afterPosition = input.afterPosition ?? -1;
         const limit = input.limit ?? DEFAULT_THREAD_READ_LIMIT;
@@ -1826,7 +1857,10 @@ const make = Effect.gen(function* () {
           }
         }
         return {
-          thread: threadDetail(target, timeline.totalItems),
+          thread: threadDetail(
+            { ...target, thread: { ...target.thread, projectId: target.thread.projectId } },
+            timeline.totalItems,
+          ),
           recentRuns: target.runs
             .toSorted((left, right) => right.ordinal - left.ordinal)
             .slice(0, input.runLimit ?? DEFAULT_THREAD_RUN_LIMIT)

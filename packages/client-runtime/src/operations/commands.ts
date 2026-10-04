@@ -74,6 +74,7 @@ export interface CreateThreadInput extends CommandMetadata {
   readonly interactionMode: ProviderInteractionMode;
   readonly branch: string | null;
   readonly worktreePath: string | null;
+  readonly workflowProfileId?: string;
 }
 
 export interface ThreadCommandInput extends CommandMetadata {
@@ -149,6 +150,7 @@ interface StartThreadBootstrap {
     readonly interactionMode: ProviderInteractionMode;
     readonly branch: string | null;
     readonly worktreePath: string | null;
+    readonly workflowProfileId?: string;
     readonly createdAt: string;
   };
   readonly prepareWorktree?: {
@@ -405,6 +407,9 @@ export const createThread = Effect.fn("EnvironmentCommands.createThread")(functi
     interactionMode: input.interactionMode,
     branch: input.branch,
     worktreePath: input.worktreePath,
+    ...(input.workflowProfileId === undefined
+      ? {}
+      : { workflowProfileId: input.workflowProfileId }),
   });
 });
 
@@ -642,6 +647,13 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
     const existingProjection =
       bootstrap === undefined ? yield* getProjection(input.threadId) : null;
     const thread = bootstrap ?? existingProjection!.thread;
+    if (thread.projectId === null)
+      return yield* Effect.fail(
+        new OrchestrationV2CheckpointUnavailableError({
+          threadId: input.threadId,
+          target: "project workspace",
+        }),
+      );
     const workspaceStrategy =
       prepareWorktree !== undefined
         ? {
@@ -675,6 +687,9 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
       modelSelection: input.modelSelection ?? thread.modelSelection,
       runtimeMode: input.runtimeMode,
       interactionMode: input.interactionMode,
+      ...(bootstrap?.workflowProfileId === undefined
+        ? {}
+        : { workflowProfileId: bootstrap.workflowProfileId }),
       workspaceStrategy,
       initialMessage: {
         messageId: input.message.messageId,

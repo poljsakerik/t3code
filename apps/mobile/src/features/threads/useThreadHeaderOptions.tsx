@@ -12,6 +12,7 @@ import {
 type NativeHeaderItems = ReadonlyArray<Record<string, unknown>>;
 
 export function useThreadHeaderOptions(props: {
+  readonly agentConversation?: boolean;
   readonly title: string;
   readonly subtitle: string;
   readonly headerColor: string;
@@ -21,8 +22,10 @@ export function useThreadHeaderOptions(props: {
 }) {
   const navigation = useNavigation();
   const { layout, panes, togglePrimarySidebar } = useAdaptiveWorkspaceLayout();
-  const threadCenterHeaderItems = useThreadGitCenterHeaderItems(props.gitControls);
-  const compactRightHeaderItems = useThreadGitRightHeaderItems(props.gitControls);
+  const codeCenterHeaderItems = useThreadGitCenterHeaderItems(props.gitControls);
+  const threadCenterHeaderItems = props.agentConversation ? [] : codeCenterHeaderItems;
+  const codeRightHeaderItems = useThreadGitRightHeaderItems(props.gitControls);
+  const compactRightHeaderItems = props.agentConversation ? [] : codeRightHeaderItems;
   const splitLeftHeaderItems = useMemo<NativeHeaderItems>(
     () => [
       {
@@ -112,7 +115,7 @@ export function useThreadHeaderOptions(props: {
     options,
     sidebar: false,
     fallback:
-      !layout.usesSplitView && !props.usesNativeHeaderGlass ? (
+      !props.agentConversation && !layout.usesSplitView && !props.usesNativeHeaderGlass ? (
         <ThreadGitControls {...props.gitControls} showActionControls />
       ) : null,
   };

@@ -1,4 +1,10 @@
+import {
+  AgentConversation,
+  AgentConversationOwner,
+  AgentMcpConnections,
+} from "./agentDefinitions.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
+import { AgentDefinitionGetInput, agentDefinitionKey } from "./agentDefinitions.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
@@ -67,6 +73,15 @@ import {
   ToolActivitySource,
 } from "./providerRuntime.ts";
 import { ThreadTokenUsageSnapshot } from "./providerRuntime.ts";
+import {
+  ThreadWorkflowState,
+  ThreadWorkflowSummary,
+  WorkflowCheckDefinition,
+  WorkflowCheckResult,
+  WorkflowReviewResult,
+  WorkflowSkillName,
+  WorkflowStatus,
+} from "./workflow.ts";
 
 export const OrchestrationV2Actor = Schema.Literals(["user", "agent", "system"]);
 export type OrchestrationV2Actor = typeof OrchestrationV2Actor.Type;
@@ -357,7 +372,8 @@ export type OrchestrationV2LimitRecoveryUpdate = typeof OrchestrationV2LimitReco
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
-  projectId: ProjectId,
+  projectId: Schema.NullOr(ProjectId),
+  agent: Schema.optional(AgentConversation),
   title: TrimmedNonEmptyString,
   providerInstanceId: ProviderInstanceId,
   modelSelection: ModelSelection,
@@ -372,6 +388,8 @@ export const OrchestrationV2AppThread = Schema.Struct({
   /** Pull request discovered from the thread's current branch. */
   branchPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
+  /** Absent/null for ordinary threads. Workflow configuration is snapshotted at creation. */
+  workflow: Schema.optional(Schema.NullOr(ThreadWorkflowState)),
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   lineage: OrchestrationV2AppThreadLineage,
   forkedFrom: Schema.NullOr(
@@ -537,6 +555,8 @@ export const OrchestrationV2Run = Schema.Struct({
   ordinal: PositiveInt,
   providerInstanceId: ProviderInstanceId,
   modelSelection: ModelSelection,
+  agentMcpConnections: Schema.optional(AgentMcpConnections),
+  workflowSkillAllowlist: Schema.optional(Schema.Array(WorkflowSkillName)),
   providerThreadId: Schema.NullOr(ProviderThreadId),
   userMessageId: MessageId,
   rootNodeId: Schema.NullOr(NodeId),
@@ -667,6 +687,7 @@ export const OrchestrationV2Subagent = Schema.Struct({
   nativeTaskRef: Schema.NullOr(OrchestrationV2ProviderRef),
   prompt: Schema.String,
   title: Schema.NullOr(Schema.String),
+  role: Schema.optional(TrimmedNonEmptyString),
   model: Schema.NullOr(Schema.String),
   // Parent-wake policy for app-owned tasks: "always" offers a continuation on
   // every terminal (async delegations; queue_after_active sequences it behind
@@ -1252,6 +1273,12 @@ export const OrchestrationV2UserMessageInputIntent = Schema.Literals([
 export type OrchestrationV2UserMessageInputIntent =
   typeof OrchestrationV2UserMessageInputIntent.Type;
 
+export const OrchestrationV2MessageDispatchKind = Schema.Literals([
+  "conversation",
+  "workflow_instruction",
+]);
+export type OrchestrationV2MessageDispatchKind = typeof OrchestrationV2MessageDispatchKind.Type;
+
 const OrchestrationV2TurnItemBaseFields = {
   toolSurface: Schema.optional(ToolActivitySurface),
   toolIcon: Schema.optional(ToolActivityIcon),
@@ -1311,6 +1338,20 @@ export const OrchestrationV2TurnItem = Schema.Union([
     messageId: MessageId,
     text: Schema.String,
     attachments: Schema.optional(Schema.Array(ChatAttachment)),
+    streaming: Schema.Boolean,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2TurnItemBaseFields,
+    type: Schema.Literal("workflow_instruction"),
+    messageId: MessageId,
+    text: Schema.String,
+    attachments: Schema.Array(ChatAttachment),
+  }),
+  Schema.Struct({
+    ...OrchestrationV2TurnItemBaseFields,
+    type: Schema.Literal("workflow_candidate_message"),
+    messageId: MessageId,
+    text: Schema.String,
     streaming: Schema.Boolean,
   }),
   Schema.Struct({
@@ -1480,6 +1521,31 @@ export const OrchestrationV2TurnItem = Schema.Union([
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
+    type: Schema.Literal("workflow_verification"),
+    reviewOnly: Schema.optional(Schema.Boolean),
+    profileId: TrimmedNonEmptyString,
+    profileName: TrimmedNonEmptyString,
+    revision: NonNegativeInt,
+    phase: Schema.Literals([
+      "checking",
+      "reviewing",
+      "changes_requested",
+      "approved",
+      "needs_human",
+    ]),
+    configuredChecks: Schema.Array(WorkflowCheckDefinition),
+    reviewerLabels: Schema.Array(
+      Schema.Struct({
+        id: TrimmedNonEmptyString,
+        name: TrimmedNonEmptyString,
+      }),
+    ),
+    checks: Schema.Array(WorkflowCheckResult),
+    reviews: Schema.Array(WorkflowReviewResult),
+    terminalReason: Schema.NullOr(Schema.String),
+  }),
+  Schema.Struct({
+    ...OrchestrationV2TurnItemBaseFields,
     type: Schema.Literal("dynamic_tool"),
     toolName: Schema.NullOr(TrimmedNonEmptyString),
     viewedImagePath: Schema.optional(TrimmedNonEmptyString),
@@ -1555,6 +1621,7 @@ export const OrchestrationV2DomainEvent = Schema.Union([
       "thread.interaction-mode-updated",
       "thread.model-selection-updated",
       "thread.provider-switched",
+      "thread.workflow-updated",
     ]),
     payload: OrchestrationV2AppThread,
   }),
@@ -1688,6 +1755,23 @@ export const OrchestrationV2ThreadProjection = Schema.Struct({
 });
 export type OrchestrationV2ThreadProjection = typeof OrchestrationV2ThreadProjection.Type;
 
+/** A review belongs to the latest completed task and must not race its agents. */
+export function reviewableRun(
+  projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "subagents">,
+): OrchestrationV2Run | null {
+  const run = projection.runs.at(-1);
+  if (
+    run?.status !== "completed" ||
+    run.rootNodeId === null ||
+    projection.thread.archivedAt !== null ||
+    projection.thread.deletedAt !== null ||
+    projection.thread.workflow != null ||
+    projection.subagents.some((task) => ["pending", "running", "waiting"].includes(task.status))
+  )
+    return null;
+  return run;
+}
+
 export const OrchestrationV2ShellThreadStatus = Schema.Union([
   Schema.Literal("idle"),
   OrchestrationV2RunStatus,
@@ -1714,7 +1798,8 @@ export type OrchestrationV2LatestVisibleMessageSummary =
 export const OrchestrationV2ThreadShell = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
-  projectId: ProjectId,
+  projectId: Schema.NullOr(ProjectId),
+  agent: Schema.optional(AgentConversationOwner),
   title: Schema.String,
   providerInstanceId: ProviderInstanceId,
   modelSelection: ModelSelection,
@@ -1757,6 +1842,8 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
    */
   latestUserAuthoredMessageAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   hasActionableProposedPlan: Schema.Boolean,
+  /** Lightweight workflow state for status presentation; null for ordinary threads. */
+  workflow: Schema.optional(Schema.NullOr(ThreadWorkflowSummary)),
   // Normalized post-settlement background work for sidebar Waiting pills.
   // Empty when the latest root run is still active or no pending work remains.
   pendingBackgroundTasks: Schema.optional(Schema.Array(OrchestrationV2PendingBackgroundTask)).pipe(
@@ -2051,6 +2138,20 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
+    type: Schema.Literal("workflow_instruction"),
+    messageId: MessageId,
+    text: Schema.String,
+    attachments: Schema.Array(ChatAttachment),
+  }),
+  Schema.Struct({
+    ...OrchestrationV2TurnItemJsonBaseFields,
+    type: Schema.Literal("workflow_candidate_message"),
+    messageId: MessageId,
+    text: Schema.String,
+    streaming: Schema.Boolean,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2TurnItemJsonBaseFields,
     type: Schema.Literal("reasoning"),
     text: Schema.String,
     streaming: Schema.Boolean,
@@ -2213,6 +2314,31 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
+    type: Schema.Literal("workflow_verification"),
+    reviewOnly: Schema.optional(Schema.Boolean),
+    profileId: TrimmedNonEmptyString,
+    profileName: TrimmedNonEmptyString,
+    revision: NonNegativeInt,
+    phase: Schema.Literals([
+      "checking",
+      "reviewing",
+      "changes_requested",
+      "approved",
+      "needs_human",
+    ]),
+    configuredChecks: Schema.Array(WorkflowCheckDefinition),
+    reviewerLabels: Schema.Array(
+      Schema.Struct({
+        id: TrimmedNonEmptyString,
+        name: TrimmedNonEmptyString,
+      }),
+    ),
+    checks: Schema.Array(WorkflowCheckResult),
+    reviews: Schema.Array(WorkflowReviewResult),
+    terminalReason: Schema.NullOr(Schema.String),
+  }),
+  Schema.Struct({
+    ...OrchestrationV2TurnItemJsonBaseFields,
     type: Schema.Literal("dynamic_tool"),
     toolName: Schema.NullOr(TrimmedNonEmptyString),
     viewedImagePath: Schema.optional(TrimmedNonEmptyString),
@@ -2356,6 +2482,7 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
       "thread.interaction-mode-updated",
       "thread.model-selection-updated",
       "thread.provider-switched",
+      "thread.workflow-updated",
     ]),
     payload: OrchestrationV2AppThreadJson,
   }),
@@ -2480,7 +2607,8 @@ export const OrchestrationV2Command = Schema.Union([
     ...OrchestrationV2CreationFields,
     commandId: CommandId,
     threadId: ThreadId,
-    projectId: ProjectId,
+    projectId: Schema.NullOr(ProjectId),
+    agent: Schema.optional(AgentConversation),
     title: TrimmedNonEmptyString,
     modelSelection: ModelSelection,
     runtimeMode: RuntimeMode,
@@ -2497,6 +2625,7 @@ export const OrchestrationV2Command = Schema.Union([
         metadata: Schema.optional(OrchestrationV2ProviderThreadNativeMetadata),
       }),
     ),
+    workflowProfileId: Schema.optional(TrimmedNonEmptyString),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.archive"),
@@ -2694,6 +2823,14 @@ export const OrchestrationV2Command = Schema.Union([
     modelSelection: ModelSelection,
   }),
   Schema.Struct({
+    type: Schema.Literal("workflow.update"),
+    ...OrchestrationV2CreationFields,
+    commandId: CommandId,
+    threadId: ThreadId,
+    expectedStatus: Schema.optional(Schema.NullOr(WorkflowStatus)),
+    workflow: ThreadWorkflowState,
+  }),
+  Schema.Struct({
     type: Schema.Literal("provider-session.detach"),
     commandId: CommandId,
     threadId: ThreadId,
@@ -2715,6 +2852,9 @@ export const OrchestrationV2Command = Schema.Union([
     /** Seed the temporary title and generate a durable replacement for the first message. */
     titleSeed: Schema.optional(TrimmedNonEmptyString),
     modelSelection: Schema.optional(ModelSelection),
+    /** Server-owned native skill allowlist for verified-workflow reviewers. */
+    agentMcpConnections: Schema.optional(AgentMcpConnections),
+    workflowSkillAllowlist: Schema.optional(Schema.Array(WorkflowSkillName)),
     sourcePlanRef: Schema.optional(Schema.Struct({ threadId: ThreadId, planId: PlanId })),
     restartContinuationOfRunId: Schema.optional(RunId),
     usageLimitContinuationOfRunId: Schema.optional(RunId),
@@ -2729,6 +2869,8 @@ export const OrchestrationV2Command = Schema.Union([
         taskIds: Schema.Array(NodeId),
       }),
     ),
+    messageKind: Schema.optional(OrchestrationV2MessageDispatchKind),
+    inputIntent: Schema.optional(OrchestrationV2UserMessageInputIntent),
     dispatchMode: Schema.Union([
       Schema.Struct({
         type: Schema.Literal("defer_start"),
@@ -2859,6 +3001,21 @@ export const OrchestrationV2Command = Schema.Union([
     targetThreadId: ThreadId,
     sourcePoint: OrchestrationV2ThreadForkSourcePoint,
     createdAt: Schema.optional(Schema.DateTimeUtc),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.review"),
+    ...OrchestrationV2CreationFields,
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
+    agents: Schema.Array(AgentDefinitionGetInput).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(20),
+      Schema.makeFilter(
+        (agents) => new Set(agents.map(agentDefinitionKey)).size === agents.length,
+        { expected: "unique agent references" },
+      ),
+    ),
   }),
   Schema.Struct({
     type: Schema.Literal("delegated_task.request"),
@@ -3011,7 +3168,7 @@ export const OrchestrationV2ArchivedShellStreamItem = Schema.Union([
 export type OrchestrationV2ArchivedShellStreamItem =
   typeof OrchestrationV2ArchivedShellStreamItem.Type;
 
-export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
+const ProjectThreadLaunchInput = Schema.Struct({
   commandId: CommandId,
   creationSource: Schema.optional(OrchestrationV2CreationSource),
   threadId: Schema.optional(ThreadId),
@@ -3022,6 +3179,7 @@ export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  workflowProfileId: Schema.optional(TrimmedNonEmptyString),
   workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
   initialMessage: Schema.optional(
     Schema.Struct({
@@ -3032,6 +3190,21 @@ export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
     }),
   ),
 });
+export const AgentConversationLaunchInput = Schema.Struct({
+  commandId: CommandId,
+  creationSource: Schema.optional(OrchestrationV2CreationSource),
+  threadId: ThreadId,
+  agent: Schema.Struct({
+    agentId: TrimmedNonEmptyString,
+    sourceProjectId: Schema.NullOr(ProjectId),
+  }),
+  title: TrimmedNonEmptyString,
+  initialMessage: ProjectThreadLaunchInput.fields.initialMessage,
+});
+export const OrchestrationV2ThreadLaunchInput = Schema.Union([
+  ProjectThreadLaunchInput,
+  AgentConversationLaunchInput,
+]);
 export type OrchestrationV2ThreadLaunchInput = typeof OrchestrationV2ThreadLaunchInput.Type;
 
 export const OrchestrationV2ThreadLaunchResult = Schema.Struct({
@@ -3233,7 +3406,7 @@ export class OrchestrationV2ThreadLaunchError extends Schema.TaggedError<Orchest
   "OrchestrationV2ThreadLaunchError",
   {
     commandId: CommandId,
-    projectId: ProjectId,
+    projectId: Schema.NullOr(ProjectId),
     message: Schema.String,
     cause: Schema.optional(Schema.Defect()),
   },

@@ -1,4 +1,10 @@
 "use client";
+import {
+  useAgentConversationNavigation,
+  requestNewAgentConversation,
+} from "../agentConversationNavigation";
+
+import { openRequestReviewDialog } from "./RequestReviewDialog";
 
 import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-request-compatibility";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
@@ -40,6 +46,7 @@ import {
   type SourceControlRepositoryInfo,
   PRIMARY_LOCAL_ENVIRONMENT_ID,
   resolveEnvironmentMachineKind,
+  reviewableRun,
 } from "@t3tools/contracts";
 import { useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import * as Option from "effect/Option";
@@ -55,6 +62,7 @@ import {
   FolderPlusIcon,
   MessageSquareDashedIcon,
   LinkIcon,
+  ListChecksIcon,
   MessageSquareIcon,
   MonitorIcon,
   MoonIcon,
@@ -110,7 +118,13 @@ import { useScratchProject } from "../hooks/useScratchProject";
 import { useNewProject } from "../hooks/useNewProject";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
-import { useProjects, useServerConfigs, useThreadShells, waitForProject } from "../state/entities";
+import {
+  useProjects,
+  useServerConfigs,
+  useThreadShells,
+  useThreadProjection,
+  waitForProject,
+} from "../state/entities";
 import { useThreadSearch } from "../state/queries";
 import { resolveThreadActionProjectRef, startNewThreadFromContext } from "../lib/chatThreadActions";
 import {
@@ -739,6 +753,9 @@ function OpenCommandPaletteDialog(props: {
   const availableSettingsSearchItems = useAvailableSettingsSearchItems();
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
     useHandleNewThread();
+  const reviewProjection = useThreadProjection(
+    activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null,
+  )?.projection;
   const projects = useProjects();
   const referenceThreadRef =
     pathname === "/pull-requests"
@@ -964,6 +981,23 @@ function OpenCommandPaletteDialog(props: {
         handleNewThread,
       }),
     [activeDraftThread, activeThread, defaultProjectRef, handleNewThread],
+  );
+  const workflowProfiles = useEnvironmentQuery(
+    contextualProjectRef === null
+      ? null
+      : projectEnvironment.workflowProfiles({
+          environmentId: contextualProjectRef.environmentId,
+          input: { projectId: contextualProjectRef.projectId },
+        }),
+  );
+  const globalWorkflowEnvironmentId = contextualProjectRef?.environmentId ?? primaryEnvironmentId;
+  const globalWorkflowProfiles = useEnvironmentQuery(
+    globalWorkflowEnvironmentId === null
+      ? null
+      : projectEnvironment.workflowProfiles({
+          environmentId: globalWorkflowEnvironmentId,
+          input: {},
+        }),
   );
   const projectPickerEntries = useMemo(
     () =>
@@ -1878,9 +1912,22 @@ function OpenCommandPaletteDialog(props: {
     pushPaletteView,
   ]);
 
+  const conversationMode = useAgentConversationNavigation((state) => state.mode);
   const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [];
+  if (conversationMode === "agents")
+    actionItems.push({
+      kind: "action",
+      value: "action:new-agent-conversation",
+      title: "New agent conversation",
+      searchTerms: ["new", "chat", "agent", "conversation"],
+      icon: <SquarePenIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "chat.new",
+      run: async () => {
+        requestNewAgentConversation();
+      },
+    });
 
-  if (projects.length > 0) {
+  if (projects.length > 0 && conversationMode === "code") {
     const activeProjectTitle =
       projectPickerEntries.find((entry) => entry.isPreferred)?.group.displayName ??
       (currentProjectId ? (projectTitleById.get(currentProjectId) ?? null) : null);
@@ -1906,8 +1953,131 @@ function OpenCommandPaletteDialog(props: {
           });
         },
       });
-    }
 
+      if (contextualProjectRef) {
+        for (const profile of workflowProfiles.data ?? []) {
+          actionItems.push({
+            kind: "action",
+            value: `action:new-verified-workflow:${profile.scope}:${profile.id}`,
+            searchTerms: [
+              "verified workflow",
+              "plan",
+              "review",
+              "checks",
+              "agents",
+              profile.name,
+              profile.id,
+            ],
+            title: (
+              <>
+                New verified workflow in <span className="font-semibold">{activeProjectTitle}</span>
+              </>
+            ),
+            description: `${profile.name} · ${profile.scope === "project" ? "Project" : "Global"}`,
+            icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
+            run: async () => {
+              await handleNewThread(contextualProjectRef, {
+                workflowProfileId: profile.id,
+              });
+            },
+          });
+        }
+        if (workflowProfiles.error) {
+          actionItems.push({
+            kind: "action",
+            value: "action:retry-workflow-profiles",
+            searchTerms: ["verified workflow", "profiles"],
+            title: "Retry loading workflow profiles",
+            description: workflowProfiles.error,
+            icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
+            run: async () => {
+              workflowProfiles.refresh();
+            },
+          });
+        }
+      }
+    }
+  }
+
+  const globalWorkflowProjects = pickerProjects.filter(
+    (project) => project.environmentId === globalWorkflowEnvironmentId,
+  );
+  if (projects.length > 0 && globalWorkflowProjects.length > 0) {
+    const globalWorkflowItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = (
+      globalWorkflowProfiles.data ?? []
+    ).map((profile) => ({
+      kind: "submenu",
+      value: `global-workflow:${profile.id}`,
+      title: profile.name,
+      searchTerms: [profile.name, profile.id],
+      icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
+      addonIcon: <ListChecksIcon className={ADDON_ICON_CLASS} />,
+      groups: [
+        {
+          value: "projects",
+          label: "Projects",
+          items: globalWorkflowProjects.map((project): CommandPaletteActionItem => ({
+            kind: "action",
+            value: `global-workflow:${profile.id}:${project.environmentId}:${project.id}`,
+            title: project.displayName,
+            description: project.workspaceRoot,
+            searchTerms: [project.title, project.workspaceRoot],
+            icon: projectFaviconIcon(project),
+            run: async () => {
+              await handleNewThread(scopeProjectRef(project.environmentId, project.id), {
+                workflowProfileId: profile.id,
+              });
+            },
+          })),
+        },
+      ],
+    }));
+    if (globalWorkflowItems.length === 0) {
+      globalWorkflowItems.push({
+        kind: "action",
+        value: "global-workflow:none",
+        searchTerms: ["global workflow profiles"],
+        title: globalWorkflowProfiles.isPending
+          ? "Loading global workflow profiles..."
+          : globalWorkflowProfiles.error
+            ? "Could not load global workflow profiles"
+            : "No global workflow profiles configured",
+        icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
+        disabled: true,
+        run: async () => {},
+      });
+    }
+    actionItems.push({
+      kind: "submenu",
+      value: "action:new-verified-workflow-in",
+      searchTerms: ["new verified workflow", "global workflow", "project"],
+      title: "New verified workflow...",
+      icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
+      addonIcon: <ListChecksIcon className={ADDON_ICON_CLASS} />,
+      groups: [
+        {
+          value: "global-workflows",
+          label: "Global workflows",
+          items: globalWorkflowItems,
+        },
+      ],
+    });
+    if (globalWorkflowProfiles.error) {
+      actionItems.push({
+        kind: "action",
+        value: "action:retry-global-workflow-profiles",
+        searchTerms: ["verified workflow", "global profiles"],
+        title: "Retry loading global workflow profiles",
+        description: globalWorkflowProfiles.error,
+        icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          globalWorkflowProfiles.refresh();
+        },
+      });
+    }
+  }
+
+  if (projects.length > 0 && conversationMode === "code") {
     actionItems.push({
       kind: "submenu",
       value: "action:new-thread-in",
@@ -1928,6 +2098,19 @@ function OpenCommandPaletteDialog(props: {
       icon: <MessageSquareDashedIcon className={ITEM_ICON_CLASS} />,
       shortcutCommand: "chat.newWithoutProject",
       run: () => startScratchThread(scratchTargetEnvironmentId),
+    });
+  }
+
+  if (activeThread !== null && reviewProjection && reviewableRun(reviewProjection)) {
+    actionItems.push({
+      kind: "action",
+      value: "action:request-review",
+      searchTerms: ["review", "agents", "parallel", "verify"],
+      title: "Request review",
+      icon: <SquarePenIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        openRequestReviewDialog(scopeThreadRef(activeThread.environmentId, activeThread.id));
+      },
     });
   }
 

@@ -12,6 +12,7 @@ describe("T3ProjectFile", () => {
     const decoded = decode({
       $schema: "https://t3.codes/schema/t3.json",
       iconPath: "assets/logo.svg",
+      workflowsDirectory: "config/workflows",
       scripts: [
         {
           name: "Dev",
@@ -27,6 +28,7 @@ describe("T3ProjectFile", () => {
     });
 
     expect(decoded.iconPath).toBe("assets/logo.svg");
+    expect(decoded.workflowsDirectory).toBe("config/workflows");
     expect(decoded.scripts).toHaveLength(3);
     expect(decoded.scripts?.[1]).toEqual({ name: "Test", command: "pnpm test" });
     expect(decoded.scripts?.[2]?.async).toBe(false);
@@ -40,10 +42,12 @@ describe("T3ProjectFile", () => {
   it("trims icon paths and script fields", () => {
     const decoded = decode({
       iconPath: " assets/logo.svg ",
+      workflowsDirectory: " config/workflows ",
       scripts: [{ name: " Dev ", command: " pnpm dev " }],
     });
 
     expect(decoded.iconPath).toBe("assets/logo.svg");
+    expect(decoded.workflowsDirectory).toBe("config/workflows");
     expect(decoded.scripts?.[0]).toEqual({ name: "Dev", command: "pnpm dev" });
   });
 

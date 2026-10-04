@@ -6,6 +6,7 @@ import { ScreenHeader } from "../../components/ScreenHeader";
 import { ScreenHeaderButton } from "../../components/ScreenHeaderButton";
 import type { ScreenHeaderAction } from "../../components/ScreenHeader.types";
 import { useThreadHeaderOptions } from "./useThreadHeaderOptions";
+import { selectConversationMode, rememberConversation } from "../agents/AgentConversations";
 import {
   StackActions,
   useFocusEffect,
@@ -124,11 +125,12 @@ function ThreadHeader(
         onPress: () => onOpenTerminal(null),
       });
     }
-    actions.push({
-      accessibilityLabel: "Open git controls",
-      icon: "point.topleft.down.curvedto.point.bottomright.up",
-      onPress: props.onOpenGitInspector,
-    });
+    if (!props.agentConversation)
+      actions.push({
+        accessibilityLabel: "Open git controls",
+        icon: "point.topleft.down.curvedto.point.bottomright.up",
+        onPress: props.onOpenGitInspector,
+      });
     if (onMergeBack) {
       actions.push({
         accessibilityLabel: "Merge back to source",
@@ -138,6 +140,7 @@ function ThreadHeader(
     }
     return actions;
   }, [
+    props.agentConversation,
     props.inspectorMode,
     panes.auxiliaryPaneVisible,
     props.onOpenFilesInspector,
@@ -252,6 +255,22 @@ export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
   const connectionsReady = useConnectionsReady();
   const { connectionState } = useRemoteConnectionStatus();
   const { selectedThread } = useThreadSelection();
+  const selectedConversationMode = selectedThread
+    ? selectedThread.agent
+      ? "agents"
+      : "code"
+    : null;
+  const selectedConversationId = selectedThread?.id;
+  const selectedConversationEnvironment = selectedThread?.environmentId;
+  useEffect(() => {
+    if (selectedConversationMode && selectedConversationId && selectedConversationEnvironment) {
+      selectConversationMode(selectedConversationMode);
+      rememberConversation(selectedConversationMode, {
+        environmentId: selectedConversationEnvironment,
+        threadId: selectedConversationId,
+      });
+    }
+  }, [selectedConversationMode, selectedConversationId, selectedConversationEnvironment]);
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
   const threadIdRaw = firstRouteParam(params.threadId);
@@ -485,7 +504,7 @@ function ThreadRouteContent(
   /* ─── Native header theming ──────────────────────────────────────── */
   const usesNativeHeaderGlass = NATIVE_LIQUID_GLASS_SUPPORTED;
   const headerSubtitle = [
-    selectedThreadProject?.title ?? null,
+    selectedThread?.agent?.name ?? selectedThreadProject?.title ?? null,
     selectedEnvironmentConnection?.environmentLabel ?? null,
   ]
     .filter(Boolean)
@@ -809,7 +828,8 @@ function ThreadRouteContent(
         : undefined,
     onOpenFilesInspector:
       fileInspector.supported && selectedThreadCwd !== null ? handleOpenFilesInspector : undefined,
-    onOpenGitInspector: fileInspector.supported ? handleOpenGitInspector : undefined,
+    onOpenGitInspector:
+      fileInspector.supported && !selectedThread?.agent ? handleOpenGitInspector : undefined,
     onMergeBack:
       mergeBackTargetThreadId !== null && mergeBackRun !== null
         ? () => void handleMergeBack()
@@ -897,7 +917,13 @@ function ThreadRouteContent(
   const localResendBusy = useRef(false);
   const setupMessage = selectedThreadDetail?.messages.find((message) => message.role === "user");
   const handleWorkLocally = useCallback(async () => {
-    if (!selectedThread || !selectedThreadProject || !setupMessage || localResendBusy.current)
+    if (
+      !selectedThread ||
+      selectedThread.projectId === null ||
+      !selectedThreadProject ||
+      !setupMessage ||
+      localResendBusy.current
+    )
       return;
     localResendBusy.current = true;
     try {
@@ -1086,6 +1112,7 @@ function ThreadRouteContent(
     <>
       {activeInspectorRenderer ? <InspectorPaneRoleActivation /> : null}
       <ThreadHeader
+        agentConversation={selectedThread.agent !== undefined}
         title={selectedThread.title}
         subtitle={headerSubtitle}
         headerColor={headerColor}

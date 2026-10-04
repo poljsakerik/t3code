@@ -93,6 +93,15 @@ export const T3ProjectFile = Schema.Struct({
         'How new worktrees populate git submodules: "recursive" (the default) initializes nested submodules too, "top-level" initializes only those declared by this repository, and "none" leaves every submodule empty for a setup script to handle. A project or environment setting in T3 Code overrides this.',
     }),
   ),
+  workflowsDirectory: Schema.optionalKey(
+    trimmedNonEmpty(
+      {
+        description:
+          'Workspace-relative directory containing workflow "agents" and "profiles" directories. Defaults to ".t3/workflows".',
+      },
+      T3_PROJECT_FILE_PATH_MAX_LENGTH,
+    ),
+  ),
   scripts: Schema.optionalKey(
     Schema.Array(T3ProjectFileScript)
       .annotate({

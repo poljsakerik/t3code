@@ -24,7 +24,7 @@ import * as ProjectStore from "./ProjectStore.ts";
 export class RuntimePolicyResolveError extends Schema.TaggedError<RuntimePolicyResolveError>()(
   "RuntimePolicyResolveError",
   {
-    projectId: ProjectId,
+    projectId: Schema.NullOr(ProjectId),
     providerInstanceId: ProviderInstanceId,
     cause: Schema.optional(Schema.Defect()),
   },
@@ -98,6 +98,26 @@ export const layerFromProjectStore: Layer.Layer<
     const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
     return RuntimePolicyV2.of({
       resolve: Effect.fn("RuntimePolicyV2.resolve")(function* (input) {
+        if (input.thread.agent !== undefined) {
+          return ProviderAdapterV2RuntimePolicy.make({
+            cwd: input.thread.agent.directory,
+            runtimeMode: "approval-required",
+            interactionMode: "default",
+            agentInstructions: input.thread.agent.definition.instructions,
+            ...(input.thread.agent.definition.mcpConnections === undefined
+              ? {}
+              : { agentMcpConnections: input.thread.agent.definition.mcpConnections }),
+            detachedConversation: true,
+            approvalPolicy: "on-request",
+            workflowSkillAllowlist: [...input.thread.agent.definition.skills],
+          });
+        }
+        if (input.thread.projectId === null)
+          return yield* new RuntimePolicyResolveError({
+            projectId: null,
+            providerInstanceId: input.modelSelection.instanceId,
+            cause: "Thread has no owner.",
+          });
         const instance = yield* providerInstances.getInstance(input.modelSelection.instanceId);
         const supportedRuntimeModes =
           instance === undefined
@@ -149,19 +169,21 @@ export function layerWithOverride(
         resolve: (input) =>
           base.resolve(input).pipe(
             Effect.map((policy) =>
-              ProviderAdapterV2RuntimePolicy.make({
-                ...policy,
-                ...(override.cwd === undefined ? {} : { cwd: override.cwd }),
-                ...(override.approvalPolicy === undefined
-                  ? {}
-                  : { approvalPolicy: override.approvalPolicy }),
-                ...(override.sandboxPolicy === undefined
-                  ? {}
-                  : { sandboxPolicy: override.sandboxPolicy }),
-                ...(override.reasoningEffort === undefined
-                  ? {}
-                  : { reasoningEffort: override.reasoningEffort }),
-              }),
+              policy.detachedConversation
+                ? policy
+                : ProviderAdapterV2RuntimePolicy.make({
+                    ...policy,
+                    ...(override.cwd === undefined ? {} : { cwd: override.cwd }),
+                    ...(override.approvalPolicy === undefined
+                      ? {}
+                      : { approvalPolicy: override.approvalPolicy }),
+                    ...(override.sandboxPolicy === undefined
+                      ? {}
+                      : { sandboxPolicy: override.sandboxPolicy }),
+                    ...(override.reasoningEffort === undefined
+                      ? {}
+                      : { reasoningEffort: override.reasoningEffort }),
+                  }),
             ),
           ),
       } satisfies RuntimePolicyV2Shape;

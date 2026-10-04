@@ -13,9 +13,15 @@ import {
 } from "@t3tools/shared/threadPullRequests";
 import {
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+  AgentMcpConnections,
   type ChatAttachment,
+  reviewableRun,
   CommandId,
   isProviderNativeSubagentThread,
+  TurnItemId,
+  type WorkflowReviewResult,
+  type ResolvedAgentDefinition,
+  type NodeId,
   MessageId,
   type ModelSelection,
   OrchestrationV2Command,
@@ -33,6 +39,7 @@ import {
   type OrchestrationV2DelegatedCompletionDelivery,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ExecutionNode,
+  type OrchestrationV2PlanArtifact,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2Run,
@@ -50,6 +57,7 @@ import {
   ThreadLinkedPullRequest,
   ThreadId,
   type TurnItemId,
+  type WorkflowStatus,
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import {
@@ -119,6 +127,14 @@ import {
   ThreadForkServiceV2,
 } from "./ThreadForkService.ts";
 import { planThreadDeletion } from "./ThreadDeletion.ts";
+import { collectReviewerResult, reviewerPrompt } from "../workflows/Reviewer.ts";
+import { AgentDefinitionService } from "../agents/AgentDefinitionService.ts";
+import { WorkflowConfigService } from "../workflows/WorkflowConfigService.ts";
+import {
+  verificationStateOfWorkflow,
+  workflowCandidateMessageOfRun,
+  workflowReviewerExecution,
+} from "../workflows/WorkflowVerification.ts";
 
 export class OrchestratorDispatchError extends Schema.TaggedError<OrchestratorDispatchError>()(
   "OrchestratorDispatchError",
@@ -225,6 +241,29 @@ export function canReplayCommandReceipt(
   commandThreadId: ThreadId,
 ): boolean {
   return receiptThreadId === commandThreadId;
+}
+
+export function isProposedPlanImplementable(input: {
+  readonly planStatus: OrchestrationV2PlanArtifact["status"];
+  readonly workflowStatus: WorkflowStatus | null | undefined;
+}): boolean {
+  if (input.planStatus === "active") return true;
+  return input.workflowStatus === "planned" && input.planStatus === "completed";
+}
+
+const agentMcpConnectionsEqual = Schema.toEquivalence(Schema.UndefinedOr(AgentMcpConnections));
+
+function workflowSkillAllowlistsEqual(
+  left: ReadonlyArray<string> | undefined,
+  right: ReadonlyArray<string> | undefined,
+): boolean {
+  return (
+    left === right ||
+    (left !== undefined &&
+      right !== undefined &&
+      left.length === right.length &&
+      left.every((skill) => right.includes(skill)))
+  );
 }
 
 export const OrchestratorV2Error = Schema.Union([
@@ -401,6 +440,8 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.interaction-mode.set":
     case "thread.model-selection.set":
     case "provider-session.detach":
+    case "thread.review":
+    case "workflow.update":
     case "message.dispatch":
     case "notification.delivery.accept":
     case "prepared-run.release":
@@ -444,6 +485,47 @@ function pendingThreadTitleGenerationEffect(
     commandId,
     threadId,
     request: { type: "thread-title.generate", kind },
+  };
+}
+
+type MessageInputTurnItemBase = Omit<
+  Extract<OrchestrationV2TurnItem, { readonly type: "workflow_instruction" }>,
+  "type" | "messageId" | "text" | "attachments"
+>;
+
+function makeMessageInputTurnItem(input: {
+  readonly base: MessageInputTurnItemBase;
+  readonly messageKind: "conversation" | "workflow_instruction";
+  readonly messageId: MessageId;
+  readonly text: string;
+  readonly attachments: ReadonlyArray<ChatAttachment>;
+  readonly context?: import("@t3tools/contracts").OrchestrationMessageContext;
+  readonly inputIntent: Extract<
+    OrchestrationV2TurnItem,
+    { readonly type: "user_message" }
+  >["inputIntent"];
+  readonly createdBy: OrchestrationV2ConversationMessage["createdBy"];
+  readonly creationSource: OrchestrationV2ConversationMessage["creationSource"];
+}): OrchestrationV2TurnItem {
+  if (input.messageKind === "workflow_instruction") {
+    return {
+      ...input.base,
+      type: "workflow_instruction",
+      messageId: input.messageId,
+      text: input.text,
+      attachments: [...input.attachments],
+    };
+  }
+  return {
+    ...input.base,
+    createdBy: input.createdBy,
+    creationSource: input.creationSource,
+    type: "user_message",
+    messageId: input.messageId,
+    inputIntent: input.inputIntent,
+    text: input.text,
+    attachments: [...input.attachments],
+    ...(input.context ? { context: input.context } : {}),
   };
 }
 
@@ -549,17 +631,21 @@ function nextQueuedRun(
 }
 
 function latestStableRun(
-  projection: Pick<OrchestrationV2ThreadProjection, "runs">,
+  projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs">,
 ): OrchestrationV2Run | null {
   return (
     projection.runs
-      .filter((run) => run.status === "completed" && run.checkpointId !== null)
+      .filter(
+        (run) =>
+          run.status === "completed" &&
+          (projection.thread.agent !== undefined || run.checkpointId !== null),
+      )
       .toSorted((left, right) => right.ordinal - left.ordinal)[0] ?? null
   );
 }
 
 function runForSourcePoint(
-  projection: Pick<OrchestrationV2ThreadProjection, "runs" | "checkpoints">,
+  projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "checkpoints">,
   sourcePoint: Extract<
     OrchestrationV2Command,
     { readonly type: "thread.fork" | "thread.merge_back" }
@@ -773,6 +859,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const runtimePolicy = yield* RuntimePolicyV2;
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor;
+  const agentDefinitions = yield* Effect.serviceOption(AgentDefinitionService);
+  const workflowConfigs = yield* Effect.serviceOption(WorkflowConfigService);
 
   const mapDispatchError =
     (command: OrchestrationV2ServerCommand) =>
@@ -880,7 +968,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           "checkpointScopes",
           "contextTransfers",
         ],
-        { turnItemTypes: ["user_message", "error"], messageRoles: ["user"] },
+        {
+          turnItemTypes: ["user_message", "error", "workflow_verification"],
+          messageRoles: ["user"],
+        },
       )
       .pipe(
         Effect.map((records): OrchestrationV2ThreadProjection => ({
@@ -1490,29 +1581,32 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : null;
       const activeHandoff = handoff ?? legacyImportRecoveryHandoff;
       const checkpointScope =
-        storedCheckpointScope ??
-        (yield* runtimePolicy
-          .resolve({ thread: projection.thread, modelSelection: queuedRun.modelSelection })
-          .pipe(
-            Effect.flatMap((resolvedRuntimePolicy) =>
-              checkpointService.prepareRootRunScope({
-                threadId,
-                runId: queuedRun.id,
-                rootNodeId: rootNode.id,
-                providerThreadId: queuedProviderThread.id,
-                cwd: resolvedRuntimePolicy.cwd ?? projection.thread.worktreePath ?? process.cwd(),
-                createdAt: now,
-              }),
-            ),
-            Effect.mapError(
-              (cause) =>
-                new OrchestratorDispatchError({
-                  commandId,
-                  commandType: "message.dispatch",
-                  cause,
-                }),
-            ),
-          ));
+        projection.thread.agent !== undefined
+          ? null
+          : (storedCheckpointScope ??
+            (yield* runtimePolicy
+              .resolve({ thread: projection.thread, modelSelection: queuedRun.modelSelection })
+              .pipe(
+                Effect.flatMap((resolvedRuntimePolicy) =>
+                  checkpointService.prepareRootRunScope({
+                    threadId,
+                    runId: queuedRun.id,
+                    rootNodeId: rootNode.id,
+                    providerThreadId: queuedProviderThread.id,
+                    cwd:
+                      resolvedRuntimePolicy.cwd ?? projection.thread.worktreePath ?? process.cwd(),
+                    createdAt: now,
+                  }),
+                ),
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestratorDispatchError({
+                      commandId,
+                      commandType: "message.dispatch",
+                      cause,
+                    }),
+                ),
+              )));
       const providerSessionId =
         (!canResumeAcrossInstances &&
         queuedProviderThread.providerSessionId !== null &&
@@ -1634,7 +1728,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               summary: activeHandoff.summaryText,
             };
       const checkpointEvents: ReadonlyArray<Omit<OrchestrationV2DomainEvent, "id">> =
-        storedCheckpointScope === undefined
+        storedCheckpointScope === undefined && checkpointScope !== null
           ? [
               {
                 type: "checkpoint-scope.created",
@@ -2135,21 +2229,77 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       "orchestration_v2.driver": command.modelSelection.instanceId,
     });
 
+    if (
+      (command.projectId === null) !== (command.agent !== undefined) ||
+      (command.agent !== undefined &&
+        (command.branch !== null ||
+          command.worktreePath !== null ||
+          command.workflowProfileId !== undefined))
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause:
+          "A thread must have exactly one owner; agent conversations cannot have a project workspace or workflow.",
+      });
+    }
     const now = yield* DateTime.now;
+    const workflowConfig =
+      command.workflowProfileId === undefined || command.projectId === null
+        ? undefined
+        : yield* Option.match(workflowConfigs, {
+            onNone: () =>
+              Effect.fail(
+                new OrchestratorDispatchError({
+                  commandId: command.commandId,
+                  commandType: command.type,
+                  cause: "Workflow configuration is unavailable.",
+                }),
+              ),
+            onSome: (service) =>
+              service
+                .resolveProfile({
+                  projectId: command.projectId!,
+                  profileId: command.workflowProfileId!,
+                })
+                .pipe(mapDispatchError(command)),
+          });
+    const plannerSelection = command.modelSelection;
     const emitEvent = emit(events, command);
     const thread: OrchestrationV2AppThread = {
       createdBy: command.createdBy,
       creationSource: command.creationSource,
       id: command.threadId,
       projectId: command.projectId,
+      ...(command.agent === undefined ? {} : { agent: command.agent }),
       title: command.title,
-      providerInstanceId: command.modelSelection.instanceId,
-      modelSelection: command.modelSelection,
+      providerInstanceId: plannerSelection.instanceId,
+      modelSelection: plannerSelection,
       runtimeMode: command.runtimeMode,
       interactionMode: command.interactionMode,
       branch: command.branch,
       worktreePath: command.worktreePath,
       activeProviderThreadId: null,
+      workflow:
+        workflowConfig === undefined
+          ? null
+          : {
+              profileId: workflowConfig.profile.id,
+              workspaceRoot: workflowConfig.workspaceRoot,
+              profile: workflowConfig.profile,
+              status: "draft",
+              revision: 0,
+              revisionCycles: 0,
+              consecutiveFailureCount: 0,
+              lastFailureFingerprint: null,
+              approvedPlanId: null,
+              candidateRunId: null,
+              workspaceDigest: null,
+              checks: [],
+              reviews: [],
+              terminalReason: null,
+              updatedAt: DateTime.formatIso(now),
+            },
       lineage: {
         parentThreadId: null,
         relationshipToParent: null,
@@ -2170,7 +2320,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     yield* emitEvent({
       type: "thread.created",
       threadId: command.threadId,
-      providerInstanceId: command.modelSelection.instanceId,
+      providerInstanceId: plannerSelection.instanceId,
       occurredAt: now,
       payload: thread,
     });
@@ -2208,6 +2358,304 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
   });
 
+  const dispatchWorkflowUpdate = Effect.fn("orchestrationV2.dispatch.workflowUpdate")(function* (
+    command: Extract<OrchestrationV2Command, { readonly type: "workflow.update" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    if (command.createdBy !== "system" || command.creationSource !== "server") {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "Workflow state can only be advanced by the server coordinator.",
+      });
+    }
+    const projection = yield* projectionStore
+      .getThreadProjection(command.threadId)
+      .pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+        ),
+      );
+    const current = projection.thread.workflow ?? null;
+    if (current === null) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Thread ${command.threadId} is not a workflow thread.`,
+      });
+    }
+    if (
+      command.expectedStatus !== undefined &&
+      command.expectedStatus !== null &&
+      current.status !== command.expectedStatus
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Workflow ${command.threadId} is ${current.status}, expected ${command.expectedStatus}.`,
+      });
+    }
+    if (command.workflow.profileId !== current.profileId) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "Workflow profile cannot change after thread creation.",
+      });
+    }
+    const now = yield* DateTime.now;
+    const thread: OrchestrationV2AppThread = {
+      ...projection.thread,
+      workflow: command.workflow,
+      updatedAt: now,
+    };
+    const emitEvent = emit(events, command);
+    yield* emitEvent({
+      type: "thread.workflow-updated",
+      threadId: command.threadId,
+      providerInstanceId: thread.providerInstanceId,
+      occurredAt: now,
+      payload: thread,
+    });
+
+    const workflow = command.workflow;
+    const verificationState = verificationStateOfWorkflow(workflow);
+    const candidateRun =
+      workflow.candidateRunId === null
+        ? undefined
+        : projection.runs.find((run) => run.id === workflow.candidateRunId);
+    const rootNode =
+      candidateRun?.rootNodeId === null || candidateRun?.rootNodeId === undefined
+        ? undefined
+        : projection.nodes.find((node) => node.id === candidateRun.rootNodeId);
+    if (verificationState === null || candidateRun === undefined || rootNode === undefined) {
+      return;
+    }
+
+    const verificationItemId = idAllocator.derive.workflowVerificationTurnItem({
+      threadId: command.threadId,
+      revision: verificationState.revision,
+    });
+    const existingVerification = projection.turnItems.find(
+      (item) => item.id === verificationItemId && item.type === "workflow_verification",
+    );
+    const parentProviderTurn = providerTurnForRun(projection, candidateRun);
+    const verificationItem: OrchestrationV2TurnItem = {
+      id: verificationItemId,
+      threadId: command.threadId,
+      runId: candidateRun.id,
+      nodeId: rootNode.id,
+      providerThreadId: candidateRun.providerThreadId,
+      providerTurnId: parentProviderTurn?.id ?? null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: existingVerification?.ordinal ?? (yield* nextTurnItemOrdinal(projection)),
+      status: verificationState.itemStatus,
+      title: workflow.profile?.name ?? workflow.profileId,
+      startedAt: existingVerification?.startedAt ?? now,
+      completedAt: verificationState.terminal ? (existingVerification?.completedAt ?? now) : null,
+      updatedAt: now,
+      type: "workflow_verification",
+      profileId: workflow.profileId,
+      profileName: workflow.profile?.name ?? workflow.profileId,
+      revision: verificationState.revision,
+      phase: verificationState.phase,
+      configuredChecks: [...(workflow.profile?.checks ?? [])],
+      reviewerLabels:
+        workflow.profile?.reviewers.map((reviewer) => ({
+          id: reviewer.id,
+          name: reviewer.name,
+        })) ?? [],
+      checks: [...workflow.checks],
+      reviews: [...workflow.reviews],
+      terminalReason: workflow.terminalReason,
+    };
+    yield* emitEvent({
+      type: "turn-item.updated",
+      threadId: command.threadId,
+      runId: candidateRun.id,
+      nodeId: rootNode.id,
+      providerInstanceId: candidateRun.providerInstanceId,
+      occurredAt: now,
+      payload: verificationItem,
+    });
+
+    if (verificationState.phase === "approved") {
+      const candidateMessage = workflowCandidateMessageOfRun(projection.turnItems, candidateRun.id);
+      if (candidateMessage !== undefined) {
+        const completionItemId = idAllocator.derive.workflowCompletionTurnItem({
+          threadId: command.threadId,
+          revision: verificationState.revision,
+        });
+        const existingCompletion = projection.turnItems.find(
+          (item) => item.id === completionItemId && item.type === "assistant_message",
+        );
+        const completionItem: OrchestrationV2TurnItem = {
+          id: completionItemId,
+          threadId: command.threadId,
+          runId: candidateRun.id,
+          nodeId: candidateMessage.nodeId ?? rootNode.id,
+          providerThreadId: candidateMessage.providerThreadId,
+          providerTurnId: candidateMessage.providerTurnId,
+          nativeItemRef: null,
+          parentItemId: verificationItem.id,
+          ordinal:
+            existingCompletion?.ordinal ??
+            Math.max(yield* nextTurnItemOrdinal(projection), verificationItem.ordinal + 1),
+          status: "completed",
+          title: null,
+          startedAt: existingCompletion?.startedAt ?? now,
+          completedAt: existingCompletion?.completedAt ?? now,
+          updatedAt: now,
+          type: "assistant_message",
+          messageId: candidateMessage.messageId,
+          text: candidateMessage.text,
+          streaming: false,
+        };
+        yield* emitEvent({
+          type: "turn-item.updated",
+          threadId: command.threadId,
+          runId: candidateRun.id,
+          nodeId: candidateMessage.nodeId ?? rootNode.id,
+          providerInstanceId: candidateRun.providerInstanceId,
+          occurredAt: now,
+          payload: completionItem,
+        });
+      }
+    }
+
+    for (const review of workflow.reviews) {
+      const reviewer = workflow.profile?.reviewers.find(
+        (candidate) => candidate.id === review.reviewerId,
+      );
+      const modelSelection = reviewer?.modelSelection ?? projection.thread.modelSelection;
+      const reviewerNodeId = idAllocator.derive.workflowReviewerNode({
+        threadId: command.threadId,
+        revision: review.revision,
+        reviewerId: review.reviewerId,
+      });
+      const existingTask = projection.subagents.find((task) => task.id === reviewerNodeId);
+      if (review.status === "running") {
+        if (workflow.status !== "reviewing") continue;
+        const child =
+          existingTask === undefined
+            ? undefined
+            : yield* getProjectionWithPendingEvents(review.reviewerThreadId, events);
+        if (child === undefined || child.runs.length === 0) {
+          const plan = projection.plans.find(
+            (candidate) => candidate.id === workflow.approvedPlanId,
+          );
+          if (reviewer === undefined || plan?.kind !== "proposed_plan") {
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "A workflow review requires its configured reviewer and approved plan.",
+            });
+          }
+          const base = `workflow:${encodeURIComponent(command.threadId)}:${review.revision}:review:${encodeURIComponent(review.reviewerId)}`;
+          const checks = workflow.checks
+            .map((check) => `${check.name}: ${check.passed ? "passed" : "failed"}`)
+            .join("\n");
+          yield* launchThreadReview(
+            {
+              command,
+              parentThread: projection.thread,
+              parentRun: candidateRun,
+              parentNode: rootNode,
+              reviewer: { ...reviewer, modelSelection },
+              childThreadId: review.reviewerThreadId,
+              reviewerNodeId,
+              startCommandId: CommandId.make(`command:${base}:start`),
+              messageId: MessageId.make(`message:${base}`),
+              task: `Review revision ${review.revision} of this verified workflow.`,
+              context: `Approved plan:\n${plan.markdown}\n\nDeterministic checks:\n${checks}`,
+              ...(child ? { existingThread: child.thread } : {}),
+            },
+            events,
+            effects,
+          );
+        }
+        continue;
+      }
+      const adapter = yield* providerAdapters.get(modelSelection.instanceId).pipe(
+        Effect.mapError(
+          (cause) =>
+            new OrchestratorProviderAdapterError({
+              commandId: command.commandId,
+              providerInstanceId: modelSelection.instanceId,
+              cause,
+            }),
+        ),
+      );
+      const existingNode = projection.nodes.find((node) => node.id === reviewerNodeId);
+      const execution = workflowReviewerExecution(review);
+      const status = execution.status;
+      const completedAt = status === "running" ? null : (existingTask?.completedAt ?? now);
+      const reviewerNode: OrchestrationV2ExecutionNode = {
+        id: reviewerNodeId,
+        threadId: command.threadId,
+        runId: candidateRun.id,
+        parentNodeId: rootNode.id,
+        rootNodeId: rootNode.id,
+        kind: "subagent",
+        status,
+        countsForRun: false,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        runtimeRequestId: null,
+        checkpointScopeId: null,
+        startedAt: existingNode?.startedAt ?? now,
+        completedAt,
+      };
+      const task: OrchestrationV2Subagent = {
+        id: reviewerNodeId,
+        threadId: command.threadId,
+        runId: candidateRun.id,
+        parentNodeId: rootNode.id,
+        origin: "app_owned",
+        createdBy: "system",
+        driver: adapter.driver,
+        providerInstanceId: modelSelection.instanceId,
+        providerThreadId: null,
+        childThreadId: review.reviewerThreadId,
+        nativeTaskRef: null,
+        prompt:
+          existingTask?.prompt ??
+          `Review revision ${review.revision} of verified workflow ${workflow.profileId}.`,
+        completionDelivery: { state: "disposed", observedByRunId: null },
+        title: reviewer?.name ?? review.reviewerId,
+        role: "Reviewer",
+        model: modelSelection.model,
+        status,
+        result: execution.result,
+        startedAt: existingTask?.startedAt ?? now,
+        completedAt,
+        updatedAt: now,
+      };
+      yield* emitEvent({
+        type: "node.updated",
+        threadId: command.threadId,
+        runId: candidateRun.id,
+        nodeId: reviewerNodeId,
+        driver: adapter.driver,
+        providerInstanceId: modelSelection.instanceId,
+        occurredAt: now,
+        payload: reviewerNode,
+      });
+      yield* emitEvent({
+        type: "subagent.updated",
+        threadId: command.threadId,
+        runId: candidateRun.id,
+        nodeId: reviewerNodeId,
+        driver: adapter.driver,
+        providerInstanceId: modelSelection.instanceId,
+        occurredAt: now,
+        payload: task,
+      });
+    }
+  });
+
   const dispatchThreadVisit = Effect.fn("orchestrationV2.dispatch.threadVisit")(function* (
     command: Extract<OrchestrationV2Command, { readonly type: "thread.visit" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
@@ -2237,8 +2685,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const movesForward =
       thread.lastVisitedAt === null ||
       DateTime.toEpochMillis(visitedAt.value) > DateTime.toEpochMillis(thread.lastVisitedAt);
-    // Viewing a thread changes read state only. Loading its transcript (or
-    // bumping updatedAt) makes a routine read receipt scale with its history.
     yield* emit(
       events,
       command,
@@ -2368,6 +2814,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         threadId: command.threadId,
       });
     }
+    if (
+      thread.agent !== undefined &&
+      (command.type === "thread.model-selection.set" ||
+        command.type === "provider.switch" ||
+        command.type === "thread.runtime-mode.set" ||
+        command.type === "thread.interaction-mode.set" ||
+        command.type.startsWith("thread.pull-request") ||
+        (command.type === "thread.metadata.update" &&
+          (command.branch !== undefined ||
+            command.worktreePath !== undefined ||
+            command.linkedPullRequest !== undefined)))
+    )
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause:
+          "Agent conversations keep their saved model and execution policy and have no project workspace.",
+      });
     if (
       command.type === "thread.metadata.update" &&
       command.expectedWorktreePath !== undefined &&
@@ -2855,6 +3319,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                       : []),
                   ],
                 }),
+            ...(command.worktreePath && thread.workflow
+              ? {
+                  workflow: {
+                    ...thread.workflow,
+                    workspaceRoot: command.worktreePath,
+                    updatedAt: DateTime.formatIso(now),
+                  },
+                }
+              : {}),
             // regenerateTitle: true arms the in-flight marker; a landing title
             // or an explicit false (generation failed/abandoned) clears it.
             ...(command.regenerateTitle === true
@@ -3770,37 +4243,45 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             createdAt: now,
             updatedAt: now,
           };
-          const turnItem: OrchestrationV2TurnItem = {
-            createdBy: input.createdBy,
-            creationSource: input.creationSource,
-            ...(input.scheduledTaskId === undefined
-              ? {}
-              : { scheduledTaskId: input.scheduledTaskId }),
-            ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
-            id: idAllocator.derive.userTurnItem({ messageId: input.messageId }),
-            threadId: input.command.threadId,
-            runId: messageInput.runId,
-            nodeId: messageInput.nodeId,
-            providerThreadId: messageInput.providerThreadId,
-            providerTurnId: messageInput.providerTurnId,
-            nativeItemRef: null,
-            parentItemId: null,
-            ordinal: yield* nextTurnItemOrdinal(input.projection),
-            status: "completed",
-            title: null,
-            startedAt: now,
-            completedAt: now,
-            updatedAt: now,
-            type: "user_message",
+          const turnItem = makeMessageInputTurnItem({
+            base: {
+              ...(input.scheduledTaskId === undefined
+                ? {}
+                : { scheduledTaskId: input.scheduledTaskId }),
+              ...(input.senderThreadId === undefined
+                ? {}
+                : { senderThreadId: input.senderThreadId }),
+              id: idAllocator.derive.userTurnItem({ messageId: input.messageId }),
+              threadId: input.command.threadId,
+              runId: messageInput.runId,
+              nodeId: messageInput.nodeId,
+              providerThreadId: messageInput.providerThreadId,
+              providerTurnId: messageInput.providerTurnId,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: yield* nextTurnItemOrdinal(input.projection),
+              status: "completed",
+              title: null,
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+            },
+            messageKind:
+              input.command.type === "message.dispatch"
+                ? (input.command.messageKind ?? "conversation")
+                : "conversation",
             messageId: input.messageId,
             inputIntent:
-              input.command.type === "queued-message.promote-to-steer"
-                ? "promoted_queued_to_steer"
-                : "steer",
+              input.command.type === "message.dispatch" && input.command.inputIntent !== undefined
+                ? input.command.inputIntent
+                : input.command.type === "queued-message.promote-to-steer"
+                  ? "promoted_queued_to_steer"
+                  : "steer",
             text: input.text,
             attachments: input.attachments,
-            ...(input.context ? { context: input.context } : {}),
-          };
+            createdBy: input.createdBy,
+            creationSource: input.creationSource,
+          });
           yield* emitEvent({
             type: "message.updated",
             threadId: input.command.threadId,
@@ -4094,38 +4575,44 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               }),
           ),
         );
-      const checkpointScope = yield* checkpointService
-        .prepareRootRunScope({
-          threadId: input.command.threadId,
-          runId: targetRun.id,
-          rootNodeId: nextRootNodeId,
-          providerThreadId: restartProviderThread.id,
-          cwd:
-            resolvedRuntimePolicy.cwd ??
-            input.projection.thread.worktreePath ??
-            session.providerSession.cwd,
-          createdAt: now,
-        })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new OrchestratorDispatchError({
-                commandId: input.command.commandId,
-                commandType: input.command.type,
-                cause,
-              }),
-          ),
-        );
-      const ensuredCheckpointScope = yield* checkpointService.ensureScope(checkpointScope).pipe(
-        Effect.mapError(
-          (cause) =>
-            new OrchestratorDispatchError({
-              commandId: input.command.commandId,
-              commandType: input.command.type,
-              cause,
-            }),
-        ),
-      );
+      const checkpointScope =
+        input.projection.thread.agent !== undefined
+          ? null
+          : yield* checkpointService
+              .prepareRootRunScope({
+                threadId: input.command.threadId,
+                runId: targetRun.id,
+                rootNodeId: nextRootNodeId,
+                providerThreadId: restartProviderThread.id,
+                cwd:
+                  resolvedRuntimePolicy.cwd ??
+                  input.projection.thread.worktreePath ??
+                  session.providerSession.cwd,
+                createdAt: now,
+              })
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestratorDispatchError({
+                      commandId: input.command.commandId,
+                      commandType: input.command.type,
+                      cause,
+                    }),
+                ),
+              );
+      const ensuredCheckpointScope =
+        checkpointScope === null
+          ? null
+          : yield* checkpointService.ensureScope(checkpointScope).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestratorDispatchError({
+                    commandId: input.command.commandId,
+                    commandType: input.command.type,
+                    cause,
+                  }),
+              ),
+            );
       const restartedRun: OrchestrationV2Run = {
         ...targetRun,
         providerInstanceId: input.modelSelection.instanceId,
@@ -4163,7 +4650,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerTurnId: null,
         nativeItemRef: null,
         runtimeRequestId: null,
-        checkpointScopeId: ensuredCheckpointScope.id,
+        checkpointScopeId: ensuredCheckpointScope?.id ?? null,
         startedAt: null,
         completedAt: null,
       };
@@ -4262,15 +4749,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         occurredAt: now,
         payload: nextRootNode,
       });
-      yield* emitEvent({
-        type: "checkpoint-scope.created",
-        threadId: input.command.threadId,
-        runId: targetRun.id,
-        nodeId: nextRootNodeId,
-        providerInstanceId: input.modelSelection.instanceId,
-        occurredAt: now,
-        payload: ensuredCheckpointScope,
-      });
+      if (ensuredCheckpointScope !== null) {
+        yield* emitEvent({
+          type: "checkpoint-scope.created",
+          threadId: input.command.threadId,
+          runId: targetRun.id,
+          nodeId: nextRootNodeId,
+          providerInstanceId: input.modelSelection.instanceId,
+          occurredAt: now,
+          payload: ensuredCheckpointScope,
+        });
+      }
       yield* appendSteeringMessage({
         runId: targetRun.id,
         nodeId: nextRootNodeId,
@@ -4313,6 +4802,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) =>
     Effect.gen(function* () {
+      if (
+        command.messageKind === "workflow_instruction" &&
+        (command.createdBy !== "system" || command.creationSource !== "server")
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Workflow instructions can only be dispatched by the server coordinator.",
+        });
+      }
       let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
       if (command.manualContinuationOfRunId !== undefined) {
         const source = projection.runs.find((run) => run.id === command.manualContinuationOfRunId);
@@ -4488,7 +4987,148 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ]);
         projection = yield* getProjectionWithPendingEvents(command.threadId, events);
       }
-      const modelSelection = command.modelSelection ?? projection.thread.modelSelection;
+      let workflowPromptPrefix = "";
+      const workflow = projection.thread.workflow ?? null;
+      const parentThreadId = projection.thread.lineage.parentThreadId;
+      const pendingParentWorkflow = (yield* Ref.get(events)).findLast(
+        (event) => event.threadId === parentThreadId && event.type === "thread.workflow-updated",
+      );
+      const parentWorkflow =
+        projection.thread.lineage.relationshipToParent === "subagent" && parentThreadId !== null
+          ? pendingParentWorkflow?.type === "thread.workflow-updated"
+            ? pendingParentWorkflow.payload.workflow
+            : (yield* projectionStore.getThread(parentThreadId).pipe(mapDispatchError(command)))
+                .workflow
+          : null;
+      const reviewerId = parentWorkflow?.reviews.find(
+        (review) => review.reviewerThreadId === command.threadId,
+      )?.reviewerId;
+      const reviewer = parentWorkflow?.profile?.reviewers.find((agent) => agent.id === reviewerId);
+      const workflowSkillAllowlist =
+        projection.thread.agent?.definition.skills ??
+        reviewer?.skills ??
+        command.workflowSkillAllowlist;
+      const workflowAgent =
+        reviewer ??
+        (workflow?.profile === undefined
+          ? undefined
+          : workflow.approvedPlanId === null && command.sourcePlanRef === undefined
+            ? workflow.profile.planner
+            : workflow.profile.implementer);
+      const agentMcpConnections =
+        projection.thread.agent?.definition.mcpConnections ??
+        workflowAgent?.mcpConnections ??
+        command.agentMcpConnections;
+      const modelSelection =
+        projection.thread.agent?.definition.modelSelection ??
+        workflowAgent?.modelSelection ??
+        command.modelSelection ??
+        projection.thread.modelSelection;
+      if (workflow !== null && workflow.profile !== undefined) {
+        if (workflow.status === "draft") {
+          const now = yield* DateTime.now;
+          const nextWorkflow = {
+            ...workflow,
+            status: "planning" as const,
+            updatedAt: DateTime.formatIso(now),
+          };
+          const thread: OrchestrationV2AppThread = {
+            ...projection.thread,
+            workflow: nextWorkflow,
+            interactionMode: "plan",
+            providerInstanceId: modelSelection.instanceId,
+            modelSelection,
+            updatedAt: now,
+          };
+          yield* emit(
+            events,
+            command,
+          )({
+            type: "thread.workflow-updated",
+            threadId: command.threadId,
+            providerInstanceId: thread.providerInstanceId,
+            occurredAt: now,
+            payload: thread,
+          });
+          projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+          workflowPromptPrefix = `${workflow.profile.planner.instructions}\n\nThis is the planning phase of a verified workflow. Clarify material choices with A/B/C options and finish with one proposed plan. Do not modify the workspace.\n\nUser request:\n`;
+        } else if (
+          (workflow.status === "planning" || workflow.status === "planned") &&
+          command.sourcePlanRef !== undefined
+        ) {
+          const now = yield* DateTime.now;
+          const nextWorkflow = {
+            ...workflow,
+            status: "implementing" as const,
+            revision: workflow.revision + 1,
+            approvedPlanId: command.sourcePlanRef.planId,
+            checks: [],
+            reviews: [],
+            terminalReason: null,
+            updatedAt: DateTime.formatIso(now),
+          };
+          const selected = modelSelection;
+          const thread: OrchestrationV2AppThread = {
+            ...projection.thread,
+            workflow: nextWorkflow,
+            providerInstanceId: selected.instanceId,
+            modelSelection: selected,
+            interactionMode: "default",
+            updatedAt: now,
+          };
+          yield* emit(
+            events,
+            command,
+          )({
+            type: "thread.workflow-updated",
+            threadId: command.threadId,
+            providerInstanceId: selected.instanceId,
+            occurredAt: now,
+            payload: thread,
+          });
+          projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+          workflowPromptPrefix = `${workflow.profile.implementer.instructions}\n\nImplement the approved plan completely. T3 Code will run the configured deterministic checks and independent reviewers after this turn.\n\n`;
+        } else if (
+          workflow.status === "needs_human" &&
+          command.createdBy === "user" &&
+          command.creationSource !== "server"
+        ) {
+          const now = yield* DateTime.now;
+          const resumesPlanning = workflow.approvedPlanId === null;
+          const nextWorkflow = {
+            ...workflow,
+            status: resumesPlanning ? ("planning" as const) : ("revising" as const),
+            revision: resumesPlanning ? workflow.revision : workflow.revision + 1,
+            consecutiveFailureCount: 0,
+            lastFailureFingerprint: null,
+            terminalReason: null,
+            updatedAt: DateTime.formatIso(now),
+          };
+          const selected = modelSelection;
+          const thread: OrchestrationV2AppThread = {
+            ...projection.thread,
+            workflow: nextWorkflow,
+            providerInstanceId: selected.instanceId,
+            modelSelection: selected,
+            interactionMode: resumesPlanning ? "plan" : "default",
+            updatedAt: now,
+          };
+          yield* emit(
+            events,
+            command,
+          )({
+            type: "thread.workflow-updated",
+            threadId: command.threadId,
+            providerInstanceId: selected.instanceId,
+            occurredAt: now,
+            payload: thread,
+          });
+          projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+          workflowPromptPrefix = resumesPlanning
+            ? `${workflow.profile.planner.instructions}\n\nThe planning phase required human guidance. Use the user's guidance, clarify any remaining material choices with A/B/C options, and finish with one proposed plan. Do not modify the workspace.\n\nUser guidance:\n`
+            : `${workflow.profile.implementer.instructions}\n\nThe workflow required human guidance. Apply the user's guidance and finish the implementation; all deterministic checks and reviewers will run again.\n\nUser guidance:\n`;
+        }
+      }
       let dispatchMode = resolveMessageDispatchIntent(
         projection,
         command.dispatchMode,
@@ -4525,6 +5165,36 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           commandType: command.type,
           cause: "Notifications must be server- or provider-created queued messages.",
         });
+      }
+      if (workflowSkillAllowlist !== undefined || agentMcpConnections !== undefined) {
+        const adapter = yield* providerAdapters.get(modelSelection.instanceId).pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestratorProviderAdapterError({
+                commandId: command.commandId,
+                providerInstanceId: modelSelection.instanceId,
+                cause,
+              }),
+          ),
+        );
+        if (
+          agentMcpConnections !== undefined &&
+          adapter.driver !== "codex" &&
+          adapter.driver !== "claudeAgent"
+        ) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Provider ${adapter.driver} does not support authored agent MCP connections.`,
+          });
+        }
+        if (workflowSkillAllowlist !== undefined && adapter.workflowSkillIsolation !== "native") {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Provider ${adapter.driver} cannot enforce an exclusive workflow skill allowlist.`,
+          });
+        }
       }
       let delegatedCompletion:
         | OrchestrationV2ConversationMessage["delegatedCompletion"]
@@ -4603,22 +5273,31 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
       }
       const dispatchText =
-        delegatedCompletion === undefined
+        workflowPromptPrefix +
+        (delegatedCompletion === undefined
           ? command.text
-          : delegatedCompletionWakeDetail(delegatedCompletion.taskIds);
+          : delegatedCompletionWakeDetail(delegatedCompletion.taskIds));
       const sourcePlanProjection =
         command.sourcePlanRef === undefined
           ? null
           : yield* getProjectionWithPendingEvents(command.sourcePlanRef.threadId, events);
       // Command projections leave plans out, so read the source plan directly.
-      const sourcePlanArtifact =
+      const sourcePlan =
         command.sourcePlanRef === undefined
-          ? undefined
-          : yield* projectionStore
+          ? null
+          : (sourcePlanProjection?.plans.find(
+              (plan) => plan.id === command.sourcePlanRef?.planId,
+            ) ??
+            // Command projections omit stored plans; load only the selected plan,
+            // preserving any update already applied from this command's events.
+            (yield* projectionStore
               .getPlan(command.sourcePlanRef.threadId, command.sourcePlanRef.planId)
-              .pipe(mapDispatchError(command));
-      const sourcePlan = sourcePlanArtifact?.kind === "proposed_plan" ? sourcePlanArtifact : null;
-      if (command.sourcePlanRef !== undefined && sourcePlan === null) {
+              .pipe(mapDispatchError(command))) ??
+            null);
+      if (
+        command.sourcePlanRef !== undefined &&
+        (sourcePlan === null || sourcePlan.kind !== "proposed_plan")
+      ) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
@@ -4635,11 +5314,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Proposed plan ${command.sourcePlanRef?.planId} belongs to a different project.`,
         });
       }
-      if (sourcePlan !== null && sourcePlan.status !== "active") {
+      const sourceWorkflowStatus =
+        command.sourcePlanRef?.threadId === command.threadId
+          ? workflow?.status
+          : sourcePlanProjection?.thread.workflow?.status;
+      if (
+        sourcePlan !== null &&
+        !isProposedPlanImplementable({
+          planStatus: sourcePlan.status,
+          workflowStatus: sourceWorkflowStatus,
+        })
+      ) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
-          cause: `Proposed plan ${sourcePlan.id} is not active.`,
+          cause: `Proposed plan ${sourcePlan.id} cannot be implemented from status ${sourcePlan.status}.`,
         });
       }
       const completeSourcePlan = (occurredAt: DateTime.Utc) =>
@@ -4658,6 +5347,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             });
 
       if (dispatchMode.type === "steer_active" || dispatchMode.type === "restart_active") {
+        const targetRun = projection.runs.find(
+          (candidate) => candidate.id === dispatchMode.targetRunId,
+        );
+        if (
+          targetRun !== undefined &&
+          (!workflowSkillAllowlistsEqual(
+            targetRun.workflowSkillAllowlist,
+            workflowSkillAllowlist,
+          ) ||
+            !agentMcpConnectionsEqual(targetRun.agentMcpConnections, agentMcpConnections))
+        ) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause:
+              "A workflow skill policy change or MCP connection change requires a fresh provider thread and cannot steer or restart an active turn.",
+          });
+        }
         yield* dispatchSteerIntoRun({
           command,
           events,
@@ -4690,6 +5397,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const activeProviderThread = projection.providerThreads.find(
         (candidate) => candidate.id === projection.thread.activeProviderThreadId,
       );
+      const activeProviderThreadRun =
+        activeProviderThread === undefined
+          ? undefined
+          : projection.runs.findLast(
+              (candidate) => candidate.providerThreadId === activeProviderThread.id,
+            );
+      const workflowRuntimePolicyChanged =
+        activeProviderThread !== undefined &&
+        (!workflowSkillAllowlistsEqual(
+          activeProviderThreadRun?.workflowSkillAllowlist,
+          workflowSkillAllowlist,
+        ) ||
+          !agentMcpConnectionsEqual(
+            activeProviderThreadRun?.agentMcpConnections,
+            agentMcpConnections,
+          ));
       const activeRun = projection.runs.find(isBlockingRun);
       const pendingMergeBackTransfers = pendingMergeBackTransfersForThread(projection);
       const shouldQueue =
@@ -4698,6 +5421,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           dispatchMode.type === "start_immediately" ||
           dispatchMode.type === "queue_after_active");
       if (shouldQueue) {
+        if (workflowRuntimePolicyChanged) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause:
+              "A workflow role with a different skill allowlist or MCP connections cannot be queued on the active provider thread.",
+          });
+        }
         if (pendingMergeBackTransfers.length > 0) {
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
@@ -4768,7 +5499,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const attemptId = idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 });
         const rootNodeId = idAllocator.derive.rootNode({ runId });
         const checkpointScope =
-          activeRun.status === "preparing"
+          activeRun.status === "preparing" || projection.thread.agent !== undefined
             ? null
             : yield* runtimePolicy.resolve({ thread: projection.thread, modelSelection }).pipe(
                 Effect.flatMap((resolvedRuntimePolicy) =>
@@ -4800,6 +5531,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ordinal,
           providerInstanceId: modelSelection.instanceId,
           modelSelection,
+          ...(agentMcpConnections === undefined ? {} : { agentMcpConnections }),
+          ...(workflowSkillAllowlist === undefined
+            ? {}
+            : { workflowSkillAllowlist: [...workflowSkillAllowlist] }),
           providerThreadId: queuedProviderThread.id,
           userMessageId: command.messageId,
           rootNodeId,
@@ -5018,13 +5753,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         projection.thread.historyOrigin === "v1_import"
           ? yield* readHandoffItems(command.threadId, [null])
           : [];
-      const isProviderSwitch =
+      const providerInstanceChanged =
         activeProviderThread !== undefined &&
         activeProviderThread.providerInstanceId !== modelSelection.instanceId;
+      const isProviderSwitch =
+        activeProviderThread !== undefined &&
+        (providerInstanceChanged || workflowRuntimePolicyChanged);
       // Account overlays share native history. Selection commands may already
       // have updated the app thread, so classify against the native thread's owner.
       const canResumeAcrossInstances =
-        isProviderSwitch &&
+        providerInstanceChanged &&
         activeProviderThread.nativeThreadRef !== null &&
         (yield* providerSwitchService
           .plan({
@@ -5120,7 +5858,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const attemptId = idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 });
         const rootNodeId = idAllocator.derive.rootNode({ runId });
         const checkpointScope =
-          dispatchMode.type === "defer_start"
+          dispatchMode.type === "defer_start" || projection.thread.agent !== undefined
             ? null
             : yield* runtimePolicy
                 .resolve({
@@ -5150,6 +5888,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ordinal,
           providerInstanceId: modelSelection.instanceId,
           modelSelection,
+          ...(agentMcpConnections === undefined ? {} : { agentMcpConnections }),
+          ...(workflowSkillAllowlist === undefined
+            ? {}
+            : { workflowSkillAllowlist: [...workflowSkillAllowlist] }),
           providerThreadId,
           userMessageId: command.messageId,
           rootNodeId,
@@ -5223,36 +5965,38 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ...(delegatedCompletion === undefined ? {} : { delegatedCompletion }),
           ...(command.notification === undefined ? {} : { notification: command.notification }),
         };
-        const turnItem: OrchestrationV2TurnItem = {
-          createdBy: command.createdBy,
-          creationSource: command.creationSource,
-          ...(command.scheduledTaskId === undefined
-            ? {}
-            : { scheduledTaskId: command.scheduledTaskId }),
-          ...(command.senderThreadId === undefined
-            ? {}
-            : { senderThreadId: command.senderThreadId }),
-          id: idAllocator.derive.userTurnItem({ messageId: command.messageId }),
-          threadId: command.threadId,
-          runId,
-          nodeId: rootNodeId,
-          providerThreadId,
-          providerTurnId: null,
-          nativeItemRef: null,
-          parentItemId: null,
-          ordinal: yield* nextTurnItemOrdinal(projection),
-          status: "completed",
-          title: null,
-          startedAt: now,
-          completedAt: now,
-          updatedAt: now,
-          type: "user_message",
+        const turnItem = makeMessageInputTurnItem({
+          base: {
+            ...(command.scheduledTaskId === undefined
+              ? {}
+              : { scheduledTaskId: command.scheduledTaskId }),
+            ...(command.senderThreadId === undefined
+              ? {}
+              : { senderThreadId: command.senderThreadId }),
+            id: idAllocator.derive.userTurnItem({ messageId: command.messageId }),
+            threadId: command.threadId,
+            runId,
+            nodeId: rootNodeId,
+            providerThreadId,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: yield* nextTurnItemOrdinal(projection),
+            status: "completed",
+            title: null,
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+          },
+          messageKind: command.messageKind ?? "conversation",
           messageId: command.messageId,
-          inputIntent: "turn_start",
+          inputIntent: command.inputIntent ?? "turn_start",
           text: dispatchText,
           ...(command.context ? { context: command.context } : {}),
           attachments: command.attachments,
-        };
+          createdBy: command.createdBy,
+          creationSource: command.creationSource,
+        });
         const preparationTurnItem: OrchestrationV2TurnItem | null =
           dispatchMode.type === "defer_start"
             ? {
@@ -5441,10 +6185,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             }),
         ),
       );
-      const targetProviderThread =
-        isProviderSwitch && !canResumeAcrossInstances
-          ? rootProviderThreadsForProvider(projection, modelSelection.instanceId)[0]
-          : activeProviderThread;
+      const targetProviderThread = isProviderSwitch
+        ? workflowSkillAllowlist !== undefined
+          ? undefined
+          : canResumeAcrossInstances
+            ? activeProviderThread
+            : rootProviderThreadsForProvider(projection, modelSelection.instanceId)[0]
+        : activeProviderThread;
       const providerSessionId =
         (canResumeAcrossInstances ? undefined : targetProviderThread?.providerSessionId) ??
         (yield* mapDispatchError(command)(
@@ -5490,6 +6237,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 providerInstanceId: modelSelection.instanceId,
                 capabilities,
                 sameProvider:
+                  workflowSkillAllowlist === undefined &&
                   pendingForkTransfer.sourceProviderInstanceId === modelSelection.instanceId,
                 hasStrongNativeSource: sourceProviderThread?.nativeThreadRef?.strength === "strong",
                 sourceRunStatus: sourceRun.status,
@@ -5813,35 +6561,42 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     }),
                 ),
               );
-      const checkpointScope = yield* checkpointService
-        .prepareRootRunScope({
-          threadId: command.threadId,
-          runId,
-          rootNodeId,
-          providerThreadId: providerThread.id,
-          cwd:
-            resolvedRuntimePolicy.cwd ??
-            existingProviderSession?.cwd ??
-            projection.thread.worktreePath ??
-            process.cwd(),
-          createdAt: now,
-        })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new OrchestratorDispatchError({
-                commandId: command.commandId,
-                commandType: command.type,
-                cause,
-              }),
-          ),
-        );
+      const checkpointScope =
+        projection.thread.agent !== undefined
+          ? null
+          : yield* checkpointService
+              .prepareRootRunScope({
+                threadId: command.threadId,
+                runId,
+                rootNodeId,
+                providerThreadId: providerThread.id,
+                cwd:
+                  resolvedRuntimePolicy.cwd ??
+                  existingProviderSession?.cwd ??
+                  projection.thread.worktreePath ??
+                  process.cwd(),
+                createdAt: now,
+              })
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestratorDispatchError({
+                      commandId: command.commandId,
+                      commandType: command.type,
+                      cause,
+                    }),
+                ),
+              );
       const run: OrchestrationV2Run = {
         id: runId,
         threadId: command.threadId,
         ordinal,
         providerInstanceId: modelSelection.instanceId,
         modelSelection,
+        ...(agentMcpConnections === undefined ? {} : { agentMcpConnections }),
+        ...(workflowSkillAllowlist === undefined
+          ? {}
+          : { workflowSkillAllowlist: [...workflowSkillAllowlist] }),
         providerThreadId: providerThread.id,
         userMessageId: command.messageId,
         rootNodeId,
@@ -5890,7 +6645,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerTurnId: null,
         nativeItemRef: null,
         runtimeRequestId: null,
-        checkpointScopeId: checkpointScope.id,
+        checkpointScopeId: checkpointScope?.id ?? null,
         startedAt: null,
         completedAt: null,
       };
@@ -5915,34 +6670,38 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(delegatedCompletion === undefined ? {} : { delegatedCompletion }),
         ...(command.notification === undefined ? {} : { notification: command.notification }),
       };
-      const turnItem: OrchestrationV2TurnItem = {
-        createdBy: command.createdBy,
-        creationSource: command.creationSource,
-        ...(command.scheduledTaskId === undefined
-          ? {}
-          : { scheduledTaskId: command.scheduledTaskId }),
-        ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
-        id: idAllocator.derive.userTurnItem({ messageId: command.messageId }),
-        threadId: command.threadId,
-        runId,
-        nodeId: rootNodeId,
-        providerThreadId: providerThread.id,
-        providerTurnId: null,
-        nativeItemRef: null,
-        parentItemId: null,
-        ordinal: ordinal * 100,
-        status: "completed",
-        title: null,
-        startedAt: now,
-        completedAt: now,
-        updatedAt: now,
-        type: "user_message",
+      const turnItem = makeMessageInputTurnItem({
+        base: {
+          ...(command.scheduledTaskId === undefined
+            ? {}
+            : { scheduledTaskId: command.scheduledTaskId }),
+          ...(command.senderThreadId === undefined
+            ? {}
+            : { senderThreadId: command.senderThreadId }),
+          id: idAllocator.derive.userTurnItem({ messageId: command.messageId }),
+          threadId: command.threadId,
+          runId,
+          nodeId: rootNodeId,
+          providerThreadId: providerThread.id,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: ordinal * 100,
+          status: "completed",
+          title: null,
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+        },
+        messageKind: command.messageKind ?? "conversation",
         messageId: command.messageId,
-        inputIntent: "turn_start",
+        inputIntent: command.inputIntent ?? "turn_start",
         text: dispatchText,
         ...(command.context ? { context: command.context } : {}),
         attachments: command.attachments,
-      };
+        createdBy: command.createdBy,
+        creationSource: command.creationSource,
+      });
       const activeHandoff = portableForkHandoff ?? mergeBackHandoff ?? providerSwitchHandoff;
       const handoffSourceRuns =
         portableForkHandoff !== null
@@ -5957,7 +6716,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const handoffFromModelSelections = Array.from(
         new Map(
           handoffSourceRuns.map((run) => [
-            `${run.modelSelection.instanceId}\0${run.modelSelection.model}`,
+            JSON.stringify([run.modelSelection.instanceId, run.modelSelection.model]),
             run.modelSelection,
           ]),
         ).values(),
@@ -6210,24 +6969,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         occurredAt: now,
         payload: rootNode,
       });
-      yield* emitEvent({
-        type: "checkpoint-scope.created",
-        threadId: command.threadId,
-        runId,
-        nodeId: rootNodeId,
-        providerInstanceId: modelSelection.instanceId,
-        occurredAt: now,
-        payload: yield* checkpointService.ensureScope(checkpointScope).pipe(
-          Effect.mapError(
-            (cause) =>
-              new OrchestratorDispatchError({
-                commandId: command.commandId,
-                commandType: command.type,
-                cause,
-              }),
+      if (checkpointScope !== null) {
+        yield* emitEvent({
+          type: "checkpoint-scope.created",
+          threadId: command.threadId,
+          runId,
+          nodeId: rootNodeId,
+          providerInstanceId: modelSelection.instanceId,
+          occurredAt: now,
+          payload: yield* checkpointService.ensureScope(checkpointScope).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestratorDispatchError({
+                  commandId: command.commandId,
+                  commandType: command.type,
+                  cause,
+                }),
+            ),
           ),
-        ),
-      });
+        });
+      }
       if (handoffTurnItem !== null) {
         yield* emitEvent({
           type: "turn-item.updated",
@@ -6321,24 +7082,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
       effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
     ) {
-      const parentProjection = yield* projectionStore
-        .getThreadRecords(command.parentThreadId, [
-          "runs",
-          "nodes",
-          "subagents",
-          "providerThreads",
-          "providerTurns",
-          "attempts",
-        ])
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new OrchestratorProjectionError({
-                threadId: command.parentThreadId,
-                cause,
-              }),
-          ),
-        );
+      const parentProjection = yield* getProjectionWithPendingEvents(
+        command.parentThreadId,
+        events,
+      );
       const parentRun = parentProjection.runs.find(
         (candidate) => candidate.id === command.parentRunId,
       );
@@ -6577,6 +7324,281 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     },
   );
+
+  // Both review entry points supply their own context and identity. This only
+  // creates the owned reviewer and queues its first turn in the caller's transaction.
+  const launchThreadReview = Effect.fn("orchestrationV2.launchThreadReview")(function* (
+    input: {
+      readonly command: Extract<
+        OrchestrationV2Command,
+        { readonly type: "thread.review" | "workflow.update" }
+      >;
+      readonly parentThread: OrchestrationV2AppThread;
+      readonly parentRun: OrchestrationV2Run;
+      readonly parentNode: OrchestrationV2ExecutionNode;
+      readonly reviewer: ResolvedAgentDefinition;
+      readonly childThreadId: ThreadId;
+      readonly reviewerNodeId: NodeId;
+      readonly startCommandId: CommandId;
+      readonly messageId: MessageId;
+      readonly task: string;
+      readonly context: string;
+      readonly existingThread?: OrchestrationV2AppThread;
+    },
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const {
+      command,
+      parentThread,
+      parentRun,
+      parentNode,
+      reviewer,
+      childThreadId,
+      reviewerNodeId,
+    } = input;
+    const adapter = yield* providerAdapters
+      .get(reviewer.modelSelection.instanceId)
+      .pipe(mapDispatchError(command));
+    const now = yield* DateTime.now;
+    const prompt = reviewerPrompt({
+      instructions: reviewer.instructions,
+      task: input.task,
+      context: input.context,
+    });
+    const childThread: OrchestrationV2AppThread = {
+      ...(input.existingThread ??
+        makeSubagentChildThread({
+          parentThread,
+          childThreadId,
+          parentNodeId: reviewerNodeId,
+          activeProviderThreadId: null,
+          providerInstanceId: reviewer.modelSelection.instanceId,
+          modelSelection: reviewer.modelSelection,
+          title: `Review · ${reviewer.name}`,
+          now,
+          createdBy: command.createdBy,
+          creationSource: command.creationSource,
+        })),
+      workflow: null,
+      // Reviews are unattended inspections. Plan mode restricts provider tools;
+      // the shared review prompt carries the no-edit instruction instead.
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      updatedAt: now,
+    };
+    const node: OrchestrationV2ExecutionNode = {
+      id: reviewerNodeId,
+      threadId: parentThread.id,
+      runId: parentRun.id,
+      parentNodeId: parentNode.id,
+      rootNodeId: parentNode.rootNodeId,
+      kind: "subagent",
+      status: "running",
+      countsForRun: false,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      runtimeRequestId: null,
+      checkpointScopeId: null,
+      startedAt: now,
+      completedAt: null,
+    };
+    const subagent: OrchestrationV2Subagent = {
+      id: reviewerNodeId,
+      threadId: parentThread.id,
+      runId: parentRun.id,
+      parentNodeId: parentNode.id,
+      origin: "app_owned",
+      createdBy: command.createdBy,
+      driver: adapter.driver,
+      providerInstanceId: reviewer.modelSelection.instanceId,
+      providerThreadId: null,
+      childThreadId,
+      nativeTaskRef: null,
+      prompt,
+      title: reviewer.name,
+      role: "Reviewer",
+      model: reviewer.modelSelection.model,
+      completionDelivery: { state: "disposed", observedByRunId: null },
+      status: "running",
+      result: null,
+      startedAt: now,
+      completedAt: null,
+      updatedAt: now,
+    };
+    const emitEvent = emit(events, command);
+    yield* emitEvent({
+      type: input.existingThread ? "thread.metadata-updated" : "thread.created",
+      threadId: childThreadId,
+      driver: adapter.driver,
+      providerInstanceId: reviewer.modelSelection.instanceId,
+      occurredAt: now,
+      payload: childThread,
+    });
+    yield* emitEvent({
+      type: "node.updated",
+      threadId: parentThread.id,
+      runId: parentRun.id,
+      nodeId: reviewerNodeId,
+      driver: adapter.driver,
+      providerInstanceId: reviewer.modelSelection.instanceId,
+      occurredAt: now,
+      payload: node,
+    });
+    yield* emitEvent({
+      type: "subagent.updated",
+      threadId: parentThread.id,
+      runId: parentRun.id,
+      nodeId: reviewerNodeId,
+      driver: adapter.driver,
+      providerInstanceId: reviewer.modelSelection.instanceId,
+      occurredAt: now,
+      payload: subagent,
+    });
+    yield* dispatchMessage(
+      {
+        type: "message.dispatch",
+        commandId: input.startCommandId,
+        threadId: childThreadId,
+        messageId: input.messageId,
+        text: prompt,
+        attachments: [],
+        modelSelection: reviewer.modelSelection,
+        workflowSkillAllowlist: reviewer.skills,
+        ...(reviewer.mcpConnections === undefined
+          ? {}
+          : { agentMcpConnections: reviewer.mcpConnections }),
+        dispatchMode: { type: "start_immediately" },
+        createdBy: command.createdBy,
+        creationSource: command.creationSource,
+      },
+      events,
+      effects,
+    );
+  });
+
+  const dispatchRequestedReview = Effect.fn("orchestrationV2.dispatch.requestedReview")(function* (
+    command: Extract<OrchestrationV2Command, { readonly type: "thread.review" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+    const run = reviewableRun(projection);
+    if (run === null || run.id !== command.runId || run.rootNodeId === null) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause:
+          projection.thread.workflow != null
+            ? "Verified workflows manage their own reviews."
+            : "Wait for the latest task and its agents to finish before requesting a review.",
+      });
+    }
+    if (Option.isNone(agentDefinitions)) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "The agent catalog is unavailable.",
+      });
+    }
+    const catalog = agentDefinitions.value;
+    const reviewers = yield* mapDispatchError(command)(
+      Effect.forEach(command.agents, (agent) => catalog.resolve(agent)),
+    );
+    const context = projection.messages
+      .filter(
+        (message) =>
+          message.role === "user" || (message.runId === run.id && message.role === "assistant"),
+      )
+      .slice(-12)
+      .map((message) => `${message.role}: ${message.text.slice(0, 4_000)}`)
+      .join("\n\n")
+      .slice(-24_000);
+    const parentNode = projection.nodes.find((node) => node.id === run.rootNodeId);
+    if (parentNode === undefined) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "The completed task has no root node.",
+      });
+    }
+    // Starts and the review card commit together; invalid reviewers leave no partial round.
+    for (const reviewer of reviewers) {
+      const startCommandId = CommandId.make(
+        `${command.commandId}:review:${encodeURIComponent(reviewer.id)}`,
+      );
+      yield* launchThreadReview(
+        {
+          command,
+          parentThread: projection.thread,
+          parentRun: run,
+          parentNode,
+          reviewer,
+          childThreadId: idAllocator.derive.delegatedTaskThread({ commandId: startCommandId }),
+          reviewerNodeId: idAllocator.derive.delegatedTaskNode({ commandId: startCommandId }),
+          startCommandId,
+          messageId: idAllocator.derive.delegatedTaskMessage({ commandId: startCommandId }),
+          task: "Review the completed task below, including its committed and uncommitted changes.",
+          context: `Task context:\n${context}`,
+        },
+        events,
+        effects,
+      );
+    }
+    const now = yield* DateTime.now;
+    const pendingProjection = yield* getProjectionWithPendingEvents(command.threadId, events);
+    const revision =
+      projection.turnItems.filter(
+        (item) => item.type === "workflow_verification" && item.reviewOnly,
+      ).length + 1;
+    const reviews: WorkflowReviewResult[] = reviewers.map((reviewer) => ({
+      reviewerId: reviewer.id,
+      reviewerThreadId: idAllocator.derive.delegatedTaskThread({
+        commandId: CommandId.make(`${command.commandId}:review:${encodeURIComponent(reviewer.id)}`),
+      }),
+      revision,
+      status: "running",
+      review: null,
+      error: null,
+    }));
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "turn-item.updated",
+      threadId: command.threadId,
+      runId: run.id,
+      occurredAt: now,
+      payload: {
+        id: TurnItemId.make(`review:${command.commandId}`),
+        threadId: command.threadId,
+        runId: run.id,
+        nodeId: run.rootNodeId,
+        providerThreadId: run.providerThreadId,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: yield* nextTurnItemOrdinal(pendingProjection),
+        status: "running",
+        title: "Agent review",
+        startedAt: now,
+        completedAt: null,
+        updatedAt: now,
+        type: "workflow_verification",
+        reviewOnly: true,
+        profileId: "standalone-review",
+        profileName: "Agent review",
+        revision,
+        phase: "reviewing",
+        configuredChecks: [],
+        checks: [],
+        reviewerLabels: reviewers.map(({ id, name }) => ({ id, name })),
+        reviews,
+        terminalReason: null,
+      },
+    });
+  });
 
   // Rewrites a delegated task's completionWake after creation. The wait path
   // uses this when its blocking window ends without a terminal (timeout), so
@@ -8924,8 +9946,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           "turnItems",
           "contextTransfers",
         ],
-        { turnItemTypes: ["subagent"], messageRoles: ["user"] },
+        { turnItemTypes: ["subagent", "workflow_verification"], messageRoles: ["user"] },
       );
+      const verification = parentProjection.turnItems.find(
+        (item) =>
+          item.type === "workflow_verification" &&
+          item.reviews.some((review) => review.reviewerThreadId === childThreadId),
+      );
+      // Workflow gates are consumed by their coordinator. Standalone reviews use
+      // the same result contract here, without waking an implementation run.
+      if (verification?.type === "workflow_verification" && !verification.reviewOnly) return;
       const task = parentProjection.subagents.find(
         (candidate) =>
           candidate.id === forkedFrom.nodeId &&
@@ -8955,11 +9985,61 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const parentTurnItem = parentProjection.turnItems.find(
         (candidate) => candidate.type === "subagent" && candidate.subagentId === task.id,
       );
+      const pendingReview =
+        verification?.type === "workflow_verification"
+          ? verification.reviews.find((review) => review.reviewerThreadId === childThreadId)
+          : undefined;
+      const reviewResult =
+        pendingReview === undefined
+          ? undefined
+          : yield* collectReviewerResult({
+              pending: pendingReview,
+              runStatus: childRun.status,
+              text:
+                result.messageId === null && result.turnItemId === null ? undefined : result.text,
+            });
+      const taskStatus = reviewResult?.status === "failed" ? "failed" : terminalStatus;
+      const taskResult =
+        reviewResult === undefined
+          ? result.text
+          : (reviewResult.review?.summary ?? reviewResult.error);
+      const reviewItems: Array<Omit<OrchestrationV2DomainEvent, "id">> = [];
+      if (verification?.type === "workflow_verification" && reviewResult !== undefined) {
+        const reviews = verification.reviews.map((review) =>
+          review.reviewerThreadId === childThreadId ? reviewResult : review,
+        );
+        const running = reviews.some((review) => review.status === "running");
+        const failed = reviews.some((review) => review.status === "failed");
+        const approved = reviews.every((review) => review.review?.verdict === "approve");
+        reviewItems.push({
+          type: "turn-item.updated",
+          threadId: parentThreadId,
+          ...(verification.runId === null ? {} : { runId: verification.runId }),
+          occurredAt: now,
+          payload: {
+            ...verification,
+            reviews,
+            phase: running
+              ? "reviewing"
+              : failed
+                ? "needs_human"
+                : approved
+                  ? "approved"
+                  : "changes_requested",
+            status: running ? "running" : failed ? "failed" : "completed",
+            terminalReason: failed
+              ? "One or more reviewers failed. Open the reviewer for details or request another review."
+              : null,
+            completedAt: running ? null : now,
+            updatedAt: now,
+          },
+        });
+      }
       const updatedTask: OrchestrationV2Subagent = {
         ...task,
         providerThreadId: childRun.providerThreadId,
-        status: terminalStatus,
-        result: result.text,
+        status: taskStatus,
+        result: taskResult,
         completedAt: now,
         updatedAt: now,
       };
@@ -9045,6 +10125,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       };
 
       yield* writeSystemEvents([
+        ...reviewItems,
         {
           type: "subagent.updated",
           threadId: parentThreadId,
@@ -9100,7 +10181,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 occurredAt: now,
                 payload: {
                   ...parentNode,
-                  status: terminalStatus,
+                  status: taskStatus,
                   providerThreadId: childRun.providerThreadId,
                   completedAt: now,
                 },
@@ -9118,8 +10199,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 occurredAt: now,
                 payload: {
                   ...parentTurnItem,
-                  status: terminalStatus,
-                  result: result.text,
+                  status: taskStatus,
+                  result: taskResult,
                   completedAt: now,
                   updatedAt: now,
                 },
@@ -9496,6 +10577,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           }),
         );
       }
+      case "workflow.update":
+        yield* dispatchWorkflowUpdate(command, events, effects);
+        break;
       case "thread.archive":
       case "thread.unarchive":
       case "thread.settle":
@@ -9654,6 +10738,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "thread.merge_back":
         yield* dispatchThreadMergeBack(command, events);
+        break;
+      case "thread.review":
+        yield* dispatchRequestedReview(command, events, effects);
         break;
       case "delegated_task.request":
         yield* dispatchDelegatedTaskRequest(command, events, effects);

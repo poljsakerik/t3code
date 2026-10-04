@@ -50,6 +50,7 @@ export function withCreationProvenance(
 ): OrchestrationV2Command {
   switch (command.type) {
     case "thread.create":
+    case "thread.review":
     case "message.dispatch":
     case "thread.fork":
     case "thread.merge_back":
@@ -305,7 +306,14 @@ export interface ThreadManagementServiceShape {
   readonly getProjectThread: (input: {
     readonly projectId: ProjectId;
     readonly threadId: ThreadId;
-  }) => Effect.Effect<OrchestrationV2ThreadProjection, ThreadManagementError>;
+  }) => Effect.Effect<
+    OrchestrationV2ThreadProjection & {
+      readonly thread: OrchestrationV2ThreadProjection["thread"] & {
+        readonly projectId: ProjectId;
+      };
+    },
+    ThreadManagementError
+  >;
   readonly getShellSnapshot: (options?: {
     readonly location?: "active" | "archive";
   }) => Effect.Effect<OrchestrationV2ThreadShellSnapshot, Orchestrator.OrchestratorV2Error>;
@@ -470,7 +478,10 @@ const make = Effect.gen(function* () {
       ),
       Effect.flatMap((projection) =>
         projection.thread.projectId === input.projectId && projection.thread.deletedAt === null
-          ? Effect.succeed(projection)
+          ? Effect.succeed({
+              ...projection,
+              thread: { ...projection.thread, projectId: input.projectId },
+            })
           : Effect.fail(
               new ThreadManagementThreadNotFoundError({
                 projectId: input.projectId,

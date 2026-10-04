@@ -418,6 +418,36 @@ describe("orchestration V2 contracts", () => {
     expect(event.payload.id).toBe(RunId.make("run-1"));
   });
 
+  it("requires a bounded, nonempty selection of unique review agents", () => {
+    const command = {
+      type: "thread.review",
+      commandId: "review-1",
+      threadId: "thread-1",
+      runId: "run-1",
+      agents: [
+        { projectId: "project-a", agentId: ".t3/agents/reviewer" },
+        { projectId: "project-b", agentId: ".t3/agents/reviewer" },
+        { agentId: ".t3/agents/reviewer" },
+      ],
+      createdBy: "user",
+      creationSource: "mobile",
+    };
+    expect(decodeOrchestrationV2Command(command)).toMatchObject(command);
+    for (const agents of [
+      [],
+      [{ agentId: "same" }, { agentId: "same" }],
+      [
+        { projectId: "project-a", agentId: "same" },
+        { agentId: "same", projectId: "project-a" },
+      ],
+      [{ agentId: "" }],
+      ["unscoped-string"],
+      Array.from({ length: 21 }, (_, i) => ({ agentId: `agent-${i}` })),
+    ]) {
+      expect(() => decodeOrchestrationV2Command({ ...command, agents })).toThrow();
+    }
+  });
+
   it("decodes app-owned delegated task commands", () => {
     const command = decodeOrchestrationV2Command({
       type: "delegated_task.request",
@@ -525,6 +555,137 @@ describe("orchestration V2 contracts", () => {
       throw new Error("expected thread_created");
     }
     expect(item.targetRunId).toBe(RunId.make("run-child-1"));
+  });
+
+  it("decodes durable workflow verification rounds and coordinator instructions", () => {
+    const instruction = decodeOrchestrationV2Command({
+      type: "message.dispatch",
+      commandId: "command-workflow-revision-2",
+      threadId: "thread-workflow-1",
+      messageId: "message-workflow-revision-2",
+      text: "Address the reviewer findings.",
+      attachments: [],
+      messageKind: "workflow_instruction",
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "system",
+      creationSource: "server",
+    });
+    const instructionItem = decodeOrchestrationV2TurnItem({
+      id: "turn-item-workflow-instruction-2",
+      type: "workflow_instruction",
+      threadId: "thread-workflow-1",
+      runId: "run-workflow-2",
+      nodeId: "node-workflow-2",
+      providerThreadId: "provider-thread-workflow-1",
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 6,
+      status: "completed",
+      title: null,
+      messageId: "message-workflow-revision-2",
+      text: "Address the reviewer findings.",
+      attachments: [],
+      startedAt: now,
+      completedAt: now,
+      updatedAt: now,
+    });
+    const candidateItem = decodeOrchestrationV2TurnItem({
+      id: "turn-item-workflow-candidate-2",
+      type: "workflow_candidate_message",
+      threadId: "thread-workflow-1",
+      runId: "run-workflow-2",
+      nodeId: "node-workflow-2",
+      providerThreadId: "provider-thread-workflow-1",
+      providerTurnId: "provider-turn-workflow-2",
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 7,
+      status: "completed",
+      title: null,
+      messageId: "message-workflow-candidate-2",
+      text: "Implementation complete.",
+      streaming: false,
+      startedAt: now,
+      completedAt: now,
+      updatedAt: now,
+    });
+    const item = decodeOrchestrationV2TurnItem({
+      id: "turn-item-workflow-verification-1",
+      type: "workflow_verification",
+      threadId: "thread-workflow-1",
+      runId: "run-workflow-1",
+      nodeId: "node-workflow-1",
+      providerThreadId: "provider-thread-workflow-1",
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 5,
+      status: "completed",
+      title: "Default verified workflow",
+      profileId: "default",
+      profileName: "Default verified workflow",
+      revision: 1,
+      phase: "changes_requested",
+      configuredChecks: [{ id: "test", name: "Tests", run: "vp test", timeoutMs: 60_000 }],
+      reviewerLabels: [{ id: "correctness", name: "Correctness reviewer" }],
+      checks: [
+        {
+          checkId: "test",
+          name: "Tests",
+          command: "vp test",
+          revision: 1,
+          passed: true,
+          exitCode: 0,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          startedAt: "2026-04-20T00:00:00.000Z",
+          completedAt: "2026-04-20T00:00:01.000Z",
+        },
+      ],
+      reviews: [
+        {
+          reviewerId: "correctness",
+          reviewerThreadId: "thread-review-correctness-1",
+          revision: 1,
+          status: "completed",
+          review: {
+            verdict: "request_changes",
+            summary: "One blocking issue remains.",
+            findings: [
+              {
+                id: "missing-test",
+                severity: "blocking",
+                title: "Missing regression test",
+                description: "Cover the rejected input.",
+                file: "src/input.test.ts",
+                line: 12,
+              },
+            ],
+          },
+          error: null,
+        },
+      ],
+      terminalReason: null,
+      startedAt: now,
+      completedAt: now,
+      updatedAt: now,
+    });
+
+    expect(instruction.type).toBe("message.dispatch");
+    if (instruction.type !== "message.dispatch") throw new Error("expected message dispatch");
+    expect(instruction.messageKind).toBe("workflow_instruction");
+    expect(instructionItem.type).toBe("workflow_instruction");
+    expect(candidateItem.type).toBe("workflow_candidate_message");
+    expect(item.type).toBe("workflow_verification");
+    if (item.type !== "workflow_verification") throw new Error("expected verification item");
+    expect(item.phase).toBe("changes_requested");
+    expect(item.reviews[0]?.review?.findings[0]?.file).toBe("src/input.test.ts");
+    const standalone = decodeOrchestrationV2TurnItem({ ...item, reviewOnly: true });
+    const wire = encodeOrchestrationV2TurnItemJson(standalone);
+    expect(decodeOrchestrationV2TurnItemJson(wire)).toEqual(standalone);
+    expect(standalone).toHaveProperty("reviewOnly", true);
   });
 
   it("decodes provider-neutral replay transcripts", () => {

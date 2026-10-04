@@ -339,7 +339,7 @@ export const make = Effect.gen(function* () {
       lookupCandidates,
       (thread) =>
         Effect.gen(function* () {
-          const project = projects.get(thread.projectId);
+          const project = thread.projectId === null ? undefined : projects.get(thread.projectId);
           if (project === undefined || thread.branch === null) return;
           const worktreeExists =
             thread.worktreePath !== null &&
@@ -453,7 +453,7 @@ export const make = Effect.gen(function* () {
             { cwd, branch: thread.branch },
             { refresh: true },
           );
-          const project = projects.get(thread.projectId);
+          const project = thread.projectId === null ? undefined : projects.get(thread.projectId);
           if (
             current?.state === "open" &&
             project !== undefined &&

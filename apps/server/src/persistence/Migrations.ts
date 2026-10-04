@@ -1,3 +1,4 @@
+import Migration0057 from "./Migrations/057_AgentConversations.ts";
 /**
  * Migration runner with an inline loader.
  *
@@ -140,6 +141,7 @@ export const migrationEntries = [
   // Preserve this migration's schema. Future V2 schema changes need new migrations.
   [55, "OrchestrationV2", Migration0055],
   [56, "RemoveRedundantProjectionIndexes", Migration0056],
+  [57, "AgentConversations", Migration0057],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

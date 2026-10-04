@@ -6,6 +6,7 @@ import {
   formatReadToolLabel,
   formatSearchToolLabel,
 } from "@t3tools/shared/toolActivity";
+import { retainConversationAttachments } from "../../agents/AgentConversationResources.ts";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import { normalizeClaudeTurnTokenUsage } from "../../provider/ClaudeTurnTokenUsage.ts";
 import {
@@ -40,6 +41,7 @@ import {
   formatClaudeResumeCompactionQuestion,
 } from "@t3tools/shared/claudeCompaction";
 import {
+  AgentMcpConnections,
   type ChatAttachment,
   ClaudeSettings,
   defaultInstanceIdForDriver,
@@ -800,7 +802,13 @@ export const claudeAgentSdkQueryRunnerLiveLayer: Layer.Layer<
   }),
 );
 
+const encodeAgentMcpConnections = Schema.encodeSync(Schema.fromJsonString(AgentMcpConnections));
+
 export function makeClaudeQueryOptions(input: {
+  readonly detachedConversation?: boolean;
+  readonly conversationSkillDirectories?: ReadonlyArray<string>;
+  readonly agentInstructions?: string | undefined;
+  readonly agentMcpConnections?: ProviderAdapterV2RuntimePolicy["agentMcpConnections"];
   readonly modelSelection: ModelSelection;
   readonly nativeThreadId: string;
   readonly resume: boolean;
@@ -820,6 +828,7 @@ export function makeClaudeQueryOptions(input: {
   readonly tools?: ClaudeAgentSdkQueryTools;
   readonly allowedTools?: ReadonlyArray<string>;
   readonly disallowedTools?: ReadonlyArray<string>;
+  readonly skills?: ReadonlyArray<string>;
   readonly permissionMode?: PermissionMode;
   readonly canUseTool?: CanUseTool;
   readonly onUserDialog?: ClaudeQueryOptions["onUserDialog"];
@@ -859,6 +868,16 @@ export function makeClaudeQueryOptions(input: {
           ...(typeof querySettings === "object" && querySettings !== null ? querySettings : {}),
           autoCompactWindow: Number(input.settings.autoCompactWindow),
         } as ClaudeSdkSettings);
+  const agentMcpServers = Object.fromEntries(
+    Object.entries(input.agentMcpConnections ?? {}).map(([name, connection]) => [
+      name,
+      {
+        type: "http" as const,
+        url: connection.url,
+        ...(connection.headers === undefined ? {} : { headers: { ...connection.headers } }),
+      },
+    ]),
+  );
   const options: ClaudeAgentSdkQueryOptions = {
     model: compiledSelection.apiModelId,
     tools: claudeAgentSdkQueryToolsForSdk(selectedTools),
@@ -877,6 +896,7 @@ export function makeClaudeQueryOptions(input: {
     ...(input.resumeSessionAt === undefined ? {} : { resumeSessionAt: input.resumeSessionAt }),
     ...(input.allowedTools === undefined ? {} : { allowedTools: [...input.allowedTools] }),
     ...(input.disallowedTools === undefined ? {} : { disallowedTools: [...input.disallowedTools] }),
+    ...(input.skills === undefined ? {} : { skills: [...input.skills] }),
     ...(input.canUseTool === undefined ? {} : { canUseTool: input.canUseTool }),
     ...(input.allowDangerouslySkipPermissions === true
       ? { allowDangerouslySkipPermissions: true }
@@ -903,7 +923,9 @@ export function makeClaudeQueryOptions(input: {
       ? { pathToClaudeCodeExecutable: input.settings.binaryPath }
       : {}),
     ...(input.environment === undefined ? {} : { env: input.environment }),
-    ...(input.mcpServers === undefined ? {} : { mcpServers: input.mcpServers }),
+    ...(input.mcpServers === undefined && input.agentMcpConnections === undefined
+      ? {}
+      : { mcpServers: { ...agentMcpServers, ...input.mcpServers } }),
     systemPrompt: {
       type: "preset" as const,
       preset: "claude_code" as const,
@@ -913,6 +935,48 @@ export function makeClaudeQueryOptions(input: {
     },
     ...(Object.keys(extraArgs).length === 0 ? {} : { extraArgs }),
   };
+  if (input.detachedConversation && input.cwd !== null) {
+    return {
+      ...options,
+      cwd: input.cwd,
+      additionalDirectories: [],
+      settingSources: [],
+      mcpServers: agentMcpServers,
+      strictMcpConfig: true,
+      plugins: [],
+      extraArgs: {},
+      systemPrompt: input.agentInstructions ?? "",
+      permissionMode: "default",
+      allowDangerouslySkipPermissions: false,
+      allowedTools: [],
+      tools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Skill", "AskUserQuestion"],
+      settings: { disableAllHooks: true },
+      sandbox: {
+        enabled: true,
+        failIfUnavailable: true,
+        allowUnsandboxedCommands: true,
+        autoAllowBashIfSandboxed: true,
+        filesystem: {
+          allowRead: [
+            input.cwd,
+            ...(input.conversationSkillDirectories ?? []),
+            "/usr",
+            "/bin",
+            "/System",
+            "/Library",
+          ],
+          allowWrite: [input.cwd],
+        },
+        network: {
+          allowedDomains: ["*"],
+          deniedDomains: [],
+          strictAllowlist: false,
+          allowAllUnixSockets: false,
+          allowLocalBinding: false,
+        },
+      },
+    };
+  }
   const additionalDirectories = [
     ...(input.cwd === null ? [] : [input.cwd]),
     ...(input.attachmentsDir === undefined ? [] : [input.attachmentsDir]),
@@ -2992,6 +3056,7 @@ export function makeClaudeAdapterV2(
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CLAUDE_PROVIDER,
+    workflowSkillIsolation: "native",
     getCapabilities: () => Effect.succeed(ClaudeProviderCapabilitiesV2),
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
     openSession: Effect.fn("ClaudeAdapterV2.openSession")(
@@ -6564,6 +6629,7 @@ export function makeClaudeAdapterV2(
           yield* handleRoutedSdkMessage(input);
         });
 
+        let conversationSkillDirectories: ReadonlyArray<string> = [];
         const canUseToolEffect = Effect.fn("ClaudeAdapterV2.canUseTool")(function* (
           toolName: Parameters<CanUseTool>[0],
           toolInput: Parameters<CanUseTool>[1],
@@ -6908,7 +6974,46 @@ export function makeClaudeAdapterV2(
               ? {}
               : { allowedTools: queryPolicy.allowedTools }),
           });
-          const queryPolicyKey = claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides);
+          const queryPolicyKey = `${claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides)}\nworkflow-skills:${
+            turnInput.runtimePolicy.workflowSkillAllowlist === undefined
+              ? "provider-defaults"
+              : turnInput.runtimePolicy.workflowSkillAllowlist
+                  .map((skill) => encodeURIComponent(skill))
+                  .join(",")
+          }\nagent-mcp:${encodeAgentMcpConnections(turnInput.runtimePolicy.agentMcpConnections ?? {})}`;
+          if (turnInput.runtimePolicy.detachedConversation) {
+            const skills = yield* discoverClaudeSkills(
+              adapterOptions.settings,
+              turnInput.runtimePolicy.cwd ?? undefined,
+              adapterOptions.environment,
+            ).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, path),
+            );
+            const selected = turnInput.runtimePolicy.workflowSkillAllowlist ?? [];
+            const missing = selected.filter(
+              (name) => !skills.some((skill) => skill.name === name && skill.enabled),
+            );
+            if (missing.length > 0)
+              return yield* new ProviderAdapterProtocolError({
+                driver: CLAUDE_PROVIDER,
+                detail: `Assigned Claude skills are unavailable: ${missing.join(", ")}`,
+              });
+            conversationSkillDirectories = yield* Effect.forEach(
+              skills.filter((skill) => selected.includes(skill.name)),
+              (skill) =>
+                fileSystem.realPath(path.dirname(skill.path)).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderAdapterProtocolError({
+                        driver: CLAUDE_PROVIDER,
+                        detail: `Could not open skill ${skill.name}`,
+                        payload: cause,
+                      }),
+                  ),
+                ),
+            );
+          }
           const compiledSelection = compileClaudeModelSelection(turnInput.modelSelection);
           const resumeSessionAt = yield* getNativeConversationHeadId(turnInput.providerThread);
           const existing = yield* Ref.get(queryContext);
@@ -6982,9 +7087,20 @@ export function makeClaudeAdapterV2(
             resume: shouldResume,
             ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
             cwd: turnInput.runtimePolicy.cwd,
+            ...(turnInput.runtimePolicy.detachedConversation
+              ? {
+                  detachedConversation: true,
+                  conversationSkillDirectories,
+                  agentInstructions: turnInput.runtimePolicy.agentInstructions,
+                }
+              : {}),
+            agentMcpConnections: turnInput.runtimePolicy.agentMcpConnections,
             attachmentsDir,
             settings: adapterOptions.settings,
             environment: adapterOptions.environment,
+            ...(turnInput.runtimePolicy.workflowSkillAllowlist === undefined
+              ? {}
+              : { skills: turnInput.runtimePolicy.workflowSkillAllowlist }),
             tools: queryPolicy.tools ?? CLAUDE_CODE_PRESET_TOOLS,
             ...mcpOverrides,
             permissionMode: queryPolicy.permissionMode,
@@ -7177,7 +7293,25 @@ export function makeClaudeAdapterV2(
                     compileClaudeModelSelection(turnInput.modelSelection).promptEffort,
                   ),
                   attachments: turnInput.message.attachments,
-                  attachmentsDir,
+                  attachmentsDir:
+                    turnInput.runtimePolicy.detachedConversation &&
+                    turnInput.runtimePolicy.cwd !== null
+                      ? yield* retainConversationAttachments(
+                          fileSystem,
+                          turnInput.message.attachments,
+                          attachmentsDir,
+                          turnInput.runtimePolicy.cwd,
+                        ).pipe(
+                          Effect.mapError(
+                            (cause) =>
+                              new ProviderAdapterProtocolError({
+                                driver: CLAUDE_PROVIDER,
+                                detail: "Could not prepare conversation attachments.",
+                                payload: cause,
+                              }),
+                          ),
+                        )
+                      : attachmentsDir,
                   fileSystem,
                   skillNames: yield* userInvocableSkillNames(turnInput.runtimePolicy.cwd),
                   uuid: claudePromptUuid(turnInput.attemptId),

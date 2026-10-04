@@ -1,5 +1,6 @@
 import { useThreadReportedModelSelection } from "../../state/entities";
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
+import { RequestReviewControl } from "./RequestReviewControl";
 import { useNavigation } from "@react-navigation/native";
 import type { WorktreeSetupCardProps } from "./worktree-setup-card";
 import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
@@ -1069,6 +1070,13 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             )}
           >
             <ThreadFeed
+              bottomAccessory={
+                <RequestReviewControl
+                  key={selectedThreadKey}
+                  environmentId={props.environmentId}
+                  threadId={props.selectedThread.id}
+                />
+              }
               environmentId={props.environmentId}
               threadId={props.selectedThread.id}
               workspaceRoot={props.threadCwd}

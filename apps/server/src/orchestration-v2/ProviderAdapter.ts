@@ -1,5 +1,6 @@
 import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
 import {
+  AgentMcpConnections,
   ChatAttachment,
   CheckpointId,
   MessageId,
@@ -45,12 +46,17 @@ import type {
 } from "./ProviderSelectionTransition.ts";
 
 export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
+  detachedConversation: Schema.optional(Schema.Boolean),
+  agentInstructions: Schema.optional(Schema.String),
+  agentMcpConnections: Schema.optional(AgentMcpConnections),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   cwd: Schema.NullOr(Schema.String),
   approvalPolicy: Schema.optional(Schema.Unknown),
   sandboxPolicy: Schema.optional(Schema.Unknown),
   reasoningEffort: Schema.optional(Schema.String),
+  /** Undefined keeps provider defaults; an array is a reviewer's exclusive native allowlist. */
+  workflowSkillAllowlist: Schema.optional(Schema.Array(Schema.String)),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 
@@ -581,6 +587,8 @@ export interface ProviderAdapterV2SessionRuntime {
 export interface ProviderAdapterV2Shape {
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
+  /** Present only when the adapter can hide and reject every unlisted native skill. */
+  readonly workflowSkillIsolation?: "native";
   readonly getCapabilities: () => Effect.Effect<
     OrchestrationV2ProviderCapabilities,
     ProviderAdapterV2Error

@@ -5,7 +5,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, ShieldCheckIcon } from "lucide-react";
 import {
   memo,
   useCallback,
@@ -18,6 +18,7 @@ import {
 } from "react";
 import { isTrailingDoubleClick } from "../Sidebar.logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { Badge } from "../ui/badge";
 import { toastManager } from "../ui/toast";
 import { useThreadActionMenu } from "~/hooks/useThreadActionMenu";
 import { readLocalApi } from "~/localApi";
@@ -36,9 +37,11 @@ interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
   activeThreadId: ThreadId;
   activeThreadTitle: string;
+  agentName?: string;
   /** Drafts have no server thread yet, so the title carries no action menu. */
   isServerThread: boolean;
   activeProject: EnvironmentProject | null;
+  workflowProfileName: string | null;
   rightPanelOpen: boolean;
   onNewThreadInProject: () => void;
   onOpenProjectSettings?: (() => void) | undefined;
@@ -69,8 +72,10 @@ export const ChatHeader = memo(function ChatHeader({
   activeThreadEnvironmentId,
   activeThreadId,
   activeThreadTitle,
+  agentName,
   isServerThread,
   activeProject,
+  workflowProfileName,
   rightPanelOpen,
   onNewThreadInProject,
   onOpenProjectSettings,
@@ -270,6 +275,21 @@ export const ChatHeader = memo(function ChatHeader({
             </WorkspaceBreadcrumbSeparator>
           </>
         ) : null}
+        {agentName ? (
+          <>
+            <WorkspaceBreadcrumbItem className="shrink">
+              <button
+                type="button"
+                onClick={onNewThreadInProject}
+                aria-label={`New conversation with ${agentName}`}
+                className="max-w-40 truncate rounded-sm text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {agentName}
+              </button>
+            </WorkspaceBreadcrumbItem>
+            <WorkspaceBreadcrumbSeparator />
+          </>
+        ) : null}
         <WorkspaceBreadcrumbItem current className="min-w-10 flex-1">
           {renamingTitle !== null ? (
             <input
@@ -332,6 +352,16 @@ export const ChatHeader = memo(function ChatHeader({
           )}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
+      {workflowProfileName !== null ? (
+        <Badge
+          variant="success"
+          title={`Verified workflow · ${workflowProfileName}`}
+          className="max-w-[45%] shrink-0 gap-1.5 border border-success/20 bg-success/16 px-2 font-semibold shadow-xs dark:bg-success/20"
+        >
+          <ShieldCheckIcon aria-hidden />
+          <span className="truncate">Verified workflow · {workflowProfileName}</span>
+        </Badge>
+      ) : null}
     </div>
   );
 });

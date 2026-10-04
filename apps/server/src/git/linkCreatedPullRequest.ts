@@ -68,7 +68,7 @@ export const linkCreatedPullRequest = <E>(input: {
     const thread = yield* engine
       .getThreadShell(input.threadId)
       .pipe(Effect.map(Option.fromNullishOr));
-    if (Option.isNone(thread)) return;
+    if (Option.isNone(thread) || thread.value.projectId === null) return;
     const project = Option.getOrUndefined(yield* projects.getShell(thread.value.projectId));
     const key = createdPullRequestKey(input.result, project);
     if (key === null) return;

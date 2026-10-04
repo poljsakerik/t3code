@@ -82,6 +82,46 @@ export function createProjectEnvironmentAtoms<R, E>(
       JSON.stringify([environmentId, input.projectId]),
   };
   return {
+    searchAgentSkills: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:search-agent-skills",
+      tag: WS_METHODS.agentSkillsSearch,
+    }),
+    installAgentSkill: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:install-agent-skill",
+      tag: WS_METHODS.agentSkillsInstall,
+    }),
+    removeAgentSkill: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:remove-agent-skill",
+      tag: WS_METHODS.agentSkillsRemove,
+    }),
+    agentCatalog: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:projects:agent-catalog",
+      tag: WS_METHODS.agentDefinitionsCatalog,
+      staleTimeMs: 0,
+    }),
+    agentDefinitions: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:projects:agent-definitions",
+      tag: WS_METHODS.agentDefinitionsList,
+      staleTimeMs: 0,
+    }),
+    agentDefinition: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:projects:agent-definition",
+      tag: WS_METHODS.agentDefinitionsGet,
+      staleTimeMs: 0,
+    }),
+    createAgentDefinition: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:create-agent-definition",
+      tag: WS_METHODS.agentDefinitionsCreate,
+    }),
+    updateAgentDefinition: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:update-agent-definition",
+      tag: WS_METHODS.agentDefinitionsUpdate,
+    }),
+    workflowProfiles: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:projects:workflow-profiles",
+      tag: WS_METHODS.workflowsListProfiles,
+      staleTimeMs: 0,
+    }),
     searchEntries: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:projects:search-entries",
       tag: WS_METHODS.projectsSearchEntries,

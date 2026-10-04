@@ -44,6 +44,7 @@ import {
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import { ProviderAdapterV2RuntimePolicy } from "./ProviderAdapter.ts";
 import { makeProviderFailure } from "./ProviderFailure.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
@@ -52,6 +53,26 @@ import {
   pendingRestartCancelledBackgroundWork,
   restartCancelledBackgroundWorkNote,
 } from "./RestartBackgroundNote.ts";
+
+export function providerRuntimePolicyForRun(
+  base: ProviderAdapterV2RuntimePolicy,
+  run: Pick<OrchestrationV2Run, "workflowSkillAllowlist" | "agentMcpConnections">,
+): ProviderAdapterV2RuntimePolicy {
+  if (
+    base.detachedConversation ||
+    (run.workflowSkillAllowlist === undefined && run.agentMcpConnections === undefined)
+  )
+    return base;
+  return ProviderAdapterV2RuntimePolicy.make({
+    ...base,
+    ...(run.agentMcpConnections === undefined
+      ? {}
+      : { agentMcpConnections: run.agentMcpConnections }),
+    ...(run.workflowSkillAllowlist === undefined
+      ? {}
+      : { workflowSkillAllowlist: [...run.workflowSkillAllowlist] }),
+  });
+}
 
 export class ProviderTurnStartError extends Schema.TaggedError<ProviderTurnStartError>()(
   "ProviderTurnStartError",
@@ -271,7 +292,7 @@ export const layer: Layer.Layer<
         providerThread === undefined ||
         providerThread.providerSessionId === null ||
         message === undefined ||
-        checkpointScope === undefined
+        (checkpointScope === undefined && projection.thread.agent === undefined)
       ) {
         return yield* new ProviderTurnStartError({
           runId,
@@ -455,7 +476,7 @@ export const layer: Layer.Layer<
         }
       }
       const { worktreePath, branch } = projection.thread;
-      if (worktreePath !== null && branch !== null) {
+      if (projection.thread.projectId !== null && worktreePath !== null && branch !== null) {
         const exists = yield* fileSystem
           .exists(worktreePath)
           .pipe(Effect.orElseSucceed(() => true));
@@ -515,10 +536,11 @@ export const layer: Layer.Layer<
       });
       const { isCurrentAttemptInStatus } = runControls;
 
-      const resolvedRuntimePolicy = yield* runtimePolicy.resolve({
+      const baseRuntimePolicy = yield* runtimePolicy.resolve({
         thread: projection.thread,
         modelSelection: run.modelSelection,
       });
+      const resolvedRuntimePolicy = providerRuntimePolicyForRun(baseRuntimePolicy, run);
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,
       );
@@ -1213,7 +1235,7 @@ export const layer: Layer.Layer<
         session: deliverySession,
         run: runningRun,
         rootNode: runningRootNode,
-        checkpointScope,
+        checkpointScope: checkpointScope ?? null,
         providerThread: runningProviderThread,
         attempt: runningAttempt,
         attemptId: attempt.id,

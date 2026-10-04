@@ -1,5 +1,11 @@
 import { OrchestrationDispatchCommandError } from "./orchestrationDispatch.ts";
 import {
+  AgentSkillInstallInput,
+  AgentSkillRemoveInput,
+  AgentSkillSearchInput,
+  AgentSkillSearchResult,
+} from "./agentDefinitions.ts";
+import {
   ChatGptReconnectProfileInput,
   ChatGptReconnectProfile,
   ChatGptImportProfileInput,
@@ -336,7 +342,35 @@ import {
 import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 
+import {
+  WorkflowConfigError,
+  WorkflowListProfilesInput,
+  WorkflowListProfilesResult,
+} from "./workflow.ts";
+
+import {
+  AgentDefinitionError,
+  AgentDefinition,
+  AgentDefinitionGetInput,
+  AgentDefinitionGetResult,
+  AgentDefinitionCreateInput,
+  AgentDefinitionUpdateInput,
+  AgentDefinitionsListInput,
+  AgentDefinitionsListResult,
+  AgentCatalogInput,
+  AgentCatalogResult,
+} from "./agentDefinitions.ts";
+
 export const WS_METHODS = {
+  agentSkillsSearch: "agentSkills.search",
+  agentSkillsInstall: "agentSkills.install",
+  agentSkillsRemove: "agentSkills.remove",
+  agentDefinitionsList: "agentDefinitions.list",
+  agentDefinitionsCatalog: "agentDefinitions.catalog",
+  agentDefinitionsGet: "agentDefinitions.get",
+  agentDefinitionsCreate: "agentDefinitions.create",
+  agentDefinitionsUpdate: "agentDefinitions.update",
+  workflowsListProfiles: "workflows.listProfiles",
   // Project registry methods
   projectsList: "projects.list",
   projectsAdd: "projects.add",
@@ -1134,6 +1168,56 @@ const WsProjectsSearchContentsRpc = Rpc.make(WS_METHODS.projectsSearchContents, 
   error: Schema.Union([ProjectSearchContentsError, EnvironmentAuthorizationError]),
 });
 
+const WsAgentSkillsSearchRpc = Rpc.make(WS_METHODS.agentSkillsSearch, {
+  payload: AgentSkillSearchInput,
+  success: AgentSkillSearchResult,
+  error: Schema.Union([AgentDefinitionError, EnvironmentAuthorizationError]),
+});
+const WsAgentSkillsInstallRpc = Rpc.make(WS_METHODS.agentSkillsInstall, {
+  payload: AgentSkillInstallInput,
+  success: AgentDefinitionGetResult,
+  error: Schema.Union([AgentDefinitionError, EnvironmentAuthorizationError]),
+});
+const WsAgentSkillsRemoveRpc = Rpc.make(WS_METHODS.agentSkillsRemove, {
+  payload: AgentSkillRemoveInput,
+  success: AgentDefinitionGetResult,
+  error: Schema.Union([AgentDefinitionError, EnvironmentAuthorizationError]),
+});
+
+const WsAgentDefinitionsListRpc = Rpc.make(WS_METHODS.agentDefinitionsList, {
+  payload: AgentDefinitionsListInput,
+  success: AgentDefinitionsListResult,
+  error: Schema.Union([AgentDefinitionError, EnvironmentAuthorizationError]),
+});
+
+const WsAgentDefinitionsCatalogRpc = Rpc.make(WS_METHODS.agentDefinitionsCatalog, {
+  payload: AgentCatalogInput,
+  success: AgentCatalogResult,
+  error: Schema.Union([AgentDefinitionError, EnvironmentAuthorizationError]),
+});
+
+const WsAgentDefinitionsGetRpc = Rpc.make(WS_METHODS.agentDefinitionsGet, {
+  payload: AgentDefinitionGetInput,
+  success: AgentDefinitionGetResult,
+  error: Schema.Union([AgentDefinitionError, EnvironmentAuthorizationError]),
+});
+const WsAgentDefinitionsCreateRpc = Rpc.make(WS_METHODS.agentDefinitionsCreate, {
+  payload: AgentDefinitionCreateInput,
+  success: AgentDefinition,
+  error: Schema.Union([AgentDefinitionError, EnvironmentAuthorizationError]),
+});
+const WsAgentDefinitionsUpdateRpc = Rpc.make(WS_METHODS.agentDefinitionsUpdate, {
+  payload: AgentDefinitionUpdateInput,
+  success: AgentDefinition,
+  error: Schema.Union([AgentDefinitionError, EnvironmentAuthorizationError]),
+});
+
+const WsWorkflowsListProfilesRpc = Rpc.make(WS_METHODS.workflowsListProfiles, {
+  payload: WorkflowListProfilesInput,
+  success: WorkflowListProfilesResult,
+  error: Schema.Union([WorkflowConfigError, EnvironmentAuthorizationError]),
+});
+
 const WsProjectsListEntriesRpc = Rpc.make(WS_METHODS.projectsListEntries, {
   payload: ProjectListEntriesInput,
   success: ProjectListEntriesResult,
@@ -1795,6 +1879,15 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectCloneRetryRpc,
   WsSubscribeProjectClonesRpc,
   WsProjectsListEntriesRpc,
+  WsWorkflowsListProfilesRpc,
+  WsAgentSkillsSearchRpc,
+  WsAgentSkillsInstallRpc,
+  WsAgentSkillsRemoveRpc,
+  WsAgentDefinitionsListRpc,
+  WsAgentDefinitionsCatalogRpc,
+  WsAgentDefinitionsGetRpc,
+  WsAgentDefinitionsCreateRpc,
+  WsAgentDefinitionsUpdateRpc,
   WsProjectsReadFileRpc,
   WsProjectsSearchContentsRpc,
   WsProjectsSearchEntriesRpc,

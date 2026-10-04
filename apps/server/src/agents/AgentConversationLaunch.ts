@@ -7,7 +7,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Option from "effect/Option";
 import { ServerConfig } from "../config.ts";
-import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
 import { CommandReceiptStoreV2 } from "../orchestration-v2/CommandReceiptStore.ts";
 import { IdAllocatorV2 } from "../orchestration-v2/IdAllocator.ts";
@@ -24,7 +24,7 @@ const launchAgentConversation = Effect.fn("launchAgentConversation")(
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const config = yield* ServerConfig;
-    const projects = yield* ProjectionProjectRepository;
+    const projects = yield* ProjectStore.ProjectStoreV2;
     const threads = yield* ThreadManagementService;
     const receipts = yield* CommandReceiptStoreV2;
     const ids = yield* IdAllocatorV2;
@@ -33,7 +33,9 @@ const launchAgentConversation = Effect.fn("launchAgentConversation")(
       const project =
         input.agent.sourceProjectId === null
           ? null
-          : Option.getOrNull(yield* projects.getById({ projectId: input.agent.sourceProjectId }));
+          : Option.getOrNull(
+              yield* projects.get(input.agent.sourceProjectId, { includeDeleted: true }),
+            );
       if (
         input.agent.sourceProjectId !== null &&
         (project === null || project.deletedAt !== null)
@@ -176,7 +178,7 @@ export const layer = Layer.effect(
       | FileSystem.FileSystem
       | Path.Path
       | ServerConfig
-      | ProjectionProjectRepository
+      | ProjectStore.ProjectStoreV2
       | ThreadManagementService
       | CommandReceiptStoreV2
       | IdAllocatorV2

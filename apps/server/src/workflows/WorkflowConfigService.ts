@@ -21,7 +21,7 @@ import { parse } from "yaml";
 import { loadAgentDefinition } from "../agents/AgentDefinitionLoader.ts";
 import { discoverAgentDefinitions } from "../agents/AgentDefinitionService.ts";
 import { ServerConfig } from "../config.ts";
-import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import { T3ProjectFileLoader } from "../project/T3ProjectFileLoader.ts";
 import { WorkspacePaths } from "../workspace/WorkspacePaths.ts";
 
@@ -55,7 +55,7 @@ export const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const config = yield* ServerConfig;
-  const projects = yield* ProjectionProjectRepository;
+  const projects = yield* ProjectStore.ProjectStoreV2;
   const projectFileLoader = yield* T3ProjectFileLoader;
   const workspacePaths = yield* WorkspacePaths;
 
@@ -111,7 +111,7 @@ export const make = Effect.gen(function* () {
     readonly projectId: ProjectId;
     readonly profileId: string;
   }) {
-    const project = yield* projects.getById({ projectId: input.projectId }).pipe(
+    const project = yield* projects.get(input.projectId).pipe(
       Effect.mapError(
         (cause) =>
           new WorkflowConfigError({

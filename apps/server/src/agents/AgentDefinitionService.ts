@@ -32,7 +32,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Result from "effect/Result";
 import type { PlatformError } from "effect/PlatformError";
-import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 
 const isAgentDefinitionError = Schema.is(AgentDefinitionError);
 const decodeSkillInstall = Schema.decodeEffect(AgentSkillInstallInput);
@@ -215,7 +215,7 @@ export const layer = Layer.effect(
   AgentDefinitionService,
   Effect.gen(function* () {
     const runner = yield* ProcessRunner;
-    const projects = yield* ProjectionProjectRepository;
+    const projects = yield* ProjectStore.ProjectStoreV2;
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const lock = yield* Semaphore.make(1);
@@ -228,7 +228,7 @@ export const layer = Layer.effect(
     ) {
       const home = yield* fs.realPath(NodeOS.homedir());
       if (input.projectId === undefined) return home;
-      const project = yield* projects.getById({ projectId: input.projectId });
+      const project = yield* projects.get(input.projectId, { includeDeleted: true });
       if (Option.isNone(project) || project.value.deletedAt !== null) {
         return yield* new AgentDefinitionError({
           message: `Project ${input.projectId} was not found.`,
@@ -354,9 +354,7 @@ export const layer = Layer.effect(
     const catalog = Effect.fn("AgentDefinitionService.catalog")(function* (
       input: AgentCatalogInput,
     ) {
-      const registered = (yield* projects.listAll()).filter(
-        (project) => project.deletedAt === null,
-      );
+      const registered = yield* projects.list();
       const sources = [
         { projectId: null, name: "Global" },
         ...registered.map((project) => ({ projectId: project.projectId, name: project.title })),

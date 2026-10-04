@@ -56,7 +56,6 @@ import {
   RunId,
   ThreadLinkedPullRequest,
   ThreadId,
-  type TurnItemId,
   type WorkflowStatus,
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
@@ -5088,6 +5087,33 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           });
           projection = yield* getProjectionWithPendingEvents(command.threadId, events);
           workflowPromptPrefix = `${workflow.profile.implementer.instructions}\n\nImplement the approved plan completely. T3 Code will run the configured deterministic checks and independent reviewers after this turn.\n\n`;
+        } else if (
+          workflow.status === "planned" &&
+          command.createdBy === "user" &&
+          command.creationSource !== "server"
+        ) {
+          // Refining a proposed plan reopens planning until the planner settles.
+          const now = yield* DateTime.now;
+          const thread: OrchestrationV2AppThread = {
+            ...projection.thread,
+            workflow: {
+              ...workflow,
+              status: "planning" as const,
+              updatedAt: DateTime.formatIso(now),
+            },
+            updatedAt: now,
+          };
+          yield* emit(
+            events,
+            command,
+          )({
+            type: "thread.workflow-updated",
+            threadId: command.threadId,
+            providerInstanceId: thread.providerInstanceId,
+            occurredAt: now,
+            payload: thread,
+          });
+          projection = yield* getProjectionWithPendingEvents(command.threadId, events);
         } else if (
           workflow.status === "needs_human" &&
           command.createdBy === "user" &&

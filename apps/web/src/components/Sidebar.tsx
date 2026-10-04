@@ -1310,23 +1310,27 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                       }
                     : null;
   const workflowStatus = thread.workflow?.status;
-  const topStatus = workflowStatus
-    ? {
-        label:
-          workflowStatus === "needs_human"
-            ? "Needs human"
-            : workflowStatus === "done"
-              ? "Verified"
-              : workflowStatus.charAt(0).toUpperCase() + workflowStatus.slice(1),
-        icon: workflowStatus === "done" ? ("done" as const) : null,
-        className:
-          workflowStatus === "needs_human"
-            ? "text-amber-700 dark:text-amber-300"
-            : workflowStatus === "done"
-              ? "text-emerald-700 dark:text-emerald-300"
-              : "text-sky-600 dark:text-sky-400",
-      }
-    : runtimeTopStatus;
+  // A request blocked on the user outranks the workflow phase: "Planning"
+  // would hide that the planner is waiting on an answer.
+  const isBlockedOnUser = status === "approval" || status === "input";
+  const topStatus =
+    workflowStatus && !isBlockedOnUser
+      ? {
+          label:
+            workflowStatus === "needs_human"
+              ? "Needs human"
+              : workflowStatus === "done"
+                ? "Verified"
+                : workflowStatus.charAt(0).toUpperCase() + workflowStatus.slice(1),
+          icon: workflowStatus === "done" ? ("done" as const) : null,
+          className:
+            workflowStatus === "needs_human"
+              ? "text-amber-700 dark:text-amber-300"
+              : workflowStatus === "done"
+                ? "text-emerald-700 dark:text-emerald-300"
+                : "text-sky-600 dark:text-sky-400",
+        }
+      : runtimeTopStatus;
   const isWokeStatus = topStatus?.icon === "woke";
 
   const branchMismatch = resolveLocalCheckoutBranchMismatch({

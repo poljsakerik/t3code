@@ -363,3 +363,64 @@ it.effect("marks workflow launch failures as needs-human without launching a rep
     }).pipe(Effect.provide(live.pipe(Layer.provide(Layer.mergeAll(threads, processes)))));
   }),
 );
+
+it.effect("keeps a refined plan in planning until the refinement run settles", () =>
+  Effect.gen(function* () {
+    const threadId = ThreadId.make("workflow-refine");
+    const planning: ThreadWorkflowState = { ...workflow, status: "planning", approvedPlanId: null };
+    const events = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
+    const reads = yield* Queue.unbounded<number>();
+    const updates = yield* Queue.unbounded<{
+      readonly status: ThreadWorkflowState["status"] | null;
+      readonly readCount: number;
+    }>();
+    let refinementStatus = "running";
+    let readCount = 0;
+    const threads = Layer.mock(ThreadManagementService)({
+      getShellSnapshot: () =>
+        Effect.succeed({
+          threads: [{ id: threadId, workflow: planning }],
+          archivedThreads: [],
+        } as unknown as OrchestrationV2ThreadShellSnapshot),
+      getThreadProjection: () =>
+        Effect.gen(function* () {
+          const projection = {
+            thread: { id: threadId, workflow: planning },
+            runs: [
+              { id: RunId.make("run-plan"), status: "completed" },
+              { id: RunId.make("run-refine"), status: refinementStatus },
+            ],
+            plans: [
+              {
+                id: PlanId.make("plan-1"),
+                runId: RunId.make("run-plan"),
+                kind: "proposed_plan",
+                status: "active",
+                markdown: "First plan",
+              },
+            ],
+          };
+          readCount += 1;
+          yield* Queue.offer(reads, readCount);
+          return projection as unknown as OrchestrationV2ThreadProjection;
+        }),
+      dispatch: (command) =>
+        Queue.offer(updates, {
+          status: command.type === "workflow.update" ? command.workflow.status : null,
+          readCount,
+        }).pipe(Effect.as({ sequence: 1, storedEvents: [] })),
+      streamDomainEvents: Stream.fromQueue(events),
+    });
+    const processes = Layer.mock(ProcessRunner)({ run: () => Effect.die("No checks expected") });
+    yield* Effect.gen(function* () {
+      // The startup pass sees the earlier run's plan while the refinement runs.
+      yield* Queue.take(reads);
+      refinementStatus = "completed";
+      yield* Queue.offer(events, {
+        type: "plan.updated",
+        threadId,
+      } as OrchestrationV2DomainEvent);
+      assert.deepEqual(yield* Queue.take(updates), { status: "planned", readCount: 2 });
+    }).pipe(Effect.provide(live.pipe(Layer.provide(Layer.mergeAll(threads, processes)))));
+  }),
+);

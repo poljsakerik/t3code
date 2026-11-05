@@ -2195,6 +2195,70 @@ describe("exclusive device access", () => {
     }),
   );
 
+  const exclusiveFixture = (onBoot?: Effect.Effect<void>) =>
+    Effect.gen(function* () {
+      const fx = yield* fixture(onBoot);
+      yield* fx.service.configure({
+        enabled: true,
+        agentAccessEnabled: true,
+        exclusiveAccessEnabled: true,
+      });
+      return fx;
+    });
+
+  it.effect("keeps a claim on an emulator while it boots from its AVD name to a serial", () =>
+    Effect.gen(function* () {
+      const booting = yield* Deferred.make<void>();
+      const finishBoot = yield* Deferred.make<void>();
+      const { service, devices } = yield* exclusiveFixture(
+        Deferred.succeed(booting, undefined).pipe(Effect.andThen(Deferred.await(finishBoot))),
+      );
+      const first = yield* queued(service, thread("a"), "Pixel_API_35").pipe(Effect.forkChild);
+      yield* Deferred.await(booting);
+      // Mid-boot, the hub already lists the emulator under its serial.
+      const serial = {
+        id: DeviceId.make("emulator-5554"),
+        name: "Pixel_API_35",
+        platform: "android" as const,
+        version: "Android 15",
+        booted: true,
+        physical: false,
+      };
+      devices.push(serial);
+      yield* service.list;
+      const second = yield* queued(service, thread("b"), "emulator-5554").pipe(Effect.forkChild);
+      const waiting = yield* waitForQueue(service, 1);
+      expect(waiting.waitingDevices).toEqual([
+        expect.objectContaining({ threadId: thread("b"), heldByThreadId: thread("a") }),
+      ]);
+      devices.splice(devices.indexOf(serial), 1);
+      yield* Deferred.succeed(finishBoot, undefined);
+      const opened = yield* Fiber.join(first);
+      expect(opened.deviceId).toBe("emulator-5554");
+      expect(yield* holders(service)).toEqual([thread("a")]);
+      yield* service.close({ threadId: thread("a") });
+      expect((yield* Fiber.join(second)).deviceId).toBe("emulator-5554");
+      expect(yield* holders(service)).toEqual([thread("b")]);
+    }),
+  );
+
+  it.effect("makes an AVD name wait for the thread holding its booted emulator", () =>
+    Effect.gen(function* () {
+      const { service } = yield* exclusiveFixture();
+      const held = yield* queued(service, thread("b"), "Pixel_API_35");
+      expect(held.deviceId).toBe("emulator-5554");
+      const waiting = yield* queued(service, thread("a"), "Pixel_API_35").pipe(Effect.forkChild);
+      const state = yield* waitForQueue(service, 1);
+      expect(state.waitingDevices).toEqual([
+        expect.objectContaining({ threadId: thread("a"), heldByThreadId: thread("b") }),
+      ]);
+      yield* service.close({ threadId: thread("b") });
+      // The stale AVD name opens the emulator under its serial instead of failing.
+      expect((yield* Fiber.join(waiting)).deviceId).toBe("emulator-5554");
+      expect(yield* holders(service)).toEqual([thread("a")]);
+    }),
+  );
+
   it.effect("lets waiting threads through when exclusive access is turned off", () =>
     Effect.gen(function* () {
       const { service, deviceId } = yield* setup;

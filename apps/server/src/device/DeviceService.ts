@@ -396,7 +396,16 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     { readonly threadId: ThreadId; readonly since: string }
   >();
   let nextWaiterId = 0;
-  const exclusiveKey = (hostId: DeviceHostId, deviceId: DeviceId) => `${hostId}\u0000${deviceId}`;
+  /**
+   * What one claim covers. An Android emulator's id is its AVD name until it boots and its serial
+   * after, so emulators are keyed by AVD name, which the hub reports as the booted device's name.
+   */
+  const exclusiveKey = (state: DeviceServiceState, hostId: DeviceHostId, deviceId: DeviceId) => {
+    const emulator = findEmulator(state, hostId, deviceId);
+    return emulator
+      ? `${hostId}\u0000avd\u0000${emulator.name}`
+      : `${hostId}\u0000id\u0000${deviceId}`;
+  };
 
   // Uninterruptible so a committed retirement always prunes, even if its caller is cancelled.
   const publish = (update: (state: DeviceServiceState) => DeviceServiceState) =>
@@ -761,6 +770,23 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
   ): DeviceSummary | undefined =>
     state.devices.find((device) => device.hostId === hostId && device.id === deviceId);
 
+  /** The Android emulator an id names: by its id, or by the AVD name it booted from. */
+  const findEmulator = (
+    state: DeviceServiceState,
+    hostId: DeviceHostId,
+    deviceId: DeviceId,
+  ): DeviceSummary | undefined => {
+    const byId = findDevice(state, hostId, deviceId);
+    if (byId) return byId.platform === "android" && !byId.physical ? byId : undefined;
+    return state.devices.find(
+      (device) =>
+        device.hostId === hostId &&
+        device.platform === "android" &&
+        !device.physical &&
+        device.name === deviceId,
+    );
+  };
+
   const ensurePlatform = Effect.fn("DeviceService.ensurePlatform")(function* (
     host: DeviceHost.DeviceHost["Service"],
     platform: DevicePlatform,
@@ -788,18 +814,21 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     // Leased hosts run their own queue, and every lease is a separate device.
     const kind = (yield* host.summary).kind;
     if (kind !== "local" && kind !== "ssh") return undefined;
-    const key = exclusiveKey(host.id, deviceId);
+    // Recomputed from each state, since a boot moves an emulator from its AVD name to a serial.
+    const keyOf = (state: DeviceServiceState, id: DeviceId) => exclusiveKey(state, host.id, id);
     const holderOf = (state: DeviceServiceState) => {
+      const key = keyOf(state, deviceId);
       const session = state.sessions.find(
         (candidate) =>
           candidate.hostId === host.id &&
-          candidate.deviceId === deviceId &&
-          candidate.threadId !== threadId,
+          candidate.threadId !== threadId &&
+          keyOf(state, candidate.deviceId) === key,
       );
       if (session) return { threadId: session.threadId, since: session.openedAt };
       const claim = exclusiveClaims.get(key);
       return claim && claim.threadId !== threadId ? claim : undefined;
     };
+    let claimedKey: string | undefined;
     const waiterId = `${nextWaiterId++}`;
     const startedAt = yield* Clock.currentTimeMillis;
     const since = DateTime.formatIso(yield* DateTime.now);
@@ -815,7 +844,8 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
         : Effect.void,
     );
     const release = Effect.suspend(() => {
-      if (exclusiveClaims.get(key)?.threadId === threadId) exclusiveClaims.delete(key);
+      if (claimedKey !== undefined && exclusiveClaims.get(claimedKey)?.threadId === threadId)
+        exclusiveClaims.delete(claimedKey);
       return signalDeviceChange;
     });
     const attempt = exclusiveLock.withPermit(
@@ -824,12 +854,14 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
         const changed = deviceChanged;
         const { state } = yield* SynchronizedRef.get(stateRef);
         const holder = holderOf(state);
+        const key = keyOf(state, deviceId);
         const first = (state.waitingDevices ?? []).find(
-          (waiter) => waiter.hostId === host.id && waiter.deviceId === deviceId,
+          (waiter) => waiter.hostId === host.id && keyOf(state, waiter.deviceId) === key,
         );
         // Nobody waiting, or this waiter is the oldest; a newcomer never passes the queue.
         const myTurn = first === undefined || (queued && waiterIds.get(first) === waiterId);
         if (holder === undefined && myTurn) {
+          claimedKey = key;
           exclusiveClaims.set(key, { threadId, since });
           yield* leaveQueue;
           return { _tag: "claimed" as const };
@@ -903,7 +935,9 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     yield* ensurePlatform(host, input.platform);
     const ready = yield* readiness(host.id);
     let state = yield* refresh(ready);
-    let device = findDevice(state, host.id, input.deviceId);
+    // An AVD name from before the emulator booted still names it once it runs under a serial.
+    let device =
+      findDevice(state, host.id, input.deviceId) ?? findEmulator(state, host.id, input.deviceId);
     if (!device) {
       return yield* new DeviceNotFoundError({ hostId: host.id, deviceId: input.deviceId });
     }

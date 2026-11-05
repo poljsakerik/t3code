@@ -170,6 +170,15 @@ export function DevicePanel(props: {
 
   const bootingDevices =
     state.bootingDevices?.filter((device) => device.threadId === threadId) ?? [];
+  // Exclusive device access: this thread's agent is queued behind another thread.
+  const awaitedDevices = (state.waitingDevices ?? [])
+    .filter((waiter) => waiter.threadId === threadId)
+    .map(
+      (waiter) =>
+        state.devices.find(
+          (device) => device.hostId === waiter.hostId && device.id === waiter.deviceId,
+        )?.name ?? waiter.deviceId,
+    );
   const { ready: hostReady, busy: hostBusy } = deviceHubReadiness(state);
   const loading = !activeDevice && (pendingDevice !== null || hostBusy || !loaded);
   // Without a first snapshot a failed subscription never settles on its own.
@@ -225,6 +234,11 @@ export function DevicePanel(props: {
             <div role="status" className="border-b px-3 py-2 text-xs text-muted-foreground">
               Starting {bootingDevices.map((device) => device.name).join(", ")}… This can take a
               minute.
+            </div>
+          ) : null}
+          {awaitedDevices.length > 0 ? (
+            <div role="status" className="border-b px-3 py-2 text-xs text-muted-foreground">
+              Waiting for {awaitedDevices.join(", ")}: another thread is using it.
             </div>
           ) : null}
           {operationError ? (

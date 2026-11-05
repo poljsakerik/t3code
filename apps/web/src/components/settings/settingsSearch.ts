@@ -865,6 +865,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["allow simulator emulator ios android drive tools sessions"],
   },
   {
+    id: "exclusive-device-access",
+    title: "One thread per device",
+    to: "/settings/devices",
+    targetId: "devices",
+    searchTerms: [
+      "exclusive queue wait lock share simulator emulator agents threads parallel busy",
+    ],
+  },
+  {
     id: "device-hub",
     title: "Use devices",
     to: "/settings/devices",

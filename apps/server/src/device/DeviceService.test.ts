@@ -31,6 +31,7 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { HttpClient, HttpClientResponse } from "effect/http";
+import { TestClock } from "effect/testing";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -306,6 +307,7 @@ const fixture = Effect.fn("fixture")(function* (
               patch.enableAgentDeviceAccess ?? current.enableAgentDeviceAccess,
             deviceOnboardingCompleted:
               patch.deviceOnboardingCompleted ?? current.deviceOnboardingCompleted,
+            exclusiveDeviceAccess: patch.exclusiveDeviceAccess ?? current.exclusiveDeviceAccess,
           })),
         streamChanges: Stream.empty,
         subscribeChanges: Effect.succeed(Stream.empty),
@@ -2058,5 +2060,215 @@ describe("locating a device id across hosts", () => {
         ).toEqual(Option.none());
       }),
     ),
+  );
+});
+
+describe("exclusive device access", () => {
+  const thread = (name: string) => ThreadId.make(name);
+  const queued = (
+    service: DeviceService.DeviceService["Service"],
+    threadId: ThreadId,
+    deviceId: string,
+  ) =>
+    service.open({ threadId, deviceId: DeviceId.make(deviceId), platform: "android" }, undefined, {
+      queue: true,
+    });
+  /**
+   * Waits for, and returns, the published state in which the queue holds the expected waiters.
+   * Subscribers hear of a state just before `state` returns it, so read the published one.
+   */
+  const waitForQueue = (service: DeviceService.DeviceService["Service"], waiting: number) =>
+    Effect.gen(function* () {
+      const changes = yield* service.subscribe;
+      let state = yield* service.state;
+      while ((state.waitingDevices ?? []).length !== waiting) state = yield* PubSub.take(changes);
+      return state;
+    }).pipe(Effect.scoped);
+  const setup = Effect.gen(function* () {
+    const fx = yield* fixture();
+    yield* fx.service.configure({
+      enabled: true,
+      agentAccessEnabled: true,
+      exclusiveAccessEnabled: true,
+    });
+    // Boot the emulator once, so every thread opens the same running device.
+    const booted = yield* fx.service.open({
+      threadId: thread("boot"),
+      deviceId: DeviceId.make("Pixel_API_35"),
+      platform: "android",
+    });
+    yield* fx.service.close({ threadId: thread("boot") });
+    return { ...fx, deviceId: booted.deviceId as string };
+  });
+  const holders = (service: DeviceService.DeviceService["Service"]) =>
+    service.state.pipe(Effect.map((state) => state.sessions.map((session) => session.threadId)));
+
+  it.effect("lets threads share a device when exclusive access is off", () =>
+    Effect.gen(function* () {
+      const { service, deviceId } = yield* setup;
+      yield* service.configure({ exclusiveAccessEnabled: false });
+      yield* queued(service, thread("a"), deviceId);
+      yield* queued(service, thread("b"), deviceId);
+      expect(yield* holders(service)).toEqual([thread("a"), thread("b")]);
+    }),
+  );
+
+  it.effect("makes a second thread wait until the first closes the device", () =>
+    Effect.gen(function* () {
+      const { service, deviceId } = yield* setup;
+      yield* queued(service, thread("a"), deviceId);
+      const waiting = yield* queued(service, thread("b"), deviceId).pipe(Effect.forkChild);
+      const state = yield* waitForQueue(service, 1);
+      expect(state.exclusiveAccessEnabled).toBe(true);
+      expect(state.waitingDevices).toEqual([
+        expect.objectContaining({ threadId: thread("b"), heldByThreadId: thread("a"), deviceId }),
+      ]);
+      expect(state.sessions.map((session) => session.threadId)).toEqual([thread("a")]);
+      yield* service.close({ threadId: thread("a") });
+      const session = yield* Fiber.join(waiting);
+      expect(session.threadId).toBe(thread("b"));
+      expect(yield* holders(service)).toEqual([thread("b")]);
+      expect((yield* service.state).waitingDevices).toEqual([]);
+    }),
+  );
+
+  it.effect("hands the device to waiting threads in the order they asked", () =>
+    Effect.gen(function* () {
+      const { service, deviceId } = yield* setup;
+      yield* queued(service, thread("a"), deviceId);
+      const second = yield* queued(service, thread("b"), deviceId).pipe(Effect.forkChild);
+      yield* waitForQueue(service, 1);
+      const third = yield* queued(service, thread("c"), deviceId).pipe(Effect.forkChild);
+      yield* waitForQueue(service, 2);
+      yield* service.close({ threadId: thread("a") });
+      yield* Fiber.join(second);
+      yield* waitForQueue(service, 1);
+      expect(yield* holders(service)).toEqual([thread("b")]);
+      yield* service.close({ threadId: thread("b") });
+      yield* Fiber.join(third);
+      expect(yield* holders(service)).toEqual([thread("c")]);
+    }),
+  );
+
+  it.effect("fails with the holder after waiting too long, and leaves the queue", () =>
+    Effect.gen(function* () {
+      const { service, deviceId } = yield* setup;
+      const held = yield* queued(service, thread("a"), deviceId);
+      const waiting = yield* queued(service, thread("b"), deviceId).pipe(
+        Effect.flip,
+        Effect.forkChild,
+      );
+      yield* waitForQueue(service, 1);
+      yield* TestClock.adjust(DeviceService.EXCLUSIVE_WAIT_MS);
+      const error = yield* Fiber.join(waiting);
+      expect(error._tag).toBe("DeviceBusyError");
+      expect(error).toMatchObject({
+        heldByThreadId: thread("a"),
+        heldSince: held.openedAt,
+        deviceId,
+      });
+      expect(error.message).toContain("call device_open again");
+      expect((yield* service.state).waitingDevices).toEqual([]);
+      expect(yield* holders(service)).toEqual([thread("a")]);
+    }),
+  );
+
+  it.effect("reopens a device the same thread holds without waiting", () =>
+    Effect.gen(function* () {
+      const { service, deviceId } = yield* setup;
+      yield* queued(service, thread("a"), deviceId);
+      yield* queued(service, thread("a"), deviceId);
+      expect(yield* holders(service)).toEqual([thread("a")]);
+    }),
+  );
+
+  it.effect("never makes the Device panel wait", () =>
+    Effect.gen(function* () {
+      const { service, deviceId } = yield* setup;
+      yield* queued(service, thread("a"), deviceId);
+      yield* service.open({
+        threadId: thread("b"),
+        deviceId: DeviceId.make(deviceId),
+        platform: "android",
+      });
+      expect(yield* holders(service)).toEqual([thread("a"), thread("b")]);
+    }),
+  );
+
+  const exclusiveFixture = (onBoot?: Effect.Effect<void>) =>
+    Effect.gen(function* () {
+      const fx = yield* fixture(onBoot);
+      yield* fx.service.configure({
+        enabled: true,
+        agentAccessEnabled: true,
+        exclusiveAccessEnabled: true,
+      });
+      return fx;
+    });
+
+  it.effect("keeps a claim on an emulator while it boots from its AVD name to a serial", () =>
+    Effect.gen(function* () {
+      const booting = yield* Deferred.make<void>();
+      const finishBoot = yield* Deferred.make<void>();
+      const { service, devices } = yield* exclusiveFixture(
+        Deferred.succeed(booting, undefined).pipe(Effect.andThen(Deferred.await(finishBoot))),
+      );
+      const first = yield* queued(service, thread("a"), "Pixel_API_35").pipe(Effect.forkChild);
+      yield* Deferred.await(booting);
+      // Mid-boot, the hub already lists the emulator under its serial.
+      const serial = {
+        id: DeviceId.make("emulator-5554"),
+        name: "Pixel_API_35",
+        platform: "android" as const,
+        version: "Android 15",
+        booted: true,
+        physical: false,
+      };
+      devices.push(serial);
+      yield* service.list;
+      const second = yield* queued(service, thread("b"), "emulator-5554").pipe(Effect.forkChild);
+      const waiting = yield* waitForQueue(service, 1);
+      expect(waiting.waitingDevices).toEqual([
+        expect.objectContaining({ threadId: thread("b"), heldByThreadId: thread("a") }),
+      ]);
+      devices.splice(devices.indexOf(serial), 1);
+      yield* Deferred.succeed(finishBoot, undefined);
+      const opened = yield* Fiber.join(first);
+      expect(opened.deviceId).toBe("emulator-5554");
+      expect(yield* holders(service)).toEqual([thread("a")]);
+      yield* service.close({ threadId: thread("a") });
+      expect((yield* Fiber.join(second)).deviceId).toBe("emulator-5554");
+      expect(yield* holders(service)).toEqual([thread("b")]);
+    }),
+  );
+
+  it.effect("makes an AVD name wait for the thread holding its booted emulator", () =>
+    Effect.gen(function* () {
+      const { service } = yield* exclusiveFixture();
+      const held = yield* queued(service, thread("b"), "Pixel_API_35");
+      expect(held.deviceId).toBe("emulator-5554");
+      const waiting = yield* queued(service, thread("a"), "Pixel_API_35").pipe(Effect.forkChild);
+      const state = yield* waitForQueue(service, 1);
+      expect(state.waitingDevices).toEqual([
+        expect.objectContaining({ threadId: thread("a"), heldByThreadId: thread("b") }),
+      ]);
+      yield* service.close({ threadId: thread("b") });
+      // The stale AVD name opens the emulator under its serial instead of failing.
+      expect((yield* Fiber.join(waiting)).deviceId).toBe("emulator-5554");
+      expect(yield* holders(service)).toEqual([thread("a")]);
+    }),
+  );
+
+  it.effect("lets waiting threads through when exclusive access is turned off", () =>
+    Effect.gen(function* () {
+      const { service, deviceId } = yield* setup;
+      yield* queued(service, thread("a"), deviceId);
+      const waiting = yield* queued(service, thread("b"), deviceId).pipe(Effect.forkChild);
+      yield* waitForQueue(service, 1);
+      yield* service.configure({ exclusiveAccessEnabled: false });
+      yield* Fiber.join(waiting);
+      expect(yield* holders(service)).toEqual([thread("a"), thread("b")]);
+      expect((yield* service.state).waitingDevices).toEqual([]);
+    }),
   );
 });

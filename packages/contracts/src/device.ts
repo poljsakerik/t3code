@@ -272,8 +272,22 @@ const deviceServiceStateFields = {
   bootingDevices: Schema.optional(
     Schema.Array(Schema.Struct({ ...DeviceSummary.fields, threadId: ThreadId })),
   ),
+  /** Exclusive access: threads waiting for a device another thread holds, oldest first. */
+  waitingDevices: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        hostId: DeviceHostId,
+        deviceId: DeviceId,
+        threadId: ThreadId,
+        heldByThreadId: ThreadId,
+        since: Schema.String,
+      }),
+    ),
+  ),
   onboardingCompleted: Schema.Boolean,
   agentAccessEnabled: Schema.Boolean,
+  /** One thread at a time per device; others wait in `device_open`. Absent on older servers. */
+  exclusiveAccessEnabled: Schema.optional(Schema.Boolean),
   hubBasePath: Schema.String,
   revision: Schema.Int,
 };
@@ -333,6 +347,7 @@ export type DeviceListInput = typeof DeviceListInput.Type;
 export const DeviceConfigureInput = Schema.Struct({
   enabled: Schema.optional(Schema.Boolean),
   agentAccessEnabled: Schema.optional(Schema.Boolean),
+  exclusiveAccessEnabled: Schema.optional(Schema.Boolean),
   onboardingCompleted: Schema.optional(Schema.Boolean),
 });
 export type DeviceConfigureInput = typeof DeviceConfigureInput.Type;
@@ -616,7 +631,26 @@ export class DeviceActionUnavailableError extends Schema.TaggedError<DeviceActio
   }
 }
 
+/** Exclusive device access: another thread holds the device and did not release it in time. */
+export class DeviceBusyError extends Schema.TaggedError<DeviceBusyError>()("DeviceBusyError", {
+  hostId: DeviceHostId,
+  deviceId: DeviceId,
+  heldByThreadId: ThreadId,
+  heldByThreadTitle: Schema.optional(Schema.String),
+  /** When the holding thread opened the device, as an ISO timestamp. */
+  heldSince: Schema.String,
+  waitedSeconds: Schema.Number,
+}) {
+  override get message(): string {
+    const holder = this.heldByThreadTitle
+      ? `thread "${this.heldByThreadTitle}" (${this.heldByThreadId})`
+      : `thread ${this.heldByThreadId}`;
+    return `Device ${this.deviceId} is in use by ${holder} since ${this.heldSince}. Waited ${Math.round(this.waitedSeconds)}s for it. Only one thread uses a device at a time: call device_open again to keep waiting, and do not open another device or boot your own simulator or emulator instead.`;
+  }
+}
+
 export const DeviceError = Schema.Union([
+  DeviceBusyError,
   DeviceHostUnavailableError,
   DevicePlatformUnavailableError,
   DeviceNotFoundError,
@@ -712,6 +746,7 @@ export class DeviceToolUnavailableError extends Schema.TaggedError<DeviceToolUna
 
 export const DeviceToolError = Schema.Union([
   DeviceToolUnavailableError,
+  DeviceBusyError,
   DeviceHostUnavailableError,
   DevicePlatformUnavailableError,
   DeviceNotFoundError,

@@ -1,4 +1,5 @@
 import {
+  DeviceBusyError,
   type DeviceError,
   type DeviceHostId,
   type DeviceHostSummary,
@@ -11,6 +12,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as DeviceService from "../../../device/DeviceService.ts";
+import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import { threadWorkspaceRoot } from "../../../project/threadWorkspaceRoot.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
@@ -188,6 +190,16 @@ const pickDevice = Effect.fn("handlers.pickDevice")(function* (
 
 const toolError = (error: DeviceError | DeviceToolUnavailableError) => error;
 
+/** Names the holding thread by its title, so the agent can tell the user who has the device. */
+const withHolderTitle = Effect.fn("withHolderTitle")(function* (error: DeviceBusyError) {
+  const threads = yield* ThreadManagementService.ThreadManagementService;
+  const shell = yield* threads
+    .getThreadShell(error.heldByThreadId)
+    .pipe(Effect.orElseSucceed(() => null));
+  const title = shell?.title?.trim();
+  return yield* title ? new DeviceBusyError({ ...error, heldByThreadTitle: title }) : error;
+});
+
 const handlers = {
   device_list: McpToolAccess.readsAsCaller((input) =>
     Effect.gen(function* () {
@@ -236,15 +248,18 @@ const handlers = {
             "Agent device access requires enabled device support, agent access, and an available simulator platform on this host.",
         });
       }
-      const session = yield* devices.open(
-        {
-          threadId: scope.thread.threadId,
-          hostId: target.hostId,
-          deviceId: target.id,
-          platform: target.platform,
-        },
-        { workspaceRoot: yield* threadWorkspaceRoot(scope.thread.threadId) },
-      );
+      const session = yield* devices
+        .open(
+          {
+            threadId: scope.thread.threadId,
+            hostId: target.hostId,
+            deviceId: target.id,
+            platform: target.platform,
+          },
+          { workspaceRoot: yield* threadWorkspaceRoot(scope.thread.threadId) },
+          { queue: true },
+        )
+        .pipe(Effect.catchTags({ DeviceBusyError: withHolderTitle }));
       const after = yield* devices.state;
       const device =
         after.devices.find(

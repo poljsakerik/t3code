@@ -51,7 +51,7 @@ const decodeWorkflowProfileDefinition = Schema.decodeUnknownEffect(WorkflowProfi
 const decodeResolvedWorkflowProfile = Schema.decodeUnknownEffect(ResolvedWorkflowProfile);
 const isWorkflowConfigError = Schema.is(WorkflowConfigError);
 
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const config = yield* ServerConfig;
@@ -264,7 +264,10 @@ export const make = Effect.gen(function* () {
       profileId: input.profileId,
     });
 
-    const resolveAgent = (agentId: string, stage: "planner" | "implementer" | "reviewer") => {
+    const resolveAgent = Effect.fn("resolveAgent")(function* (
+      agentId: string,
+      stage: "planner" | "implementer" | "reviewer",
+    ) {
       const projectMatches = projectAgents.filter(
         ({ definition }) => definition.id === agentId || definition.name === agentId,
       );
@@ -275,28 +278,22 @@ export const make = Effect.gen(function* () {
               ({ definition }) => definition.id === agentId || definition.name === agentId,
             );
       if (matches.length > 1) {
-        return Effect.fail(
-          new WorkflowConfigError({
-            profileId: input.profileId,
-            detail: `agent reference ${agentId} is ambiguous; found ${matches
-              .map(({ workspaceRoot, definition }) =>
-                path.join(workspaceRoot, definition.directory),
-              )
-              .join(", ")}. Give these agents unique names and update the profile reference`,
-          }),
-        );
+        return yield* new WorkflowConfigError({
+          profileId: input.profileId,
+          detail: `agent reference ${agentId} is ambiguous; found ${matches
+            .map(({ workspaceRoot, definition }) => path.join(workspaceRoot, definition.directory))
+            .join(", ")}. Give these agents unique names and update the profile reference`,
+        });
       }
       const match = matches[0];
       if (match === undefined) {
-        return Effect.fail(
-          new WorkflowConfigError({
-            profileId: input.profileId,
-            detail: `agent ${agentId} was not found in the project or global Eve-style .t3 agent folders`,
-          }),
-        );
+        return yield* new WorkflowConfigError({
+          profileId: input.profileId,
+          detail: `agent ${agentId} was not found in the project or global Eve-style .t3 agent folders`,
+        });
       }
       const { workspaceRoot, definition } = match;
-      return Effect.gen(function* () {
+      return yield* Effect.gen(function* () {
         const agent = yield* loadAgentDefinition(workspaceRoot, definition).pipe(
           Effect.provideService(Path.Path, path),
           Effect.mapError(
@@ -329,7 +326,7 @@ export const make = Effect.gen(function* () {
               }),
         ),
       );
-    };
+    });
 
     const planner = yield* resolveAgent(profile.planner, "planner");
     const implementer = yield* resolveAgent(profile.implementer, "implementer");

@@ -11,7 +11,8 @@ import {
   type WorkflowCheckResult,
   type WorkflowReviewResult,
 } from "@t3tools/contracts";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -20,7 +21,6 @@ import * as Stream from "effect/Stream";
 
 import { collectReviewerResult } from "./Reviewer.ts";
 import * as ProcessRunner from "../processRunner.ts";
-import { makeKeyedSerialExecutor } from "../orchestration-v2/KeyedSerialExecutor.ts";
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
 
 const MAX_EVIDENCE_CHARS = 24_000;
@@ -115,8 +115,8 @@ export const live = Layer.effectDiscard(
   Effect.gen(function* () {
     const threads = yield* ThreadManagementService;
     const processes = yield* ProcessRunner.ProcessRunner;
-    const platform = yield* HostProcessPlatform;
-    const serial = yield* makeKeyedSerialExecutor<ThreadId>();
+    const platform = yield* HostProcess.Platform;
+    const serial = yield* KeyedLock.make<ThreadId>();
 
     const updateWorkflow = Effect.fn("WorkflowCoordinator.updateWorkflow")(function* (input: {
       readonly threadId: ThreadId;

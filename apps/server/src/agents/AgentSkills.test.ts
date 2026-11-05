@@ -1,6 +1,6 @@
-import { expect, it } from "@effect/vitest";
+import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient } from "effect/http";
 import { searchAgentSkills } from "./AgentSkills.ts";
 
 it.effect("searches the public catalog and ignores entries that cannot be installed", () =>
@@ -27,7 +27,7 @@ it.effect("searches the public catalog and ignores entries that cannot be instal
   }),
 );
 
-for (const status of [429, 503]) {
+describe.each([429, 503])("%s", (status) => {
   it.effect(`reports a catalog HTTP ${status} instead of an empty search`, () =>
     Effect.gen(function* () {
       const result = yield* Effect.result(
@@ -43,4 +43,4 @@ for (const status of [429, 503]) {
       if (result._tag === "Failure") expect(result.failure.message).toContain("GitHub repository");
     }),
   );
-}
+});

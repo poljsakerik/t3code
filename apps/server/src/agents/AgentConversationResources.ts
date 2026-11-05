@@ -14,39 +14,43 @@ export const retainAgentSkill = Effect.fn("retainAgentSkill")(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const copy = (source: string, target: string): Effect.Effect<void, AgentDefinitionError> =>
-    Effect.gen(function* () {
-      // Reject symlinks instead of following them into another package or workspace.
-      if ((yield* fs.realPath(source)) !== source) {
-        return yield* new AgentDefinitionError({
-          path: source,
-          message: "Conversation skills cannot contain symbolic links or external resources.",
-        });
-      }
-      const stat = yield* fs.stat(source);
-      if (stat.type === "Directory") {
-        yield* fs.makeDirectory(target, { recursive: true });
-        for (const name of yield* fs.readDirectory(source)) {
-          yield* copy(path.join(source, name), path.join(target, name));
+  const copy: (source: string, target: string) => Effect.Effect<void, AgentDefinitionError> =
+    Effect.fn("AgentConversationResources.copy")(
+      function* (source: string, target: string) {
+        // Reject symlinks instead of following them into another package or workspace.
+        if ((yield* fs.realPath(source)) !== source) {
+          return yield* new AgentDefinitionError({
+            path: source,
+            message: "Conversation skills cannot contain symbolic links or external resources.",
+          });
         }
-      } else if (stat.type === "File") {
-        yield* fs.copyFile(source, target);
-      } else {
-        return yield* new AgentDefinitionError({
-          path: source,
-          message: "Conversation skills support only regular files and directories.",
-        });
-      }
-    }).pipe(
-      Effect.mapError((cause) =>
-        isAgentDefinitionError(cause)
-          ? cause
-          : new AgentDefinitionError({
-              path: source,
-              message: "Could not retain this conversation's skill resources.",
-              cause,
-            }),
-      ),
+        const stat = yield* fs.stat(source);
+        if (stat.type === "Directory") {
+          yield* fs.makeDirectory(target, { recursive: true });
+          for (const name of yield* fs.readDirectory(source)) {
+            yield* copy(path.join(source, name), path.join(target, name));
+          }
+        } else if (stat.type === "File") {
+          yield* fs.copyFile(source, target);
+        } else {
+          return yield* new AgentDefinitionError({
+            path: source,
+            message: "Conversation skills support only regular files and directories.",
+          });
+        }
+      },
+      (effect, source) =>
+        effect.pipe(
+          Effect.mapError((cause) =>
+            isAgentDefinitionError(cause)
+              ? cause
+              : new AgentDefinitionError({
+                  path: source,
+                  message: "Could not retain this conversation's skill resources.",
+                  cause,
+                }),
+          ),
+        ),
     );
   yield* copy(sourceDirectory, destination);
   return destination;

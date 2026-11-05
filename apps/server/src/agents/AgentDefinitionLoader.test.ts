@@ -1,6 +1,6 @@
 import { ProviderInstanceId } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -22,10 +22,10 @@ const fixture = Effect.fn("fixture")(function* (files: Record<string, string>) {
 });
 
 it.layer(NodeServices.layer)("AgentDefinitionLoader", (it) => {
-  for (const [provider, instanceId, model] of [
+  describe.each([
     ["openai", "codex", "gpt-5.4"],
     ["anthropic", "claudeAgent", "claude-sonnet-4-6"],
-  ] as const) {
+  ] as const)("%s", (provider, instanceId, model) => {
     it.effect(`loads ${provider} configuration into a reusable harness definition`, () =>
       Effect.gen(function* () {
         const { root, definition } = yield* fixture({
@@ -46,7 +46,7 @@ it.layer(NodeServices.layer)("AgentDefinitionLoader", (it) => {
         });
       }).pipe(Effect.scoped),
     );
-  }
+  });
 
   it.effect("loads only the owning agent's packaged skills and freezes their instructions", () =>
     Effect.gen(function* () {
@@ -90,7 +90,7 @@ it.layer(NodeServices.layer)("AgentDefinitionLoader", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  for (const extension of ["mts", "mjs", "js", "cts", "cjs"]) {
+  describe.each(["mts", "mjs", "js", "cts", "cjs"])("%s", (extension) => {
     it.effect(`loads and refreshes agent.${extension}`, () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -115,7 +115,7 @@ it.layer(NodeServices.layer)("AgentDefinitionLoader", (it) => {
         );
       }).pipe(Effect.scoped),
     );
-  }
+  });
 
   it.effect(
     "loads file and folder MCP connections, and freezes them across edits and removal",
@@ -186,7 +186,7 @@ it.layer(NodeServices.layer)("AgentDefinitionLoader", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  for (const config of [
+  describe.each([
     '{ url: "file:///tmp/mcp", description: "Invalid" }',
     '{ url: "https://:invalid", description: "Invalid" }',
     '{ url: "https://example.com/mcp", description: "Auth", auth: { getToken() {} } }',
@@ -194,7 +194,7 @@ it.layer(NodeServices.layer)("AgentDefinitionLoader", (it) => {
     '{ url: "https://example.com/mcp", description: "Tools", tools: { allow: ["search"] } }',
     '{ url: "https://example.com/mcp", description: "Approval", approval: () => true }',
     '{ command: "npx", args: ["some-server"] }',
-  ]) {
+  ])("%s", (config) => {
     it.effect(`rejects unsupported MCP settings: ${config}`, () =>
       Effect.gen(function* () {
         const { root, definition } = yield* fixture({
@@ -206,9 +206,9 @@ it.layer(NodeServices.layer)("AgentDefinitionLoader", (it) => {
         assert.include(failure.message, "MCP connections require");
       }).pipe(Effect.scoped),
     );
-  }
+  });
 
-  for (const [name, files, message] of [
+  describe.each([
     ["missing model", { "agent.ts": "export default {};" }, /configuration must declare/],
     [
       "unsupported provider",
@@ -254,7 +254,7 @@ it.layer(NodeServices.layer)("AgentDefinitionLoader", (it) => {
       { "skills/review.md": "Review.", "skills/review/SKILL.md": "Review." },
       /Could not load/,
     ],
-  ] as const) {
+  ] as const)("%s", (name, files, message) => {
     it.effect(`rejects ${name}`, () =>
       Effect.gen(function* () {
         const { root, definition } = yield* fixture({
@@ -267,5 +267,5 @@ it.layer(NodeServices.layer)("AgentDefinitionLoader", (it) => {
         if (result._tag === "Failure") assert.match(result.failure.message, message);
       }).pipe(Effect.scoped),
     );
-  }
+  });
 });

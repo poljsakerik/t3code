@@ -60,26 +60,24 @@ export const discoverAgentDefinitions = Effect.fn("discoverAgentDefinitions")(
     if ((yield* fs.stat(root)).type !== "Directory") return [];
     const definitions: Array<AgentDefinition> = [];
     const entries = Effect.fn("AgentDefinitionService.entries")(function* (directory: string) {
-      const names = yield* fs
-        .readDirectory(directory)
-        .pipe(
-          Effect.catchTag("PlatformError", (error) =>
+      const names = yield* fs.readDirectory(directory).pipe(
+        Effect.catchTags({
+          PlatformError: (error) =>
             error.reason._tag === "NotFound"
               ? Effect.succeed([] as Array<string>)
               : Effect.fail(error),
-          ),
-        );
+        }),
+      );
       return yield* Effect.forEach(
         names.toSorted(),
         Effect.fnUntraced(function* (name) {
           const filePath = path.join(directory, name);
-          const realPath = yield* fs
-            .realPath(filePath)
-            .pipe(
-              Effect.catchTag("PlatformError", (error) =>
+          const realPath = yield* fs.realPath(filePath).pipe(
+            Effect.catchTags({
+              PlatformError: (error) =>
                 error.reason._tag === "NotFound" ? Effect.succeed(null) : Effect.fail(error),
-              ),
-            );
+            }),
+          );
           // Ignore symlinks, including loops and sources outside this project.
           if (realPath !== filePath) return { name, type: "SymbolicLink" as const };
           const info = yield* fs.stat(filePath);
@@ -357,7 +355,10 @@ export const layer = Layer.effect(
       const registered = yield* projects.list();
       const sources = [
         { projectId: null, name: "Global" },
-        ...registered.map((project) => ({ projectId: project.projectId, name: project.title })),
+        ...registered
+          // A deleted project's agents are no longer offered as a source.
+          .filter((project) => project.deletedAt === null)
+          .map((project) => ({ projectId: project.projectId, name: project.title })),
       ].sort((left, right) => {
         const priority = (projectId: typeof left.projectId) =>
           projectId === input.projectId ? 0 : projectId === null ? 1 : 2;

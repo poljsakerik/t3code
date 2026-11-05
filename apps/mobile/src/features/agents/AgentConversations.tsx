@@ -2,17 +2,16 @@ import {
   buildAgentConversationData,
   buildAgentConversationScopes,
 } from "@t3tools/client-runtime/state/agent-conversations";
-import { AppText as Text } from "../../components/AppText";
-import { SymbolView } from "../../components/AppSymbol";
+import { AppText as Text } from "../../components/ui/AppText";
+import { SymbolView } from "../../components/ui/AppSymbol";
 import {
   squashAtomCommandFailure,
   isAtomCommandInterrupted,
 } from "@t3tools/client-runtime/state/runtime";
-import { StackActions, useNavigation } from "@react-navigation/native";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 import { useAtomValue } from "@effect/atom-react";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 import { CommandId, ThreadId, type EnvironmentId, type ProjectId } from "@t3tools/contracts";
@@ -25,7 +24,7 @@ import { threadEnvironment } from "../../state/threads";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { uuidv4 } from "../../lib/uuid";
-import { useHomeThreadSelection } from "../home/home-thread-navigation";
+import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
 
 export const conversationModeAtom = Atom.make<"code" | "agents">("code").pipe(Atom.keepAlive);
 export const conversationSelectionsAtom = Atom.make<{
@@ -42,7 +41,7 @@ export function selectConversationMode(mode: "code" | "agents") {
   appAtomRegistry.set(conversationModeAtom, mode);
 }
 export function AgentModeTabs({ restoreSelection = true }: { restoreSelection?: boolean }) {
-  const selectThread = useHomeThreadSelection();
+  const selectDetail = useSelectWorkspaceDetail();
   const mode = useAtomValue(conversationModeAtom);
   return (
     <View
@@ -58,7 +57,13 @@ export function AgentModeTabs({ restoreSelection = true }: { restoreSelection?: 
             selectConversationMode(value);
             const last = appAtomRegistry.get(conversationSelectionsAtom)[value];
             if (restoreSelection && last)
-              selectThread({ environmentId: last.environmentId, id: last.threadId });
+              selectDetail({
+                name: "Thread",
+                params: {
+                  environmentId: String(last.environmentId),
+                  threadId: String(last.threadId),
+                },
+              });
           }}
           className={`min-h-10 flex-1 justify-center rounded-lg px-4 py-2 ${mode === value ? "bg-card" : ""}`}
         >
@@ -106,25 +111,12 @@ function AgentScope({
   );
   const archiveThread = useAtomCommand(threadEnvironment.archive, "archive conversation");
   const restoreThread = useAtomCommand(threadEnvironment.unarchive, "restore conversation");
-  const selectHomeThread = useHomeThreadSelection();
-  const navigation = useNavigation();
-  const selectThread = (thread: {
-    environmentId: EnvironmentId;
-    id: import("@t3tools/contracts").ThreadId;
-  }) => {
-    let target = navigation;
-    while (target.getParent()) target = target.getParent()!;
-    const state = target.getState();
-    if (state && state.routes[state.index]?.name === "NewTaskSheet")
-      target.dispatch({
-        ...StackActions.replace("Thread", {
-          environmentId: thread.environmentId,
-          threadId: thread.id,
-        }),
-        target: state.key,
-      });
-    else selectHomeThread(thread);
-  };
+  const selectDetail = useSelectWorkspaceDetail();
+  const selectThread = (thread: { environmentId: EnvironmentId; id: ThreadId }) =>
+    selectDetail({
+      name: "Thread",
+      params: { environmentId: String(thread.environmentId), threadId: String(thread.id) },
+    });
   const [pending, setPending] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const selection = useAtomValue(conversationSelectionsAtom).agents;

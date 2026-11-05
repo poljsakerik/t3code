@@ -31,13 +31,16 @@ export function isOrchestrationV2SupersededInterrupt(input: {
     return false;
   }
 
-  // Paired stop-then-steer results have a matching request on the same run and
-  // must stay visible. Legacy plain-steer results have no request and stay hidden.
+  // Show paired stop-then-steer results; hide legacy plain-steer results without matching requests.
   const hasMatchingRequest = input.items.some(
     (candidate) => candidate.type === "run_interrupt_request" && candidate.runId === item.runId,
   );
   return !hasMatchingRequest;
 }
+
+// Coordinator instructions and unapproved candidate output never belong in the transcript.
+const isWorkflowInternal = (item: TimelineTurnItem): boolean =>
+  item.type === "workflow_instruction" || item.type === "workflow_candidate_message";
 
 export function isOrchestrationV2TurnItemVisible(input: {
   readonly item: TimelineTurnItem;
@@ -46,9 +49,7 @@ export function isOrchestrationV2TurnItemVisible(input: {
   readonly items: ReadonlyArray<TimelineTurnItem>;
 }): boolean {
   const { item } = input;
-  if (item.type === "workflow_instruction" || item.type === "workflow_candidate_message") {
-    return false;
-  }
+  if (isWorkflowInternal(item)) return false;
   if (
     item.runId !== null &&
     input.runs.some((run) => run.id === item.runId && run.status === "rolled_back")
@@ -56,9 +57,7 @@ export function isOrchestrationV2TurnItemVisible(input: {
     return false;
   }
 
-  // A queued message is composer state, not conversation history. When its run
-  // is cancelled the input never reached the provider, so it must not surface
-  // as a transcript row.
+  // Cancelled queued input never reached the provider and must stay out of the transcript.
   if (
     item.type === "user_message" &&
     item.inputIntent === "queued_turn" &&
@@ -75,13 +74,17 @@ export function isOrchestrationV2TurnItemVisible(input: {
   });
 }
 
-/** Index once when reconciling a whole timeline after run/attempt state changes. */
 export function createOrchestrationV2TurnItemVisibility(input: {
   readonly runs: ReadonlyArray<TimelineRun>;
   readonly attempts: ReadonlyArray<TimelineRunAttempt>;
   readonly items: ReadonlyArray<TimelineTurnItem>;
 }): (item: TimelineTurnItem) => boolean {
-  const statuses = new Map(input.runs.map((run) => [run.id, run.status]));
+  const statuses = new Map<TimelineRun["id"], TimelineRun["status"]>();
+  for (const run of input.runs) {
+    if (run.status === "rolled_back" || run.status === "cancelled")
+      statuses.set(run.id, run.status);
+    else statuses.delete(run.id);
+  }
   const supersededRoots = new Map<
     TimelineRunAttempt["runId"],
     Set<TimelineRunAttempt["rootNodeId"]>
@@ -92,13 +95,15 @@ export function createOrchestrationV2TurnItemVisibility(input: {
     if (roots === undefined) supersededRoots.set(attempt.runId, (roots = new Set()));
     roots.add(attempt.rootNodeId);
   }
-  const interruptRuns = new Set(
-    input.items.filter((item) => item.type === "run_interrupt_request").map((item) => item.runId),
-  );
-  return (item) => {
-    if (item.type === "workflow_instruction" || item.type === "workflow_candidate_message") {
-      return false;
+  if (statuses.size === 0 && supersededRoots.size === 0) return (item) => !isWorkflowInternal(item);
+  const interruptRuns = new Set<TimelineTurnItem["runId"]>();
+  if (supersededRoots.size > 0) {
+    for (const item of input.items) {
+      if (item.type === "run_interrupt_request") interruptRuns.add(item.runId);
     }
+  }
+  return (item) => {
+    if (isWorkflowInternal(item)) return false;
     const status = item.runId === null ? undefined : statuses.get(item.runId);
     if (status === "rolled_back") return false;
     if (

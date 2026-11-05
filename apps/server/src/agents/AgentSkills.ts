@@ -1,4 +1,4 @@
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { HttpClient, HttpClientResponse } from "effect/http";
 import type { PlatformError } from "effect/PlatformError";
 import {
   AgentDefinitionError,

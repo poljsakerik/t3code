@@ -1,16 +1,15 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ProjectId, ProviderInstanceId } from "@t3tools/contracts";
-import { assert, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as NodeOS from "node:os";
 import { afterEach, beforeEach, vi } from "vite-plus/test";
 
 import { ServerConfig, layerTest as serverConfigLayerTest } from "../config.ts";
-import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { WorkflowConfigService, layer } from "./WorkflowConfigService.ts";
@@ -36,24 +35,25 @@ afterEach(() =>
   }).pipe(Effect.provide(NodeServices.layer), Effect.runPromise),
 );
 
-const projectRepositoryLayer = Layer.succeed(ProjectionProjectRepository, {
-  upsert: () => Effect.void,
-  getById: ({ projectId }) =>
-    Effect.succeed(
-      Option.some({
-        projectId,
-        title: "Test project",
-        workspaceRoot: projectId,
-        defaultModelSelection: null,
-        defaultThreadEnvMode: null,
-        autoPull: false,
-        scripts: [],
-        createdAt: "2025-01-01T00:00:00.000Z",
-        updatedAt: "2025-01-01T00:00:00.000Z",
-        deletedAt: null,
-      }),
-    ),
-  listAll: () => Effect.succeed([]),
+const projectRepositoryLayer = Layer.mock(ProjectStore.ProjectStoreV2)({
+  get: (projectId) =>
+    Effect.succeedSome({
+      projectId,
+      title: "Test project",
+      workspaceRoot: projectId,
+      defaultModelSelection: null,
+      defaultThreadEnvMode: null,
+      autoPull: false,
+      faviconPath: null,
+      projectIcon: null,
+      scripts: [],
+      pinnedAt: null,
+      archivedAt: null,
+      createdAt: "2025-01-01T00:00:00.000Z",
+      updatedAt: "2025-01-01T00:00:00.000Z",
+      deletedAt: null,
+    }),
+  list: () => Effect.succeed([]),
 });
 
 const testLayer = layer.pipe(
@@ -142,7 +142,7 @@ it.layer(testLayer)("WorkflowConfigService", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  for (const reference of ["reviewer", ".t3/agents/reviewer"]) {
+  describe.each(["reviewer", ".t3/agents/reviewer"])("%s", (reference) => {
     it.effect(`prefers the project agent over the global agent: ${reference}`, () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -164,9 +164,9 @@ it.layer(testLayer)("WorkflowConfigService", (it) => {
         assert.equal(profile.reviewers[0]?.instructions, "Local instructions.");
       }).pipe(Effect.scoped),
     );
-  }
+  });
 
-  for (const scope of ["project", "global"]) {
+  describe.each(["project", "global"])("%s", (scope) => {
     it.effect(`reports duplicate names within the ${scope} catalog`, () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -194,7 +194,7 @@ it.layer(testLayer)("WorkflowConfigService", (it) => {
         assert.include(error.detail, `${realRoot}/.t3/agents/reviewer/subagents/reviewer`);
       }).pipe(Effect.scoped),
     );
-  }
+  });
 
   it.effect("does not count the home catalog twice when the project aliases home", () =>
     Effect.gen(function* () {
@@ -407,10 +407,9 @@ it.layer(testLayer)("WorkflowConfigService", (it) => {
       const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-workspace-" });
       const root = path.join((yield* ServerConfig).stateDir, "workflows");
 
-      yield* Effect.all(
-        ["planner", "implementer", "reviewer"].map((name) =>
-          writeAgent(workspaceRoot, name, "Do the job."),
-        ),
+      yield* Effect.forEach(
+        ["planner", "implementer", "reviewer"],
+        (name) => writeAgent(workspaceRoot, name, "Do the job."),
         { discard: true },
       );
       yield* writeYaml(

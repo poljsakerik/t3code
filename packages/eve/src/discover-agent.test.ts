@@ -98,17 +98,17 @@ describe("Eve explicit-root discovery", () => {
     expect(manifest.capabilities).toEqual([{ slot: "tools", logicalPath: "tools/search.ts" }]);
   });
 
-  for (const files of [
+  describe.each([
     { "instructions.md": "Markdown.", "instructions.ts": "export default {};" },
     { "instructions/a.md": "Markdown.", "instructions/a.mjs": "export default {};" },
     { "agent.ts": "export default {};", "agent.mjs": "export default {};" },
-  ]) {
+  ])("%s", (files) => {
     it(`rejects colliding authored sources: ${Object.keys(files).join(", ")}`, async () => {
       await expect(
         discoverAgent({ agentRoot: "/selected", source: source(files) }),
       ).rejects.toThrow(/Conflicting|exactly one/);
     });
-  }
+  });
 
   it("enforces disk boundaries and rejects symbolic links inside instruction directories", async () => {
     const root = await NodeFSP.realpath(
@@ -134,16 +134,16 @@ describe("Eve explicit-root discovery", () => {
   });
 });
 
-for (const files of [
+describe.each([
   { "connections/service.ts": "", "connections/service.mjs": "" },
   { "connections/service.ts": "", "connections/service/connection.ts": "" },
   { "connections/service/README.md": "" },
   { "connections/service/connection.ts": "", "connections/service/connection.mjs": "" },
   { connections: "not a directory" },
-]) {
+])("%s", (files) => {
   it("rejects ambiguous or invalid connection sources without executing them", async () => {
     await expect(
       discoverAgent({ agentRoot: "/selected", source: source(files) }),
     ).rejects.toThrow();
   });
-}
+});

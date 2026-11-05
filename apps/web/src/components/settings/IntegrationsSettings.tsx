@@ -823,6 +823,7 @@ function DeviceIntegrationSettings() {
           environmentId={environmentId}
           enabled={settings.enableDeviceSupport}
           agentAccessEnabled={settings.enableAgentDeviceAccess}
+          exclusiveAccessEnabled={settings.exclusiveDeviceAccess}
         />
       </SettingsSection>
       <DeviceSourcesSettings
@@ -837,10 +838,12 @@ function DeviceIntegrationControls({
   environmentId,
   enabled,
   agentAccessEnabled,
+  exclusiveAccessEnabled,
 }: {
   environmentId: EnvironmentId | null;
   enabled: boolean;
   agentAccessEnabled: boolean;
+  exclusiveAccessEnabled: boolean;
 }) {
   const canConfigure = useEnvironmentScope(environmentId, AuthSettingsWriteScope);
   const { state, loaded } = useDeviceState(environmentId);
@@ -853,13 +856,13 @@ function DeviceIntegrationControls({
   const configure = useAtomCommand(deviceEnvironment.configure, { reportFailure: false });
   const list = useAtomCommand(deviceEnvironment.list, { reportFailure: false });
   const [pending, setPending] = useState<
-    "hub" | "check" | "agent" | "update-hub" | "update-agent" | null
+    "hub" | "check" | "agent" | "exclusive" | "update-hub" | "update-agent" | null
   >(null);
   const { busy } = deviceHubReadiness(state);
 
   const update = async (
     kind: NonNullable<typeof pending>,
-    input: { enabled?: boolean; agentAccessEnabled?: boolean },
+    input: { enabled?: boolean; agentAccessEnabled?: boolean; exclusiveAccessEnabled?: boolean },
   ) => {
     if (!environmentId || !readEnvironmentScope(environmentId, AuthSettingsWriteScope)) return;
     setPending(kind);
@@ -1021,6 +1024,30 @@ function DeviceIntegrationControls({
               }
             />
           </>
+        }
+      />
+      <SettingsRow
+        {...searchableSetting("exclusive-device-access")}
+        serverScoped
+        settingKeys={["exclusiveDeviceAccess"]}
+        description="Only one thread uses a simulator or emulator at a time. Other agents wait for it, and a thread gives its devices back when its turn ends. The Device panel can still open any device."
+        control={
+          <ScopedSwitch
+            settingKeys={["exclusiveDeviceAccess"]}
+            checked={exclusiveAccessEnabled}
+            disabled={
+              !canConfigure ||
+              projectScope ||
+              !loaded ||
+              !environmentId ||
+              !anyHubEnabled ||
+              pending !== null
+            }
+            aria-label="One thread per device"
+            onCheckedChange={(checked) =>
+              void update("exclusive", { exclusiveAccessEnabled: Boolean(checked) })
+            }
+          />
         }
       />
       {environmentId ? (

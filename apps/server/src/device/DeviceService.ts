@@ -7,6 +7,7 @@ import {
   type DeviceError,
   DeviceHostId,
   DeviceId,
+  DeviceBusyError,
   DeviceHostUnavailableError,
   DeviceNotFoundError,
   DeviceOperationError,
@@ -49,9 +50,12 @@ import {
   agentDeviceSession,
   writeAgentDeviceConfig,
 } from "./AgentDeviceTarget.ts";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -192,9 +196,14 @@ export class DeviceService extends Context.Service<
     readonly updateTool: (tool: "hub" | "agent") => Effect.Effect<DeviceServiceState, DeviceError>;
     readonly inspect: Effect.Effect<DeviceServiceState>;
     readonly retryHost: (hostId: DeviceHostId) => Effect.Effect<DeviceServiceState, DeviceError>;
+    /**
+     * With `queue`, an agent's open waits its turn while exclusive access is on and another
+     * thread holds the device. The Device panel opens without queueing.
+     */
     readonly open: (
       input: DeviceOpenInput,
       context?: DeviceHost.DeviceOpenContext,
+      options?: { readonly queue?: boolean },
     ) => Effect.Effect<DeviceSession, DeviceError>;
     readonly close: (input: DeviceCloseInput) => Effect.Effect<void, DeviceError>;
     readonly shutdown: (input: DeviceShutdownInput) => Effect.Effect<void, DeviceError>;
@@ -252,6 +261,12 @@ export interface AgentDeviceLaunchers {
   readonly release?: (launcher: string) => Effect.Effect<void>;
 }
 
+/**
+ * How long an agent's `device_open` waits for a device another thread holds. Well under provider
+ * tool-call limits; the busy error tells the agent to call again to keep waiting.
+ */
+export const EXCLUSIVE_WAIT_MS = 4 * 60_000;
+
 export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* (
   hosts: ReadonlyMap<DeviceHostId, DeviceHost.DeviceHost["Service"]>,
   testHost: DeviceService["Service"]["testHost"] = (host) =>
@@ -283,6 +298,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     Effect.map((value) => ({
       enabled: value.enableDeviceSupport,
       agentAccessEnabled: value.enableAgentDeviceAccess,
+      exclusiveAccessEnabled: value.exclusiveDeviceAccess,
       onboardingCompleted: value.deviceOnboardingCompleted,
     })),
     Effect.mapError(
@@ -309,6 +325,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       sessions: [],
       onboardingCompleted: initialSettings.onboardingCompleted,
       agentAccessEnabled: initialSettings.agentAccessEnabled,
+      exclusiveAccessEnabled: initialSettings.exclusiveAccessEnabled,
       hubBasePath: DEVICE_HUB_ROUTE_PREFIX,
       revision: 0,
     },
@@ -364,6 +381,23 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       ),
     );
 
+  // Exclusive access. Waiters wake on every state change and on every claim released; the oldest
+  // waiter for a free device claims it, and the claim lasts until its open publishes a session or fails.
+  let deviceChanged = Deferred.makeUnsafe<void>();
+  const signalDeviceChange = Effect.sync(() => {
+    const changed = deviceChanged;
+    deviceChanged = Deferred.makeUnsafe<void>();
+    Deferred.doneUnsafe(changed, Effect.void);
+  });
+  const exclusiveLock = yield* Semaphore.make(1);
+  /** Opens that won the queue and have not published their session yet, by device. */
+  const exclusiveClaims = new Map<
+    string,
+    { readonly threadId: ThreadId; readonly since: string }
+  >();
+  let nextWaiterId = 0;
+  const exclusiveKey = (hostId: DeviceHostId, deviceId: DeviceId) => `${hostId}\u0000${deviceId}`;
+
   // Uninterruptible so a committed retirement always prunes, even if its caller is cancelled.
   const publish = (update: (state: DeviceServiceState) => DeviceServiceState) =>
     SynchronizedRef.modifyEffect(stateRef, ({ state }) => {
@@ -374,6 +408,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       );
     }).pipe(
       Effect.tap(({ retired }) => (retired ? pruneLaunchers : Effect.void)),
+      Effect.tap(() => signalDeviceChange),
       Effect.map(({ next }) => next),
       Effect.uninterruptible,
     );
@@ -666,6 +701,8 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       const currentSettings = yield* readDeviceSettings;
       const nextEnabled = input.enabled ?? currentSettings.enabled;
       const nextAgentAccess = input.agentAccessEnabled ?? currentSettings.agentAccessEnabled;
+      const nextExclusiveAccess =
+        input.exclusiveAccessEnabled ?? currentSettings.exclusiveAccessEnabled;
       yield* lifecycleLock.withPermit(
         Effect.gen(function* () {
           yield* settings
@@ -674,6 +711,9 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
               ...(input.agentAccessEnabled === undefined
                 ? {}
                 : { enableAgentDeviceAccess: input.agentAccessEnabled }),
+              ...(input.exclusiveAccessEnabled === undefined
+                ? {}
+                : { exclusiveDeviceAccess: input.exclusiveAccessEnabled }),
               ...(input.onboardingCompleted === undefined
                 ? {}
                 : { deviceOnboardingCompleted: input.onboardingCompleted }),
@@ -702,6 +742,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
             sessions: nextEnabled ? state.sessions : [],
             bootingDevices: nextEnabled ? state.bootingDevices : [],
             agentAccessEnabled: nextAgentAccess,
+            exclusiveAccessEnabled: nextExclusiveAccess,
             onboardingCompleted: input.onboardingCompleted ?? state.onboardingCompleted,
           }));
         }),
@@ -734,114 +775,235 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     }
   });
 
-  const open: DeviceService["Service"]["open"] = Effect.fn("DeviceService.open")(
-    function* (input, context) {
-      const host = yield* resolveHost(input.hostId);
-      yield* ensurePlatform(host, input.platform);
-      const ready = yield* readiness(host.id);
-      let state = yield* refresh(ready);
-      let device = findDevice(state, host.id, input.deviceId);
-      if (!device) {
-        return yield* new DeviceNotFoundError({ hostId: host.id, deviceId: input.deviceId });
+  /**
+   * Waits until no other thread holds the device and this waiter is the oldest for it, then claims
+   * it. Returns the claim's release, or undefined when exclusive access does not apply.
+   */
+  const acquireExclusive = Effect.fn("DeviceService.acquireExclusive")(function* (
+    host: DeviceHost.DeviceHost["Service"],
+    threadId: ThreadId,
+    deviceId: DeviceId,
+  ) {
+    if (!(yield* readDeviceSettings).exclusiveAccessEnabled) return undefined;
+    // Leased hosts run their own queue, and every lease is a separate device.
+    const kind = (yield* host.summary).kind;
+    if (kind !== "local" && kind !== "ssh") return undefined;
+    const key = exclusiveKey(host.id, deviceId);
+    const holderOf = (state: DeviceServiceState) => {
+      const session = state.sessions.find(
+        (candidate) =>
+          candidate.hostId === host.id &&
+          candidate.deviceId === deviceId &&
+          candidate.threadId !== threadId,
+      );
+      if (session) return { threadId: session.threadId, since: session.openedAt };
+      const claim = exclusiveClaims.get(key);
+      return claim && claim.threadId !== threadId ? claim : undefined;
+    };
+    const waiterId = `${nextWaiterId++}`;
+    const startedAt = yield* Clock.currentTimeMillis;
+    const since = DateTime.formatIso(yield* DateTime.now);
+    let queued = false;
+    const leaveQueue = Effect.suspend(() =>
+      queued
+        ? publish((current) => ({
+            ...current,
+            waitingDevices: (current.waitingDevices ?? []).filter(
+              (waiter) => !(waiter.threadId === threadId && waiterIds.get(waiter) === waiterId),
+            ),
+          })).pipe(Effect.tap(() => Effect.sync(() => (queued = false))))
+        : Effect.void,
+    );
+    const release = Effect.suspend(() => {
+      if (exclusiveClaims.get(key)?.threadId === threadId) exclusiveClaims.delete(key);
+      return signalDeviceChange;
+    });
+    const attempt = exclusiveLock.withPermit(
+      Effect.gen(function* () {
+        // Taken before reading state, so a change after the read still wakes this waiter.
+        const changed = deviceChanged;
+        const { state } = yield* SynchronizedRef.get(stateRef);
+        const holder = holderOf(state);
+        const first = (state.waitingDevices ?? []).find(
+          (waiter) => waiter.hostId === host.id && waiter.deviceId === deviceId,
+        );
+        // Nobody waiting, or this waiter is the oldest; a newcomer never passes the queue.
+        const myTurn = first === undefined || (queued && waiterIds.get(first) === waiterId);
+        if (holder === undefined && myTurn) {
+          exclusiveClaims.set(key, { threadId, since });
+          yield* leaveQueue;
+          return { _tag: "claimed" as const };
+        }
+        if (!queued) {
+          const waiter = {
+            hostId: host.id,
+            deviceId,
+            threadId,
+            heldByThreadId: holder?.threadId ?? first!.heldByThreadId,
+            since,
+          };
+          waiterIds.set(waiter, waiterId);
+          queued = true;
+          yield* publish((current) => ({
+            ...current,
+            waitingDevices: [...(current.waitingDevices ?? []), waiter],
+          }));
+        }
+        return { _tag: "wait" as const, changed, holder };
+      }),
+    );
+    return yield* Effect.gen(function* () {
+      while (true) {
+        // Turning exclusive access off lets everyone through.
+        if (!(yield* readDeviceSettings).exclusiveAccessEnabled) return signalDeviceChange;
+        const result = yield* attempt;
+        if (result._tag === "claimed") return release;
+        const waited = (yield* Clock.currentTimeMillis) - startedAt;
+        const remaining = EXCLUSIVE_WAIT_MS - waited;
+        const woke =
+          remaining > 0
+            ? yield* Deferred.await(result.changed).pipe(
+                Effect.timeoutOption(Duration.millis(remaining)),
+              )
+            : Option.none();
+        if (Option.isNone(woke)) {
+          const { state } = yield* SynchronizedRef.get(stateRef);
+          const holder = holderOf(state) ?? result.holder;
+          return yield* new DeviceBusyError({
+            hostId: host.id,
+            deviceId,
+            heldByThreadId: holder?.threadId ?? threadId,
+            heldSince: holder?.since ?? since,
+            waitedSeconds: ((yield* Clock.currentTimeMillis) - startedAt) / 1000,
+          });
+        }
       }
-      // Hosts that route their own streams never encode emulator video with serve-emu's ffmpeg.
-      if (device.platform === "android" && !device.physical && !ready.upstream) {
-        // Resolve the override on the device host the way its hub does.
-        const encoders = yield* ready.run(ready.nodePath, [
-          "-e",
-          `const { spawnSync } = require("node:child_process");
+    }).pipe(Effect.ensuring(leaveQueue));
+  });
+  /** Identifies queue entries, which the published state carries without an id. */
+  const waiterIds = new WeakMap<object, string>();
+
+  const open: DeviceService["Service"]["open"] = Effect.fn("DeviceService.open")(
+    function* (input, context, options) {
+      const host = yield* resolveHost(input.hostId);
+      const release = options?.queue
+        ? yield* acquireExclusive(host, input.threadId, input.deviceId)
+        : undefined;
+      return yield* openDevice(host, input, context).pipe(
+        release === undefined ? (effect) => effect : Effect.ensuring(release),
+      );
+    },
+  );
+
+  const openDevice = Effect.fn("DeviceService.openDevice")(function* (
+    host: DeviceHost.DeviceHost["Service"],
+    input: DeviceOpenInput,
+    context: DeviceHost.DeviceOpenContext | undefined,
+  ) {
+    yield* ensurePlatform(host, input.platform);
+    const ready = yield* readiness(host.id);
+    let state = yield* refresh(ready);
+    let device = findDevice(state, host.id, input.deviceId);
+    if (!device) {
+      return yield* new DeviceNotFoundError({ hostId: host.id, deviceId: input.deviceId });
+    }
+    // Hosts that route their own streams never encode emulator video with serve-emu's ffmpeg.
+    if (device.platform === "android" && !device.physical && !ready.upstream) {
+      // Resolve the override on the device host the way its hub does.
+      const encoders = yield* ready.run(ready.nodePath, [
+        "-e",
+        `const { spawnSync } = require("node:child_process");
   const result = spawnSync(process.env.SERVE_EMU_FFMPEG?.trim() || "ffmpeg", ["-hide_banner", "-encoders"], {
     stdio: "inherit", timeout: 10000, killSignal: "SIGKILL",
   });
   process.exitCode = result.error ? 1 : (result.status ?? 1);`,
-        ]);
-        if (encoders.code !== 0) {
-          return yield* new DevicePlatformUnavailableError({
-            hostId: host.id,
-            platform: "android",
-            reason:
-              "Android emulator video needs working ffmpeg with the libx264 encoder. Install it on the device host's PATH or set SERVE_EMU_FFMPEG there, then retry opening the emulator. After changing PATH or SERVE_EMU_FFMPEG, turn device support off and on for SSH hosts, or restart the local environment server.",
-          });
-        }
-        if (!/^\s*V\S*[ \t]+libx264(?:[ \t]|$)/m.test(`${encoders.stdout}\n${encoders.stderr}`)) {
-          return yield* new DevicePlatformUnavailableError({
-            hostId: host.id,
-            platform: "android",
-            reason:
-              "Android emulator video needs the libx264 encoder. Install an ffmpeg build that includes libx264 on the device host, then retry opening the emulator. After changing PATH or SERVE_EMU_FFMPEG, turn device support off and on for SSH hosts, or restart the local environment server.",
-          });
-        }
+      ]);
+      if (encoders.code !== 0) {
+        return yield* new DevicePlatformUnavailableError({
+          hostId: host.id,
+          platform: "android",
+          reason:
+            "Android emulator video needs working ffmpeg with the libx264 encoder. Install it on the device host's PATH or set SERVE_EMU_FFMPEG there, then retry opening the emulator. After changing PATH or SERVE_EMU_FFMPEG, turn device support off and on for SSH hosts, or restart the local environment server.",
+        });
       }
-      if (!device.booted && input.boot !== false) {
-        const booting = { ...device, threadId: input.threadId };
-        yield* publish((current) => ({
-          ...current,
-          bootingDevices: [
-            ...(current.bootingDevices ?? []).filter(
+      if (!/^\s*V\S*[ \t]+libx264(?:[ \t]|$)/m.test(`${encoders.stdout}\n${encoders.stderr}`)) {
+        return yield* new DevicePlatformUnavailableError({
+          hostId: host.id,
+          platform: "android",
+          reason:
+            "Android emulator video needs the libx264 encoder. Install an ffmpeg build that includes libx264 on the device host, then retry opening the emulator. After changing PATH or SERVE_EMU_FFMPEG, turn device support off and on for SSH hosts, or restart the local environment server.",
+        });
+      }
+    }
+    if (!device.booted && input.boot !== false) {
+      const booting = { ...device, threadId: input.threadId };
+      yield* publish((current) => ({
+        ...current,
+        bootingDevices: [
+          ...(current.bootingDevices ?? []).filter(
+            (entry) => entry.hostId !== booting.hostId || entry.id !== booting.id,
+          ),
+          booting,
+        ],
+      }));
+      const bootedId = yield* ready.devices.boot(device, context).pipe(
+        Effect.ensuring(
+          publish((current) => ({
+            ...current,
+            bootingDevices: (current.bootingDevices ?? []).filter(
               (entry) => entry.hostId !== booting.hostId || entry.id !== booting.id,
             ),
-            booting,
+          })),
+        ),
+      );
+      state = yield* refresh(ready);
+      device = findDevice(state, host.id, bootedId) ?? findDevice(state, host.id, device.id);
+      if (!device) {
+        return yield* new DeviceNotFoundError({ hostId: host.id, deviceId: bootedId });
+      }
+    } else if (device.booted) {
+      yield* ready.devices.attach(device);
+    }
+    if (hosts.get(host.id) !== host)
+      return yield* new DeviceHostUnavailableError({
+        hostId: host.id,
+        hostLabel: host.label,
+        reason: "Host configuration changed. Retry the operation.",
+      });
+    const openedAt = DateTime.formatIso(yield* DateTime.now);
+    const session: DeviceSession = {
+      threadId: input.threadId,
+      hostId: host.id,
+      deviceId: device.id,
+      platform: device.platform,
+      openedAt,
+    };
+    yield* lifecycleLock.withPermit(
+      Effect.gen(function* () {
+        if (!(yield* readDeviceSettings).enabled)
+          return yield* new DeviceHostUnavailableError({
+            hostId: host.id,
+            hostLabel: host.label,
+            reason: "Device support was turned off while the device was opening.",
+          });
+        yield* publish((current) => ({
+          ...current,
+          sessions: [
+            ...current.sessions.filter(
+              (existing) =>
+                !(
+                  existing.threadId === session.threadId &&
+                  existing.hostId === session.hostId &&
+                  existing.deviceId === session.deviceId
+                ),
+            ),
+            session,
           ],
         }));
-        const bootedId = yield* ready.devices.boot(device, context).pipe(
-          Effect.ensuring(
-            publish((current) => ({
-              ...current,
-              bootingDevices: (current.bootingDevices ?? []).filter(
-                (entry) => entry.hostId !== booting.hostId || entry.id !== booting.id,
-              ),
-            })),
-          ),
-        );
-        state = yield* refresh(ready);
-        device = findDevice(state, host.id, bootedId) ?? findDevice(state, host.id, device.id);
-        if (!device) {
-          return yield* new DeviceNotFoundError({ hostId: host.id, deviceId: bootedId });
-        }
-      } else if (device.booted) {
-        yield* ready.devices.attach(device);
-      }
-      if (hosts.get(host.id) !== host)
-        return yield* new DeviceHostUnavailableError({
-          hostId: host.id,
-          hostLabel: host.label,
-          reason: "Host configuration changed. Retry the operation.",
-        });
-      const openedAt = DateTime.formatIso(yield* DateTime.now);
-      const session: DeviceSession = {
-        threadId: input.threadId,
-        hostId: host.id,
-        deviceId: device.id,
-        platform: device.platform,
-        openedAt,
-      };
-      yield* lifecycleLock.withPermit(
-        Effect.gen(function* () {
-          if (!(yield* readDeviceSettings).enabled)
-            return yield* new DeviceHostUnavailableError({
-              hostId: host.id,
-              hostLabel: host.label,
-              reason: "Device support was turned off while the device was opening.",
-            });
-          yield* publish((current) => ({
-            ...current,
-            sessions: [
-              ...current.sessions.filter(
-                (existing) =>
-                  !(
-                    existing.threadId === session.threadId &&
-                    existing.hostId === session.hostId &&
-                    existing.deviceId === session.deviceId
-                  ),
-              ),
-              session,
-            ],
-          }));
-        }),
-      );
-      return session;
-    },
-  );
+      }),
+    );
+    return session;
+  });
 
   const refreshAfterShutdown = (ready: DeviceReadiness) =>
     refresh(ready).pipe(

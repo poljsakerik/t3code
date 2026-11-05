@@ -43,7 +43,7 @@ function AgentsPage() {
   ];
 
   return (
-    <main className="h-full min-w-0 flex-1 overflow-y-auto px-5 py-8 sm:px-8 sm:py-12">
+    <main className="h-full min-w-0 flex-1 overflow-y-auto scrollbar-gutter-both px-5 py-8 sm:px-8 sm:py-12">
       <div className="mx-auto w-full max-w-3xl space-y-8">
         <header className="space-y-2">
           <div className="flex items-center justify-between gap-3">

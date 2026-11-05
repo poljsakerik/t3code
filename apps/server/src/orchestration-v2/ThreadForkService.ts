@@ -9,6 +9,7 @@ import {
   OrchestrationV2ContextTransfer,
   OrchestrationV2CreationSource,
   OrchestrationV2ProviderThread,
+  OrchestrationV2ProviderTurnTokenUsage,
   OrchestrationV2Run,
   OrchestrationV2ThreadProjection,
   ThreadId,
@@ -33,13 +34,7 @@ export class ThreadForkPlanError extends Schema.TaggedError<ThreadForkPlanError>
   },
 ) {}
 
-/**
- * Fork copies a provider-finished conversation. Usage-limited and other
- * failed, interrupted, or cancelled turns still have a native thread (or a
- * portable transcript) even though the run did not complete successfully.
- * `waiting` is provider-finished with checkpoint capture still pending.
- * In-progress and rolled-back runs are not forkable.
- */
+/** waiting means provider-finished with checkpoint capture pending. */
 export function isForkableSourceRunStatus(status: OrchestrationV2Run["status"]): boolean {
   return (
     status === "completed" ||
@@ -59,12 +54,15 @@ export function forkableSourceRunStatusError(
 export interface ThreadForkServiceV2Shape {
   readonly plan: (input: {
     readonly sourceProjection: Pick<OrchestrationV2ThreadProjection, "thread">;
-    readonly sourceRun: OrchestrationV2Run;
+    /** Null only for a side chat whose parent has no stable run yet. */
+    readonly sourceRun: OrchestrationV2Run | null;
     readonly sourceProviderThread: OrchestrationV2ProviderThread | undefined;
+    readonly sourceTokenUsage?: OrchestrationV2ProviderTurnTokenUsage | undefined;
     readonly canonicalSourcePoint: OrchestrationV2ContextSourcePoint;
     readonly transferId: ContextTransferId;
     readonly targetThreadId: ThreadId;
     readonly title?: string;
+    readonly sideChat?: boolean;
     readonly createdBy: OrchestrationV2Actor;
     readonly creationSource: OrchestrationV2CreationSource;
     readonly createdAt: DateTime.Utc;
@@ -76,49 +74,68 @@ export class ThreadForkServiceV2 extends Context.Service<
   ThreadForkServiceV2Shape
 >()("t3/orchestration-v2/ThreadForkService/ThreadForkServiceV2") {}
 
-export const layer = Layer.effect(
-  ThreadForkServiceV2,
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    return ThreadForkServiceV2.of({
-      plan: (input) =>
-        Effect.gen(function* () {
-          if (input.sourceRun.status !== "completed") {
+export const layer: Layer.Layer<ThreadForkServiceV2, never, FileSystem.FileSystem | Path.Path> =
+  Layer.effect(
+    ThreadForkServiceV2,
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      // An agent conversation's fork gets its own copy of the agent's folder, so the two never share files.
+      const copyAgent = Effect.fn("ThreadForkService.copyAgent")(function* (
+        sourceAgent: NonNullable<OrchestrationV2AppThread["agent"]>,
+      ) {
+        const directory = yield* fs.makeTempDirectory({
+          directory: path.dirname(sourceAgent.directory),
+          prefix: "conversation-",
+        });
+        yield* retainAgentSkill(sourceAgent.directory, directory).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+          Effect.onError(() => fs.remove(directory, { recursive: true }).pipe(Effect.ignore)),
+        );
+        return {
+          ...sourceAgent,
+          directory,
+          definition: {
+            ...sourceAgent.definition,
+            instructions: sourceAgent.definition.instructions.replaceAll(
+              sourceAgent.directory,
+              directory,
+            ),
+          },
+        };
+      });
+      return ThreadForkServiceV2.of({
+        plan: Effect.fn("ThreadForkService.plan")(function* (input) {
+          const { sourceRun } = input;
+          const sourceLineage = input.sourceProjection.thread.lineage;
+          // A task a linked environment delegated here is a subagent of a remote thread.
+          if (
+            input.sideChat &&
+            (sourceLineage.sideChat ||
+              sourceLineage.relationshipToParent === "subagent" ||
+              input.sourceProjection.thread.delegatedFrom !== undefined)
+          ) {
             return yield* new ThreadForkPlanError({
               sourceThreadId: input.sourceProjection.thread.id,
               targetThreadId: input.targetThreadId,
-              cause: `Fork source run ${input.sourceRun.id} is ${input.sourceRun.status}.`,
+              cause: sourceLineage.sideChat
+                ? "A side chat cannot start another side chat."
+                : "A subagent cannot start a side chat.",
+            });
+          }
+          if (sourceRun !== null && !isForkableSourceRunStatus(sourceRun.status)) {
+            return yield* new ThreadForkPlanError({
+              sourceThreadId: input.sourceProjection.thread.id,
+              targetThreadId: input.targetThreadId,
+              cause: forkableSourceRunStatusError(sourceRun),
             });
           }
           const sourceAgent = input.sourceProjection.thread.agent;
           const agent =
             sourceAgent === undefined
               ? undefined
-              : yield* Effect.gen(function* () {
-                  const directory = yield* fs.makeTempDirectory({
-                    directory: path.dirname(sourceAgent.directory),
-                    prefix: "conversation-",
-                  });
-                  yield* retainAgentSkill(sourceAgent.directory, directory).pipe(
-                    Effect.provideService(FileSystem.FileSystem, fs),
-                    Effect.provideService(Path.Path, path),
-                    Effect.onError(() =>
-                      fs.remove(directory, { recursive: true }).pipe(Effect.ignore),
-                    ),
-                  );
-                  return {
-                    ...sourceAgent,
-                    directory,
-                    definition: {
-                      ...sourceAgent.definition,
-                      instructions: sourceAgent.definition.instructions.replaceAll(
-                        sourceAgent.directory,
-                        directory,
-                      ),
-                    },
-                  };
-                }).pipe(
+              : yield* copyAgent(sourceAgent).pipe(
                   Effect.mapError(
                     (cause) =>
                       new ThreadForkPlanError({
@@ -128,13 +145,23 @@ export const layer = Layer.effect(
                       }),
                   ),
                 );
+          // The remote parent delegated the source thread, not its forks.
+          const { delegatedFrom: _delegatedFrom, ...inherited } = input.sourceProjection.thread;
           const targetThread: OrchestrationV2AppThread = {
-            ...input.sourceProjection.thread,
+            ...inherited,
             ...(agent === undefined ? {} : { agent }),
+            // PR context follows the conversation; watching remains the source thread's responsibility.
+            pullRequests: input.sourceProjection.thread.pullRequests?.map(
+              ({ watch: _watch, ...link }) => link,
+            ),
             createdBy: input.createdBy,
             creationSource: input.creationSource,
             id: input.targetThreadId,
             title: input.title ?? `${input.sourceProjection.thread.title} fork`,
+            // The source's title job completes only on the source thread.
+            titleRegeneration: null,
+            // Side chats share the parent's worktree, so they start supervised.
+            ...(input.sideChat ? { runtimeMode: "approval-required" as const } : {}),
             activeProviderThreadId: null,
             // A fork is an ordinary exploratory thread unless a workflow is
             // explicitly created for it. Reviewer forks must never recursively
@@ -144,12 +171,12 @@ export const layer = Layer.effect(
               parentThreadId: input.sourceProjection.thread.id,
               relationshipToParent: "fork",
               rootThreadId: input.sourceProjection.thread.lineage.rootThreadId,
+              ...(input.sideChat ? { sideChat: true } : {}),
             },
-            forkedFrom: {
-              type: "run",
-              threadId: input.sourceProjection.thread.id,
-              runId: input.sourceRun.id,
-            },
+            forkedFrom:
+              sourceRun === null
+                ? null
+                : { type: "run", threadId: input.sourceProjection.thread.id, runId: sourceRun.id },
             createdAt: input.createdAt,
             updatedAt: input.createdAt,
             archivedAt: null,
@@ -157,7 +184,16 @@ export const layer = Layer.effect(
             settledAt: null,
             snoozedUntil: null,
             snoozedAt: null,
+            lastSnoozeWakeAt: null,
+            pinnedAt: null,
+            pinOrderKey: null,
+            activeOrderKey: null,
+            autoSettleDisabledAt: null,
+            // A guest link belongs to the thread it was made for.
+            guestShare: null,
             lastVisitedAt: null,
+            // A fork is a new thread; it does not inherit how often the source was opened.
+            opens: null,
             deletedAt: null,
           };
           const transfer: OrchestrationV2ContextTransfer = {
@@ -167,7 +203,14 @@ export const layer = Layer.effect(
             targetThreadId: input.targetThreadId,
             sourcePoint: input.canonicalSourcePoint,
             basePoint: null,
-            sourceProviderInstanceId: input.sourceRun.providerInstanceId,
+            sourceProviderInstanceId:
+              sourceRun?.providerInstanceId ?? input.sourceProjection.thread.providerInstanceId,
+            // Only native forks retain this context; portable handoffs rebuild it.
+            sourceTokenUsage:
+              (sourceRun?.status === "completed" || sourceRun?.status === "waiting") &&
+              input.sourceProviderThread?.nativeThreadRef?.strength === "strong"
+                ? input.sourceTokenUsage
+                : undefined,
             targetProviderInstanceId: null,
             targetRunId: null,
             status: "pending",
@@ -183,6 +226,6 @@ export const layer = Layer.effect(
           };
           return { targetThread, transfer };
         }),
-    });
-  }),
-);
+      });
+    }),
+  );

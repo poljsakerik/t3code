@@ -11,16 +11,19 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import { AppText } from "../../components/AppText";
+import { AppText } from "../../components/ui/AppText";
 import { uuidv4 } from "../../lib/uuid";
 import { orchestrationEnvironment } from "../../state/orchestration";
 import { projectEnvironment } from "../../state/projects";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { useThreadProjection } from "../../state/use-thread-detail";
+import { useQuietThreadStructure } from "../../state/use-thread-detail";
 
 export function RequestReviewControl(props: { environmentId: EnvironmentId; threadId: ThreadId }) {
-  const projection = useThreadProjection(props)?.projection;
+  const projection = useQuietThreadStructure({
+    environmentId: props.environmentId,
+    threadId: props.threadId,
+  })?.projection;
   const run = projection ? reviewableRun(projection) : null;
   const [open, setOpen] = useState(false);
   return (

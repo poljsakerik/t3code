@@ -202,7 +202,8 @@ function AgentEditorForm({
     onSavingChange(true);
     setError(null);
     const scope = projectId === undefined ? {} : { projectId };
-    try {
+    // The React Compiler cannot compile try/finally, so the cleanup runs as a promise handler.
+    await (async () => {
       const result = agent
         ? await update({
             environmentId,
@@ -225,11 +226,11 @@ function AgentEditorForm({
           });
       if (result._tag === "Success") onSaved();
       else setError(formatEnvironmentQueryError(result.cause));
-    } finally {
+    })().finally(() => {
       savingRef.current = false;
       setSaving(false);
       onSavingChange(false);
-    }
+    });
   };
   return (
     <form
@@ -306,7 +307,6 @@ function AgentEditorForm({
               maxLength={1_000_000}
               required={!agent}
               aria-describedby={`${id}-instructions-hint`}
-              className="font-mono text-sm"
               style={{ fieldSizing: "fixed", minHeight: "16rem" }}
               placeholder="You are a code reviewer. Focus on correctness, clarity, and…"
               onChange={(event) => {

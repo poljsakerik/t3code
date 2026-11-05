@@ -9,13 +9,8 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 
 /**
- * Minimum directory-entry shape returned by a {@link ProjectSource}.
- *
- * Intentionally matches the subset of `node:fs` `Dirent` methods discovery
- * actually reads: `name` and the structural type predicates. The matching
- * shape lets {@link DiskProjectSource} return real `Dirent<string>` values
- * without an adapter wrapper, while {@link MemoryProjectSource} can return
- * lightweight plain objects.
+ * Minimum directory-entry shape a {@link ProjectSource} returns: the `node:fs` `Dirent`
+ * subset discovery reads, so disk sources return real entries and memory sources plain objects.
  */
 export interface ProjectSourceEntry {
   readonly name: string;
@@ -24,28 +19,14 @@ export interface ProjectSourceEntry {
 }
 
 /**
- * Result of a filesystem-style stat against a {@link ProjectSource}.
- *
- * - `directory` / `file`: the path resolves to one of those kinds.
- * - `missing`: the path does not exist in the source.
- * - `other`: the path exists but is neither a directory nor a regular file
- *   (symlink, socket, device). Discovery treats this identically to
- *   `missing` in most places but keeps the distinction for diagnostics.
+ * Kind of a path in a {@link ProjectSource}. `other` exists but is neither a directory nor a
+ * regular file (symlink, socket, device); discovery mostly treats it like `missing`.
  */
 export type ProjectSourceEntryKind = "directory" | "file" | "missing" | "other";
 
 /**
- * Abstraction over the filesystem root discovery reads from.
- *
- * Every read performed by `src/discover/**` goes through a `ProjectSource`
- * rather than `node:fs` directly. Production callers use
- * {@link createDiskProjectSource} — a one-line wrapper around `node:fs` that
- * preserves existing behaviour. Tests can swap in
- * {@link createMemoryProjectSource} to run discovery against an in-memory
- * tree without touching disk, `mkdtemp`, or any fixture copying.
- *
- * The interface is intentionally small: discovery needs to read directory
- * entries, read UTF-8 text files, and classify paths by kind. Nothing more.
+ * The filesystem root discovery reads from. Production uses {@link createDiskProjectSource};
+ * tests use {@link createMemoryProjectSource} to run discovery without touching disk.
  */
 export interface ProjectSource {
   /**
@@ -155,26 +136,15 @@ export interface MemoryProjectSourceInput {
    */
   readonly files: Readonly<Record<string, string | { readonly content: string }>>;
   /**
-   * Optional list of absolute paths that should exist as directories even
-   * though no files live underneath them. Discovery treats these exactly
-   * like real empty folders on disk — they appear in `readDirectory`
-   * listings of their parent and return `"directory"` from `stat`.
-   *
-   * Every parent of every file in {@link files} is already registered as
-   * a directory automatically, so this field is only needed for empty
-   * folders (for example, to assert that an empty `connections/` folder
-   * produces no diagnostics).
+   * Absolute paths that exist as empty directories. Parents of {@link files} are registered
+   * automatically, so this is only needed for empty folders.
    */
   readonly directories?: readonly string[];
 }
 
 /**
- * Creates a {@link ProjectSource} backed by an in-memory file tree.
- *
- * Directories are inferred from the set of file paths: every parent of
- * every file is treated as a directory, and directory listings return the
- * immediate children. This matches the shape of real filesystems closely
- * enough for all discovery code paths.
+ * Creates a {@link ProjectSource} backed by an in-memory file tree; every parent of every file
+ * is a directory, and listings return immediate children.
  */
 export function createMemoryProjectSource(input: MemoryProjectSourceInput): ProjectSource {
   const filesByNormalizedPath = new Map<string, string>();

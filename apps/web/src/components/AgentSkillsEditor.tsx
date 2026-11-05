@@ -53,7 +53,8 @@ export function AgentSkillsEditor({
     onBusyChange(true);
     setError(null);
     setStatus(null);
-    try {
+    // The React Compiler cannot compile try/finally, so the cleanup runs as a promise handler.
+    await (async () => {
       if (operation === "search") {
         setResults(null);
         const result = await search({ environmentId, input: { query: query.trim() } });
@@ -71,11 +72,11 @@ export function AgentSkillsEditor({
           onChanged();
         } else setError(formatEnvironmentQueryError(result.cause));
       }
-    } finally {
+    })().finally(() => {
       busyRef.current = false;
       setBusy(null);
       onBusyChange(false);
-    }
+    });
   };
   const validSource = /^[a-zA-Z0-9][a-zA-Z0-9_-]*\/[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(source.trim());
   const validName = /^[a-zA-Z][a-zA-Z0-9_-]*$/.test(name.trim());

@@ -1,4 +1,4 @@
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/process";
 import { ProcessRunner, ProcessSpawnError } from "../processRunner.ts";
 import * as NodeOS from "node:os";
 import { afterEach, vi } from "vite-plus/test";
@@ -6,12 +6,9 @@ import { AgentDefinitionService, layer } from "./AgentDefinitionService.ts";
 import { ProjectId, agentDefinitionKey } from "@t3tools/contracts";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import {
-  ProjectionProjectRepository,
-  type ProjectionProject,
-} from "../persistence/Services/ProjectionProjects.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { expect, it } from "@effect/vitest";
+import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -24,7 +21,7 @@ vi.mock("node:os", async (importOriginal) => {
 });
 
 afterEach(() => vi.mocked(NodeOS.homedir).mockReset());
-const listAllProjects = vi.fn(() => Effect.succeed<ReadonlyArray<ProjectionProject>>([]));
+const listAllProjects = vi.fn(() => Effect.succeed<ReadonlyArray<ProjectStore.ProjectRow>>([]));
 afterEach(() => listAllProjects.mockReset());
 
 const fixture = Effect.fn("fixture")(function* (files: Record<string, string>) {
@@ -250,9 +247,9 @@ const installer = Layer.effect(
 const serviceLayer = layer.pipe(
   Layer.provide(installer),
   Layer.provide(
-    Layer.mock(ProjectionProjectRepository)({
-      listAll: () => listAllProjects(),
-      getById: ({ projectId }) =>
+    Layer.mock(ProjectStore.ProjectStoreV2)({
+      list: () => listAllProjects(),
+      get: (projectId) =>
         Effect.succeed(
           projectId === "missing"
             ? Option.none()
@@ -263,7 +260,11 @@ const serviceLayer = layer.pipe(
                 defaultModelSelection: null,
                 defaultThreadEnvMode: null,
                 autoPull: false,
+                faviconPath: null,
+                projectIcon: null,
                 scripts: [],
+                pinnedAt: null,
+                archivedAt: null,
                 createdAt: "2026-01-01T00:00:00.000Z",
                 updatedAt: "2026-01-01T00:00:00.000Z",
                 deletedAt: null,
@@ -303,7 +304,11 @@ it.layer(serviceLayer)("project agent catalog", (it) => {
               defaultModelSelection: null,
               defaultThreadEnvMode: null,
               autoPull: false,
+              faviconPath: null,
+              projectIcon: null,
               scripts: [],
+              pinnedAt: null,
+              archivedAt: null,
               createdAt: "2026-01-01T00:00:00.000Z",
               updatedAt: "2026-01-01T00:00:00.000Z",
               deletedAt: deletedAt ?? null,
@@ -399,7 +404,7 @@ it.layer(serviceLayer)("project agent catalog", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  for (const source of ["broken/repo", "linked/repo", "--unsafe/repo", "../repo"]) {
+  describe.each(["broken/repo", "linked/repo", "--unsafe/repo", "../repo"])("%s", (source) => {
     it.effect(`does not publish a partial skill from ${source}`, () =>
       Effect.gen(function* () {
         const service = yield* AgentDefinitionService;
@@ -417,7 +422,7 @@ it.layer(serviceLayer)("project agent catalog", (it) => {
         expect(yield* fs.exists(`${root}/.t3/agents/designer/skills/impeccable`)).toBe(false);
       }).pipe(Effect.scoped),
     );
-  }
+  });
 
   it.effect("rejects a linked skills folder without changing its target", () =>
     Effect.gen(function* () {

@@ -10,17 +10,17 @@ import { ServerConfig } from "../config.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
 import { CommandReceiptStoreV2 } from "../orchestration-v2/CommandReceiptStore.ts";
-import { IdAllocatorV2 } from "../orchestration-v2/IdAllocator.ts";
+import { IdAllocatorV2 } from "@t3tools/provider-core/server/IdAllocator";
 import {
   ThreadLaunchError,
-  type ThreadLaunchInput,
+  type AgentThreadLaunchInput,
 } from "../orchestration-v2/ThreadLaunchService.ts";
 import { discoverAgentDefinitions } from "./AgentDefinitionService.ts";
 import { loadAgentDefinition } from "./AgentDefinitionLoader.ts";
 import { retainAgentSkill } from "./AgentConversationResources.ts";
 
 const launchAgentConversation = Effect.fn("launchAgentConversation")(
-  function* (input: Extract<ThreadLaunchInput, { agent: unknown }>) {
+  function* (input: AgentThreadLaunchInput) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const config = yield* ServerConfig;
@@ -114,7 +114,7 @@ const launchAgentConversation = Effect.fn("launchAgentConversation")(
     const projection = yield* threads.getThreadProjection(input.threadId);
     if (
       projection.thread.agent?.owner.agentId !== input.agent.agentId ||
-      projection.thread.agent.owner.sourceProjectId !== input.agent.sourceProjectId
+      projection.thread.agent?.owner.sourceProjectId !== input.agent.sourceProjectId
     ) {
       return yield* new AgentDefinitionError({
         message: "Conversation ownership does not match the selected agent.",
@@ -163,7 +163,7 @@ export class AgentConversationLauncher extends Context.Service<
   AgentConversationLauncher,
   {
     readonly launch: (
-      input: Extract<ThreadLaunchInput, { agent: unknown }>,
+      input: AgentThreadLaunchInput,
     ) => Effect.Effect<
       import("../orchestration-v2/ThreadLaunchService.ts").ThreadLaunchResult,
       ThreadLaunchError
@@ -184,7 +184,9 @@ export const layer = Layer.effect(
       | IdAllocatorV2
     >();
     return AgentConversationLauncher.of({
-      launch: (input) => launchAgentConversation(input).pipe(Effect.provide(context)),
+      launch: Effect.fn("AgentConversationLauncher.launch")(function* (input) {
+        return yield* launchAgentConversation(input).pipe(Effect.provide(context));
+      }),
     });
   }),
 );

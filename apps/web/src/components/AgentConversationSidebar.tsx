@@ -20,7 +20,8 @@ import {
 import { useSidebar } from "./ui/sidebar";
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 import { newThreadId } from "../lib/utils";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import { useStableCallback } from "../hooks/useStableCallback";
 import { useRouter, Link } from "@tanstack/react-router";
 import { CommandId, type EnvironmentId, type ProjectId } from "@t3tools/contracts";
 import { useProjects, useThreadShells, waitForThreadShell } from "../state/entities";
@@ -45,57 +46,55 @@ export function useStartAgentConversation() {
     "start agent conversation",
   );
   const router = useRouter();
-  return useCallback(
-    async ({ environmentId, owner }: AgentSelection) => {
-      const threadId = newThreadId();
-      const result = await launch({
-        environmentId,
-        input: {
-          commandId: CommandId.make(newThreadId()),
-          threadId,
-          agent: { agentId: owner.agentId, sourceProjectId: owner.sourceProjectId },
-          title: `Conversation with ${owner.name}`,
-          creationSource: "web",
-        },
-      });
-      if (result._tag === "Success") {
-        const ready = await waitForThreadShell({ environmentId, threadId });
-        if (!ready) {
-          toastManager.add({
-            type: "error",
-            title: "Conversation created, but not loaded",
-            description: "Reconnect and open the conversation from the sidebar.",
-          });
-          return;
-        }
-        if (isMobile) setOpenMobile(false);
-        useAgentConversationNavigation.setState({
-          mode: "agents",
-          selected: { environmentId, owner },
-        });
-        await router.navigate({
-          to: "/$environmentId/$threadId",
-          params: { environmentId, threadId },
-        });
-      } else if (!isAtomCommandInterrupted(result)) {
-        const error = squashAtomCommandFailure(result);
+  return useStableCallback(async ({ environmentId, owner }: AgentSelection) => {
+    const threadId = newThreadId();
+    const result = await launch({
+      environmentId,
+      input: {
+        commandId: CommandId.make(newThreadId()),
+        threadId,
+        agent: { agentId: owner.agentId, sourceProjectId: owner.sourceProjectId },
+        title: `Conversation with ${owner.name}`,
+        creationSource: "web",
+      },
+    });
+    if (result._tag === "Success") {
+      const ready = await waitForThreadShell({ environmentId, threadId });
+      if (!ready) {
         toastManager.add({
           type: "error",
-          title: "Could not start conversation",
-          description:
-            error instanceof Error
-              ? error.message
-              : "Check the agent configuration and environment connection.",
+          title: "Conversation created, but not loaded",
+          description: "Reconnect and open the conversation from the sidebar.",
         });
+        return;
       }
-    },
-    [launch, router, isMobile, setOpenMobile],
-  );
+      if (isMobile) setOpenMobile(false);
+      useAgentConversationNavigation.setState({
+        mode: "agents",
+        selected: { environmentId, owner },
+      });
+      await router.navigate({
+        to: "/$environmentId/$threadId",
+        params: { environmentId, threadId },
+      });
+    } else if (!isAtomCommandInterrupted(result)) {
+      const error = squashAtomCommandFailure(result);
+      toastManager.add({
+        type: "error",
+        title: "Could not start conversation",
+        description:
+          error instanceof Error
+            ? error.message
+            : "Check the agent configuration and environment connection.",
+      });
+    }
+  });
 }
 
 export function AgentConversationCommandHandler() {
   const start = useStartAgentConversation();
   const router = useRouter();
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to the window event that menus, shortcuts and the palette dispatch for a new conversation
   useEffect(() => {
     const handle = () => {
       const selected = useAgentConversationNavigation.getState().selected;
@@ -155,7 +154,7 @@ function AgentScope({
   });
   if (owners.size === 0 && !catalog.isPending && catalog.error === null) return null;
   return (
-    <section className="space-y-1 px-[var(--sidebar-content-inset)] py-2">
+    <section className="space-y-1 px-(--sidebar-content-inset) py-2">
       <h2 className="truncate px-2.5 pb-1 text-xs font-medium text-sidebar-muted-foreground">
         {label}
       </h2>
@@ -189,7 +188,7 @@ function AgentScope({
           <div key={owner.agentId} className="pb-2">
             <div className="group/agent flex h-9 items-center gap-1 rounded-md px-1">
               <button
-                className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-sm font-medium text-sidebar-foreground hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-ring"
+                className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-sm font-medium text-sidebar-foreground hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
                 aria-expanded={expanded}
                 onClick={() =>
                   setCollapsed((previous) => {
@@ -242,7 +241,7 @@ function AgentScope({
               history.map((thread) => (
                 <div key={thread.id} className="group/sidebar-row relative ml-3 rounded-md">
                   <Link
-                    className="flex h-9 min-w-0 items-center gap-2 rounded-md px-2.5 pr-9 text-sm text-sidebar-foreground hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-ring"
+                    className="flex h-9 min-w-0 items-center gap-2 rounded-md px-2.5 pr-9 text-sm text-sidebar-foreground hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
                     activeProps={{
                       className: "bg-sidebar-row-active font-medium",
                       "aria-current": "page",
@@ -274,26 +273,27 @@ function AgentScope({
                     ) : null}
                     <span className="truncate">{thread.title}</span>
                   </Link>
-                  <Button
-                    size="icon-xs"
-                    variant="ghost"
-                    className="absolute top-1 right-1 text-sidebar-muted-foreground sm:opacity-0 sm:group-hover/sidebar-row:opacity-100 sm:group-focus-within/sidebar-row:opacity-100"
-                    aria-label={
-                      thread.archivedAt === null ? "Archive conversation" : "Restore conversation"
-                    }
-                    onClick={() => {
-                      const command = thread.archivedAt === null ? archiveThread : restoreThread;
-                      void command({ environmentId, input: { threadId: thread.id } }).then(() =>
-                        archive.refresh(),
-                      );
-                    }}
-                  >
-                    {thread.archivedAt === null ? (
-                      <Archive className="size-3.5" />
-                    ) : (
-                      <ArchiveRestore className="size-3.5" />
-                    )}
-                  </Button>
+                  <span className="absolute top-1 right-1 sm:opacity-0 sm:group-hover/sidebar-row:opacity-100 sm:group-focus-within/sidebar-row:opacity-100">
+                    <Button
+                      size="icon-xs"
+                      variant="ghost-muted"
+                      aria-label={
+                        thread.archivedAt === null ? "Archive conversation" : "Restore conversation"
+                      }
+                      onClick={() => {
+                        const command = thread.archivedAt === null ? archiveThread : restoreThread;
+                        void command({ environmentId, input: { threadId: thread.id } }).then(() =>
+                          archive.refresh(),
+                        );
+                      }}
+                    >
+                      {thread.archivedAt === null ? (
+                        <Archive className="size-3.5" />
+                      ) : (
+                        <ArchiveRestore className="size-3.5" />
+                      )}
+                    </Button>
+                  </span>
                 </div>
               ))}
           </div>
@@ -311,8 +311,8 @@ export default function AgentConversationSidebar() {
   return (
     <>
       <SidebarChromeHeader isElectron={isElectron} />
-      <div className="flex items-center gap-1 px-[var(--sidebar-content-inset)] py-2">
-        <label className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-sidebar-muted-foreground hover:bg-sidebar-row-hover focus-within:ring-2 focus-within:ring-ring">
+      <div className="flex items-center gap-1 px-(--sidebar-content-inset) py-2">
+        <label className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-sidebar-muted-foreground hover:bg-sidebar-row-hover focus-within:ring-2 focus-within:ring-ring focus-within:ring-inset">
           <Search aria-hidden className="size-4 shrink-0" />
           <input
             type="search"
@@ -341,7 +341,7 @@ export default function AgentConversationSidebar() {
           />
         ))}
       </div>
-      <div className="px-[var(--sidebar-content-inset)] pb-2">
+      <div className="px-(--sidebar-content-inset) pb-2">
         <Link
           className="flex h-9 items-center gap-2 rounded-md px-2.5 text-sm text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
           to="/agents"

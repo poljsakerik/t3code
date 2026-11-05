@@ -1939,7 +1939,7 @@ it.effect("SQL list older settled threads below a cursor", () =>
     const createThread = (input: {
       readonly name: string;
       readonly settledDay: number | null;
-      readonly project?: string;
+      readonly project?: string | null;
       readonly subagent?: boolean;
       readonly archived?: boolean;
       readonly snoozedUntilDay?: number;
@@ -1953,7 +1953,7 @@ it.effect("SQL list older settled threads below a cursor", () =>
           createdBy: "user",
           creationSource: "web",
           id: id(input.name),
-          projectId: ProjectId.make(input.project ?? "project:a"),
+          projectId: input.project === null ? null : ProjectId.make(input.project ?? "project:a"),
           title: input.name,
           providerInstanceId,
           modelSelection,
@@ -1987,6 +1987,8 @@ it.effect("SQL list older settled threads below a cursor", () =>
     yield* createThread({ name: "unsettled", settledDay: null });
     yield* createThread({ name: "child", settledDay: 1, subagent: true });
     yield* createThread({ name: "archived", settledDay: 1, archived: true });
+    // An agent conversation has no project; the shell index must still read it.
+    yield* createThread({ name: "conversation", settledDay: null, project: null });
 
     const list = (
       before: { readonly settledAt: string; readonly threadId?: ThreadId },

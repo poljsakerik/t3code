@@ -43,9 +43,20 @@ import {
   classifyAgentRootEntry,
   isDiscoverableAgentRootEntry,
   matchesSupportedModuleBaseName,
+  type AgentRootEntryKind,
   type DirectoryEntryType,
 } from "@t3tools/eve/filesystem";
 
+// `.t3` is also T3 home and dev state, where T3 writes folders such as `tools/`, so a flat
+// root must declare itself with a config or instructions rather than a capability folder.
+const flatRootKinds = new Set<AgentRootEntryKind>([
+  "agent-config-module",
+  "instructions-directory",
+  "instructions-markdown",
+  "instructions-module",
+  "system-markdown",
+  "system-module",
+]);
 const entryType = (type: string): DirectoryEntryType =>
   type === "File" ? "file" : type === "Directory" ? "directory" : "other";
 /** Reads source locations only. Discovering an agent must never execute its TypeScript. */
@@ -156,7 +167,9 @@ export const discoverAgentDefinitions = Effect.fn("discoverAgentDefinitions")(
     if (rootEntries.some((entry) => entry.name === "agent" && entry.type === "Directory")) {
       yield* scan(path.join(root, "agent"), path.basename(projectRoot), null);
     } else if (
-      rootEntries.some((entry) => isDiscoverableAgentRootEntry(entry.name, entryType(entry.type)))
+      rootEntries.some((entry) =>
+        flatRootKinds.has(classifyAgentRootEntry(entry.name, entryType(entry.type))),
+      )
     ) {
       yield* scan(root, path.basename(projectRoot), null);
     } else if (rootEntries.some((entry) => entry.name === "agents" && entry.type === "Directory")) {

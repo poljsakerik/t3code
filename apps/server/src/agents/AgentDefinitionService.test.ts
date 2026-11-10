@@ -99,6 +99,18 @@ it.layer(NodeServices.layer)("agent definitions", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("keeps workspace members when T3 state sits beside them in .t3", () =>
+    Effect.gen(function* () {
+      const root = yield* fixture({
+        ".t3/tools/chrome-headless-shell/VERSION": "",
+        ".t3/agents/Ponytail/instructions.md": "Review.",
+      });
+      expect((yield* discoverAgentDefinitions(root)).map(({ id }) => id)).toEqual([
+        ".t3/agents/Ponytail",
+      ]);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("supports flat roots and directory-based instructions", () =>
     Effect.gen(function* () {
       const root = yield* fixture({

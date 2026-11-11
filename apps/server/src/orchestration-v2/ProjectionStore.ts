@@ -7208,7 +7208,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     const listActiveShellIndex = Effect.fn("ProjectionStore.listActiveShellIndex")(function* () {
       const rows = yield* sql<{
         readonly thread_id: string;
-        readonly project_id: string;
+        readonly project_id: string | null;
         readonly relationship_to_parent: string | null;
         readonly parent_thread_id: string | null;
         readonly root_thread_id: string;
@@ -7271,7 +7271,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       `;
       return rows.map((row): ActiveShellIndexEntry => ({
         id: ThreadId.make(row.thread_id),
-        projectId: ProjectId.make(row.project_id),
+        // Agent conversations have no project.
+        projectId: row.project_id === null ? null : ProjectId.make(row.project_id),
         lineage: {
           parentThreadId:
             row.parent_thread_id === null ? null : ThreadId.make(row.parent_thread_id),
@@ -7352,7 +7353,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       const countRows =
         limit !== 0
           ? []
-          : yield* sql<{ readonly project_id: string; readonly count: number }>`
+          : yield* sql<{ readonly project_id: string | null; readonly count: number }>`
               WITH older AS (${older})
               SELECT older.project_id, COUNT(*) AS count FROM older
               WHERE ${belowCursor}
@@ -7360,10 +7361,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             `;
       return {
         threadIds: pageRows.map((row) => ThreadId.make(row.thread_id)),
-        counts: countRows.map((row) => ({
-          projectId: ProjectId.make(row.project_id),
-          count: row.count,
-        })),
+        // Agent conversations have no project, so no per-project count.
+        counts: countRows.flatMap((row) =>
+          row.project_id === null
+            ? []
+            : [{ projectId: ProjectId.make(row.project_id), count: row.count }],
+        ),
       };
     }, Effect.mapError(shellSnapshotReadError));
 
